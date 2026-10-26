@@ -1,0 +1,79 @@
+# NOX Market Intelligence Terminal
+
+Binance exchange follow-up: [public Spot / USDT-M exchange panel and live checks](BINANCE_EXCHANGE_MARKET.md). Exchange data is independent of the authenticated Web3 provider below.
+
+Latest data-source increment: [Binance Web3 market / DeFi read-only integration](BINANCE_WEB3_INTEGRATION.md). Server-side developer credentials and live acceptance are still required; no Binance Web3 mock values are presented as live data.
+
+Latest analytics increment: [V2.5 frozen-event studies, signal readiness and separate weighted distributions](V2_5_EVENT_STUDY.md). This is descriptive research infrastructure, not a validated trading strategy. Prior rules: [V2.4 venue/aggregate regimes, adaptive baselines and flow attribution](V2_4_REGIMES.md).
+
+Latest backend increment: [V2.3 historical queries, checkpoints and market mapping](V2_3_HISTORY.md). Apply migration 004 when configuring TimescaleDB. Real-database integration remains explicitly unverified without a test instance.
+
+Current working-tree increment: [V2.2 implementation and deployment boundaries](V2_2_IMPLEMENTATION.md). It adds project-mode background collection, durable history, optional Timescale replication, mutation authentication and a first Signal Lab. The older phase notes below describe earlier implementation stages and are not the authoritative V2.2 status.
+
+Independent, project-based crypto market monitoring for user-selected external tokens. This is not a broad BTC/ETH scanner, is separate from the NOX Active MM Dashboard, and contains no trade execution or private account connectivity.
+
+## Working in this version
+
+- Persistent Project Watchlist with no hardcoded default symbols. Projects can be discovered by token symbol or contract address, confirmed, reordered, archived, edited and removed.
+- Native Spot and USDT perpetual discovery across Binance, Bitget, Bybit, OKX, Gate, KuCoin and MEXC, with explicit pair selection and one primary perpetual analytics feed per project.
+- Global project switching that updates the live market workspace without leaving the application.
+- Live selected-project 24H price/volume, base and USD OI, funding and next-settlement countdown.
+- Synchronized Price/Volume, base OI and futures CVD chart panels for a selected instrument.
+- Hybrid chart mode on the Market Structure workspace: NOX native analytics remain the default, while a lazily loaded TradingView Advanced Chart adds drawing tools and built-in technical studies for the selected project.
+- Automatic Binance symbol mapping for TradingView (`BINANCE:<symbol>.P` for perpetuals and `BINANCE:<symbol>` for spot), with project-scoped mode persistence and explicit unavailable states.
+- Dedicated Position Flow Intelligence workspace with synchronized candlesticks, absolute OI, OI delta, taker buy/sell notional, volume delta and CVD panels.
+- Robust OI-delta spike detection, evidence-backed probabilistic structure classifications, signal replay and a three-bar descriptive reliability check.
+- 1M, 5M, 15M, 1H and 4H analysis. Binance's authoritative historical OI minimum is 5M, so 1M mode keeps OI at visible 5M timestamps rather than fabricating one-minute points.
+- Live SSE bridge from Binance aggregate trades, mark price/funding and ticker streams, with stale/degraded states and automatic reconnect.
+- Seven-venue REST snapshots plus public ticker/trade WebSocket adapters, normalized contract multipliers, capability disclosure and cross-exchange contribution analysis.
+- DexPaprika contract-address identity lookup and a project-scoped on-chain liquidity workspace with token totals, top pools, DEX activity and explicit CEX/DEX interpretation boundaries.
+- A versioned `nox.research-context.v1` JSON export that packages the project identity, CEX snapshots, on-chain context, evidence-backed inferences, nulls and methodology for downstream AI/MCP research workflows.
+- Persistent project identity, selected markets, ordering and monitoring preferences in the local atomic data store.
+- Explicit source, units, timestamps, coverage boundaries and missing-data states.
+
+## Run locally
+
+Requires Node.js 20+.
+
+```bash
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:4173`. The API listens on `127.0.0.1:8787` and Vite proxies `/api` during development.
+
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
+Optional Phase 1 production storage services:
+
+```bash
+docker compose up -d
+```
+
+## Data sources and limitations
+
+No API key is required. Market discovery uses public metadata from all seven centralized exchanges. Contract-address identity resolution prefers DexPaprika cross-chain search with a DexScreener fallback and always requires user confirmation. DexPaprika's public tier may be delayed and rate-limited; its pool totals cover only the returned rows. DEX liquidity is never presented as centralized-exchange order-book depth.
+
+High-frequency native chart history currently uses the selected project's Binance perpetual feed. The other venues provide normalized REST snapshots and live ticker/trade streams where the exchange supports them. CVD and Volume Delta use the latest 1,000 Binance aggregate-trade records returned by the venue, so busy instruments can have much shorter flow coverage than the selected candle window. Aggregate trades can combine fills according to venue rules. Historical OI retention is venue-limited and its minimum Binance API interval is 5M.
+
+The optional TradingView mode uses the public TradingView widget through `react-ts-tradingview-widgets`. It is a third-party iframe with its own data connection and required TradingView attribution. NOX cannot inject its Binance feed, private indicators or Pine scripts into that widget, and its crosshair cannot be synchronized with the native OI/CVD panels. Switching back to NOX mode removes the iframe and leaves the existing project data subscription unchanged.
+
+Position-flow classifications combine price direction, base-unit OI change and available aggressor flow. Names such as “Potential Long Build-up” are hypotheses, not direct observations of who opened or closed a position. The in-window backtest is descriptive: it excludes fees, slippage and regime changes, and low sample counts are labeled explicitly.
+
+The application never claims to identify counterparties, “organic” liquidity, manipulation, or who opened/closed a position. Public feeds cannot establish those facts.
+
+## Development sequence remaining
+
+1. Wire the included TimescaleDB/Redis services into project-scoped background ingestion, retention, backfill and gap recovery.
+2. Add durable computed 1m/5m/15m/1h/4h/1d volume/CVD bars and locally sampled 1m OI beyond the exchange REST window.
+3. Evaluate persisted alert rules and add notification delivery/history.
+4. Implement sequence-correct L2 depth snapshots/deltas, spread/depth metrics and impact simulation.
+5. Add liquidation-event coverage, spot CVD, time-aligned multi-venue CVD and calibrated regime models with out-of-sample validation.
+6. Persist research-context snapshots and predictions, then evaluate expired signals against subsequent market data by setup type.
+7. Add authentication and production deployment configuration.
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the audit, boundaries and data semantics.

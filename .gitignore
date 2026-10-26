@@ -1,0 +1,14 @@
+node_modules
+.npm-cache
+dist
+.env
+.env.*
+!.env.example
+.data
+releases/
+coverage/
+*.pem
+*.key
+*.log
+*.tsbuildinfo
+.DS_Store

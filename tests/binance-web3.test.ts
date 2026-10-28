@@ -195,6 +195,7 @@ test("project service sends only confirmed identity, keeps partial failures inde
     paths.push(u.pathname);
     if (u.pathname.endsWith("/supported/chain"))
       return ok([{ binanceChainId: "56" }]);
+    if (u.pathname.endsWith("/advanced-info")) return ok({binanceChainId:"56",tokenContractAddress:address,top10HoldingPercent:"40"});
     if (u.pathname.endsWith("/price-info")) {
       assert.deepEqual(JSON.parse(String(init?.body)), [
         { binanceChainId: "56", tokenContractAddress: address },
@@ -228,7 +229,8 @@ test("project service sends only confirmed identity, keeps partial failures inde
   assert.equal(result.market.state, "available");
   assert.equal(result.pools.state, "error");
   assert.equal(result.earn.state, "empty");
-  assert.equal(paths.length, 6);
+  assert.equal(paths.length, 7);
+  assert.equal(result.advanced.state, "available");
   assert.equal(result.contractAddress, address);
 });
 test("unconfigured or unconfirmed projects do not query unselected tokens", async () => {

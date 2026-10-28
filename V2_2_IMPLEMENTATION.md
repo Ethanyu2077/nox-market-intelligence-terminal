@@ -14,7 +14,7 @@
 
 Local preview: `http://127.0.0.1:4173/` (while the server is running).
 
-1. Use **Sign in / setup**. The bootstrap token is in `.data/bootstrap-token.txt` on this machine. Do not send the token or `.data` to colleagues. Choose your own username and password (minimum 12 characters); the agent does not create your credentials.
+1. Use the **Sign in** dialog. Current SQLite authentication and one-time initialization are described in [AUTH_SQLITE.md](AUTH_SQLITE.md). Choose your own username and password (minimum 8 characters); the agent does not create your credentials.
 2. In **Settings / Data Sources**, choose Active for projects requiring uninterrupted high-frequency collection.
 3. Keep the Node process running. Persistence survives browser closure and process restart; this is not yet an installed launchd/systemd service.
 4. **Signals & Alerts** shows evidence-based regime evaluations. **Historical Analysis** opens Signal Lab. Empty or pending results are expected until sufficient real history has accumulated.

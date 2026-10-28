@@ -12,3 +12,9 @@ coverage/
 *.log
 *.tsbuildinfo
 .DS_Store
+
+/var/auth/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

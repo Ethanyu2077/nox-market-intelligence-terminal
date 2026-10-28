@@ -1,5 +1,11 @@
 # NOX Market Intelligence Terminal
 
+New: [Upbit / Bithumb KRW spot discovery and quotes](KOREAN_SPOT.md), displayed separately from USDT derivatives.
+
+Current authentication: [SQLite storage and sign-in dialog](AUTH_SQLITE.md). Anonymous read-only access and mutation roles are preserved.
+
+New: [CoinGlass V4 and Binance Web3 holder analysis](COINGLASS_INTEGRATION.md). Configure the CoinGlass key in Settings / Data Sources; live acceptance awaits your key.
+
 Binance exchange follow-up: [public Spot / USDT-M exchange panel and live checks](BINANCE_EXCHANGE_MARKET.md). Exchange data is independent of the authenticated Web3 provider below.
 
 Latest data-source increment: [Binance Web3 market / DeFi read-only integration](BINANCE_WEB3_INTEGRATION.md). Server-side developer credentials and live acceptance are still required; no Binance Web3 mock values are presented as live data.
@@ -33,7 +39,7 @@ Independent, project-based crypto market monitoring for user-selected external t
 
 ## Run locally
 
-Requires Node.js 20+.
+Requires Node.js 22.13+.
 
 ```bash
 npm install

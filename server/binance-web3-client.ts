@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 
 const ROUTES: Record<string, "GET" | "POST"> = {
+  "/api/v1/dex/market/token/advanced-info": "GET",
   "/api/v1/dex/market/supported/chain": "GET",
   "/api/v1/dex/market/price-info": "POST",
   "/api/v1/dex/market/candles": "GET",

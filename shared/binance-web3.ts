@@ -54,7 +54,14 @@ export interface Web3Section<T> {
   fetchedAt: number | null;
   freshness: "fresh" | "stale" | "unknown";
 }
+export interface Web3Advanced {
+  holders: number | null;
+  creatorAddress: string | null;
+  holdingPercent: Record<string, number | null>;
+  tags: string[];
+}
 export interface Web3ProjectResponse {
+  advanced: Web3Section<Web3Advanced>;
   projectId: string;
   source: "Binance Web3";
   chainId: string | null;

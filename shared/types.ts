@@ -1,3 +1,5 @@
+import type {KoreanSpotResponse} from './korean-spot.ts';
+import type {CoinGlassResponse} from './coinglass.ts';
 import type {Web3ProjectResponse} from './binance-web3.ts';
 export type Quality = 'live' | 'stale' | 'partial' | 'unavailable';
 
@@ -16,7 +18,7 @@ export interface Instrument {
   contractMultiplier?: number;
 }
 
-export const EXCHANGE_IDS = ['binance', 'bitget', 'bybit', 'okx', 'gate', 'kucoin', 'mexc'] as const;
+export const EXCHANGE_IDS = ['binance', 'bitget', 'bybit', 'okx', 'gate', 'kucoin', 'mexc', 'upbit', 'bithumb'] as const;
 export type ExchangeId = typeof EXCHANGE_IDS[number];
 export type ExchangeSelection = 'aggregated' | ExchangeId;
 export type ProjectMarketType = 'spot' | 'perpetual';
@@ -232,6 +234,8 @@ export interface ProjectResearchContext {
   centralizedMarkets: ProjectVenueResponse;
   onchain: OnchainProjectSnapshot;
   web3?: Web3ProjectResponse;
+  coinglass?: CoinGlassResponse;
+  koreanSpot?: KoreanSpotResponse;
   interpretationBoundaries: string[];
 }
 

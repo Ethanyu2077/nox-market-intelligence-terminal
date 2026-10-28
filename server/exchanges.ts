@@ -4,12 +4,14 @@ import type {
 } from '../shared/types.ts';
 import { getInstruments as getBinanceFutures, getSpotInstruments as getBinanceSpot, overview as getBinanceOverview } from './binance.ts';
 import { resolveDexPaprikaIdentity } from './dexpaprika.ts';
+import {koreanSpot,koreanBaseSymbol} from './korean-spot.ts';
 
 const TIMEOUT = 10_000;
 const CACHE_MS = 30 * 60_000;
 type Json = Record<string, unknown>;
 
 const capabilityRows: ExchangeCapabilities[] = [
+  ...(['upbit','bithumb'] as const).map(exchange=>({exchange,label:exchange==='upbit'?'Upbit KRW Spot':'Bithumb KRW Spot',restDiscovery:true,restSnapshot:true,websocketTrades:false,websocketTicker:false,websocketOrderBook:false,historicalSeries:false,openInterest:false,funding:false,liquidations:false,notes:['KRW spot REST snapshots; quote units stay KRW and are excluded from USDT derivatives aggregation.']})),
   { exchange: 'binance', label: 'Binance', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: true, openInterest: true, funding: true, liquidations: false, notes: ['Native aggregate-trade stream and historical analytics are active.', 'Order-book sequence engine is scheduled for Phase 2.'] },
   { exchange: 'bitget', label: 'Bitget', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Public futures trade/ticker stream is normalized and deduplicated.'] },
   { exchange: 'bybit', label: 'Bybit', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Public linear trade/ticker stream is normalized and deduplicated.'] },
@@ -129,13 +131,13 @@ async function mexcCatalog() {
   ];
 }
 
-const catalogs: Record<ExchangeId, CatalogLoader> = { binance: binanceCatalog, bitget: bitgetCatalog, bybit: bybitCatalog, okx: okxCatalog, gate: gateCatalog, kucoin: kucoinCatalog, mexc: mexcCatalog };
+const catalogs: Record<ExchangeId, CatalogLoader> = { binance: binanceCatalog, bitget: bitgetCatalog, bybit: bybitCatalog, okx: okxCatalog, gate: gateCatalog, kucoin: kucoinCatalog, mexc: mexcCatalog,upbit:()=>koreanSpot.instruments('upbit'),bithumb:()=>koreanSpot.instruments('bithumb') };
 export async function getExchangeInstruments(exchange: ExchangeId) { return cached(exchange, catalogs[exchange]); }
 
 function isContractAddress(query: string) { return /^0x[a-fA-F0-9]{40}$/.test(query) || /^[1-9A-HJ-NP-Za-km-z]{32,50}$/.test(query); }
 async function resolveIdentity(raw: string) {
   const query = raw.trim(); const contract = isContractAddress(query);
-  if (!contract) return { symbol: query.toUpperCase().replace(/[^A-Z0-9]/g, ''), name: null as string | null, network: null as string | null, contract: false };
+  if (!contract) return { symbol: koreanBaseSymbol(query)??query.toUpperCase().replace(/[^A-Z0-9]/g, ''), name: null as string | null, network: null as string | null, contract: false };
   try { const token = await resolveDexPaprikaIdentity(query); return { ...token, contract: true }; }
   catch {
     const response = await json<Json>(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(query)}`);
@@ -157,6 +159,7 @@ export async function discoverAcrossExchanges(rawQuery: string): Promise<Project
   }
   markets.sort((a, b) => a.exchange.localeCompare(b.exchange) || (a.marketType === b.marketType ? a.quote.localeCompare(b.quote) : a.marketType === 'perpetual' ? -1 : 1));
   if (!markets.length) warnings.push(`No supported market matched ${identity.symbol} across the enabled exchanges.`);
+  if(koreanBaseSymbol(rawQuery)&&!markets.some(m=>m.quote==='KRW'))warnings.push(`No KRW spot market for ${identity.symbol} was returned by Upbit or Bithumb.`);
   warnings.push(identity.contract ? 'Contract identity is resolved with DexPaprika cross-chain search (DexScreener fallback); confirm network and centralized-exchange listings before saving.' : 'Symbol matches can represent unrelated tokens; confirm each venue and pair before saving.');
   return { query: rawQuery.trim(), identity: { symbol: identity.symbol, name: identity.name, contractAddress: identity.contract ? rawQuery.trim() : null, network: identity.network, source: identity.contract ? 'contract' : 'symbol' }, markets, warnings };
 }
@@ -170,6 +173,7 @@ function unavailableSnapshot(exchange: ExchangeId, market: ProjectMarket, source
 }
 
 export async function marketSnapshot(market: ProjectMarket): Promise<VenueMarketSnapshot> {
+  if (market.exchange === 'upbit' || market.exchange === 'bithumb') throw new Error('KRW spot uses the independent korean-spot endpoint');
   if (market.marketType !== 'perpetual') throw new Error('Cross-exchange Phase 1 snapshot currently requires a perpetual market');
   if (market.exchange === 'binance') {
     const row = await getBinanceOverview(market.symbol);

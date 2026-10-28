@@ -106,13 +106,13 @@ test('authentication bootstrap is local, hashed, session-bound and guards mutati
   const post = (route: string, body: unknown, cookie = '') => fetch(`http://127.0.0.1:${port}/api${route}`,{ method:'POST', headers:{'Content-Type':'application/json',cookie},body:JSON.stringify(body) });
   try {
     assert.equal((await post('/projects',{})).status,401);
-    const token = (await readFile(path.join(directory,'bootstrap-token.txt'),'utf8')).trim();
+    const token = auth.setSetupToken();
     const setup = await post('/auth/setup',{ token,name:'tester',password:'test-password-only-123' });
     assert.equal(setup.status,200); const cookie = setup.headers.get('set-cookie')!.split(';')[0];
     assert.match(setup.headers.get('set-cookie')! ,/HttpOnly/); assert.match(setup.headers.get('set-cookie')!,/SameSite=Strict/);
     assert.equal((await post('/projects',{},cookie)).status,200);
-    assert.ok(!(await readFile(path.join(directory,'auth.json'),'utf8')).includes('test-password-only-123'));
+    assert.ok(!(await readFile(path.join(directory,'auth.sqlite'))).includes(Buffer.from('test-password-only-123')));
     await post('/auth/logout',{},cookie); assert.equal((await post('/projects',{},cookie)).status,401);
     assert.equal((await post('/auth/setup',{token,name:'attacker',password:'test-password-only-123'})).status,409);
-  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); auth.close(); }
 });

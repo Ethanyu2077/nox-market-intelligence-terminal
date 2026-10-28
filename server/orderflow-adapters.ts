@@ -28,6 +28,7 @@ export function normalizeFlowTrade(market: ProjectMarket, row: Row, multiplier: 
 }
 
 export function orderFlowCapability(market: ProjectMarket) {
+  if(market.exchange==='upbit'||market.exchange==='bithumb')return {available:false,reason:'KRW spot REST only; excluded from USDT aggressor flow.'};
   if (market.quote !== 'USDT') return { available: false, reason: 'Only USDT pairs are comparable; no unverified FX conversion.' };
   if (market.exchange === 'mexc' && market.marketType === 'perpetual') return { available: false, reason: 'MEXC public deal feed has no documented stable event ID; reliable deduplication not verified. Flow excluded.' };
   return { available: true, reason: market.exchange === 'mexc' ? 'REST recent trades only; Protobuf spot WebSocket decoder not yet verified.' : 'Public aggressor trades; bounded REST recovery + WebSocket.' };
@@ -40,6 +41,7 @@ export async function verifiedFlowInstrument(market: ProjectMarket): Promise<Ins
   return instrument;
 }
 export async function recentFlowTrades(market: ProjectMarket, instrument: Instrument): Promise<FlowTrade[]> {
+  if(market.exchange==='upbit'||market.exchange==='bithumb')throw new Error('KRW spot does not support this USDT flow adapter');
   const symbol = encodeURIComponent(market.symbol), spot = market.marketType === 'spot';
   const urls = {
     binance: spot ? `https://api.binance.com/api/v3/aggTrades?symbol=${symbol}&limit=1000` : `https://fapi.binance.com/fapi/v1/aggTrades?symbol=${symbol}&limit=1000`,

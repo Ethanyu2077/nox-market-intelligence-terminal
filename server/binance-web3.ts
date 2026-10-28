@@ -2,6 +2,7 @@ import type { MarketProject } from "../shared/types.ts";
 import type {
   DefiProduct,
   Web3Candle,
+  Web3Advanced,
   Web3Interval,
   Web3Market,
   Web3Pool,
@@ -172,6 +173,13 @@ export function normalizeDefiProducts(
     ];
   });
 }
+export function normalizeWeb3Advanced(value: unknown): Web3Advanced {
+  const r = row(value);
+  const fields = ['top10', 'dev', 'smartMoney', 'kol', 'bundler', 'pro', 'freshWallet', 'sniper', 'insider'];
+  return { holders: positive(r.holders), creatorAddress: text(r.creatorAddress),
+    holdingPercent: Object.fromEntries(fields.map(key => { const n = numeric(r[key + 'HoldingPercent']); return [key, n != null && n >= 0 && n <= 100 ? n : null]; })),
+    tags: Array.isArray(r.tokenTags) ? r.tokenTags.filter((v): v is string => typeof v === 'string').slice(0, 50) : [] };
+}
 const DEFI_CHAINS = new Set([
   "1",
   "56",
@@ -227,6 +235,7 @@ export class BinanceWeb3Service {
       interval,
       generatedAt: Date.now(),
       configured: this.configured,
+      advanced: blocked(),
       market: blocked(),
       candles: blocked(),
       pools: blocked(),
@@ -254,6 +263,7 @@ export class BinanceWeb3Service {
       );
       if (!supported) {
         for (const field of [
+          "advanced",
           "market",
           "candles",
           "pools",
@@ -266,6 +276,7 @@ export class BinanceWeb3Service {
     } catch (e) {
       const reason = e instanceof Web3Error ? e.code : "upstream-unavailable";
       for (const field of [
+        "advanced",
         "market",
         "candles",
         "pools",
@@ -352,12 +363,18 @@ export class BinanceWeb3Service {
             }>("unsupported", "defi-chain-unsupported"),
           );
     [
+      result.advanced,
       result.market,
       result.candles,
       result.pools,
       result.earn,
       result.liquidity,
     ] = await Promise.all([
+      section(() => this.client.request('/api/v1/dex/market/token/advanced-info', identity), data => {
+        const r = row(data);
+        if (r.binanceChainId !== chainId || (chainId === 'CT_501' ? r.tokenContractAddress !== address : text(r.tokenContractAddress)?.toLowerCase() !== address!.toLowerCase())) throw new Web3Error('identity-mismatch');
+        return normalizeWeb3Advanced(data);
+      }, v => v.holders == null && !v.tags.length && Object.values(v.holdingPercent).every(n => n == null)),
       section(
         () => this.client.request("/api/v1/dex/market/price-info", [identity]),
         (data) => normalizeWeb3Market(exact(data)),

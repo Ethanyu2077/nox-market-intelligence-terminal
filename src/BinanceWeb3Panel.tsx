@@ -242,7 +242,7 @@ export function BinanceWeb3Panel({
     </p>
   );
   return (
-    <section className="ops-panel web3-research">
+    <section className="ops-panel web3-research" id="binance-web3-panel">
       <h2>
         Binance Web3 · {zh ? "链上行情与 DeFi" : "On-chain markets & DeFi"}
       </h2>

@@ -10,13 +10,16 @@ import { EXCHANGE_IDS, type ExchangeId } from '../shared/types.ts';
 import { FileStore } from './store.ts';
 import { getProjectOnchainSnapshot } from './dexpaprika.ts';
 import {BinanceWeb3Service} from './binance-web3.ts';
+import {koreanSpot} from './korean-spot.ts';
+import {CoinGlassService,CoinGlassClient} from './coinglass.ts';
+import {ProviderCredentials,installProviderSettings} from './provider-credentials.ts';
 import {BinanceExchangeService} from './binance-exchange.ts';
 import { analyzeResearch, READ_ONLY_TOOLS, signalsFromSnapshots } from './research.ts';
 import { SignalRegistry } from './signal-registry.ts';
 import { addAiHypotheses } from './research-ai.ts';
 import { OrderFlowService } from './orderflow-service.ts';
 import { HistoryStore } from './history-store.ts';
-import { AuthStore } from './auth.ts';
+import { AuthStore, defaultAuthDirectory } from './auth.ts';
 import { ProjectCollector } from './collector.ts';
 import { flowKey } from './orderflow-calculations.ts';
 import { signalLab } from './regime.ts';
@@ -33,6 +36,8 @@ const store = new FileStore(process.env.DATA_DIR ?? '.data');
 await store.init();
 const signalRegistry = new SignalRegistry(process.env.DATA_DIR ?? '.data');
 const dataDirectory = process.env.DATA_DIR ?? '.data';
+const providerCredentials=new ProviderCredentials(defaultAuthDirectory());await providerCredentials.init();
+let coinglass=new CoinGlassService(new CoinGlassClient(providerCredentials.get('coinglass')??process.env.COINGLASS_API_KEY??''));
 const binanceWeb3=new BinanceWeb3Service();
 const binanceExchange=new BinanceExchangeService();
 const history = new HistoryStore(dataDirectory, process.env.DATABASE_URL);
@@ -53,7 +58,8 @@ app.use((req, res, next) => {
 });
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
 app.use(express.json({ limit: '100kb' }));
-const auth = new AuthStore(dataDirectory); await auth.init(); auth.install(app);
+const auth = new AuthStore(defaultAuthDirectory(), dataDirectory); await auth.init(); auth.install(app);
+installProviderSettings(app,auth,providerCredentials,key=>{coinglass=new CoinGlassService(new CoinGlassClient(key));});
 collector.start();
 
 const exchangeSchema = z.enum(EXCHANGE_IDS);
@@ -145,6 +151,7 @@ app.get('/api/instruments', safe(async (req, res) => { const q = String(req.quer
 app.get('/api/projects', (_req, res) => res.json({ items: store.getProjects(true), selectedProjectId: store.getSelectedProjectId() }));
 app.post('/api/projects/discover', safe(async (req, res) => { const body = z.object({ query: z.string().trim().min(1).max(100) }).parse(req.body); res.json(await discoverAcrossExchanges(body.query)); }));
 app.get('/api/projects/:id/venues', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await projectVenueSnapshots(project.markets)); }));
+app.get('/api/projects/:id/korean-spot',safe(async(req,res)=>{const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}res.json(await koreanSpot.project(project));}));
 app.get('/api/projects/:id/binance',safe(async(req,res)=>{const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}res.json(await binanceExchange.project(project));}));
 app.get('/api/projects/:id/onchain', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await getProjectOnchainSnapshot(project)); }));
 app.get('/api/projects/:id/web3',safe(async(req,res)=>{
@@ -153,13 +160,20 @@ app.get('/api/projects/:id/web3',safe(async(req,res)=>{
   if(!query.success){res.status(400).json({error:{message:'Invalid Web3 query'}});return;}
   res.json(await binanceWeb3.project(project,query.data.interval,query.data.page));
 }));
+app.get('/api/coinglass/capabilities',(_req,res)=>res.json({provider:'CoinGlass',configured:coinglass.configured,mode:'read-only',identity:'symbol-only',liveVerified:false}));
+app.get('/api/projects/:id/coinglass',safe(async(req,res)=>{
+  const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}
+  const range=z.enum(['4h','12h','24h']).safeParse(req.query.range??'24h');if(!range.success){res.status(400).json({error:{message:'Invalid liquidation range'}});return;}
+  const history=z.enum(['1h','4h','1d']).optional().safeParse(req.query.history);if(!history.success){res.status(400).json({error:{message:'Invalid history interval'}});return;}
+  res.json(await coinglass.project(project,range.data,history.data));
+}));
 app.get('/api/web3/capabilities',(_req,res)=>res.json({provider:'Binance Web3',configured:binanceWeb3.configured,mode:'read-only',signing:'server-side HMAC-SHA256',wallets:false,trading:false,publishing:false}));
 app.get('/api/projects/:id/research-context', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; }
-  const [centralizedMarkets, onchain, web3] = await Promise.all([projectVenueSnapshots(project.markets), getProjectOnchainSnapshot(project),binanceWeb3.project(project)]);
+  const [centralizedMarkets, onchain, web3, coinGlass, koreanSpotData] = await Promise.all([projectVenueSnapshots(project.markets), getProjectOnchainSnapshot(project),binanceWeb3.project(project),coinglass.project(project),koreanSpot.project(project)]);
   res.json({
-    schemaVersion: 'nox.research-context.v1', generatedAt: Date.now(), project, centralizedMarkets, onchain,web3,
+    schemaVersion: 'nox.research-context.v1', generatedAt: Date.now(), project, centralizedMarkets, onchain,web3,coinglass:coinGlass,koreanSpot:koreanSpotData,
     interpretationBoundaries: [
       'Observed market data and inferred analytical labels are distinct fields.',
       'Open interest does not reveal long/short ownership or whether positions are opening or closing.',
@@ -202,6 +216,6 @@ if (process.env.NODE_ENV === 'production') {
 }
 const server = app.listen(port, '127.0.0.1', () => console.log(`NOX API listening on http://127.0.0.1:${port}`));
 let shuttingDown = false;
-const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); server.close(); server.closeAllConnections(); process.exit(0); };
+const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

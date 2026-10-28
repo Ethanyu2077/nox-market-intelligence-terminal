@@ -63,6 +63,7 @@ function normalize(exchange: Exclude<ExchangeId, 'binance'>, message: Record<str
 }
 
 function openExchangeStreamRaw(exchange: ExchangeId, symbol: string, onEvent: EventHandler, onState: StateHandler) {
+  if(exchange==='upbit'||exchange==='bithumb'){onState('degraded','KRW spot REST only; derivatives WebSocket is unavailable');return ()=>{};}
   if (exchange === 'binance') return openMarketStream(symbol, onEvent, onState);
   let socket: WebSocket | undefined; let stopped = false; let retry = 1_000; let reconnectTimer: NodeJS.Timeout | undefined; let pingTimer: NodeJS.Timeout | undefined;
   const seen = new Set<string>(); const order: string[] = [];

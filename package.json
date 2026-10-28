@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "history:policy": "node --import tsx server/history-maintenance.ts",
-    "dev": "concurrently -k -n api,web -c cyan,white \"node --import tsx server/index.ts\" \"vite --host 127.0.0.1\"",
-    "dev:api": "node --import tsx server/index.ts",
+    "dev": "concurrently -k -n api,web -c cyan,white \"node server/start.mjs\" \"vite --host 127.0.0.1\"",
+    "dev:api": "node server/start.mjs",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "start": "NODE_ENV=production node --import tsx server/index.ts",
+    "start": "NODE_ENV=production node server/start.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc -b --pretty false",
-    "lint": "eslint . --max-warnings 0"
+    "lint": "eslint . --max-warnings 0",
+    "auth:setup-token": "node --import tsx server/auth-setup.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -45,5 +46,8 @@
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5"
+  },
+  "engines": {
+    "node": ">=22.13.0"
   }
 }

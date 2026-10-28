@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import AuthDialog from './AuthDialog';
 import type { MarketProject } from '../shared/types';
 import type { RegimeSignal } from '../server/regime';
 
@@ -28,13 +29,19 @@ async function request<T>(url: string, body?: unknown): Promise<T> {
 }
 export function AccessBar({ language }: { language: string }) {
   const zh = language === 'zh';
-  const [status, setStatus] = useState<{ user: { name: string; role: string } | null; setupRequired: boolean } | null>(null);
-  const [open, setOpen] = useState(false), [name, setName] = useState(''), [password, setPassword] = useState(''), [token, setToken] = useState(''), [error, setError] = useState('');
-  const refresh = useCallback(() => { void request<typeof status>('/auth/status').then(setStatus).catch(() => setError(zh ? '认证状态不可用' : 'Authentication unavailable')); }, [zh]);
-  useEffect(() => { refresh(); const show = () => { setOpen(true); refresh(); }; window.addEventListener('nox:auth-required', show); return () => window.removeEventListener('nox:auth-required', show); }, [refresh]);
-  const submit = async (event: React.FormEvent) => { event.preventDefault(); setError(''); try { await request(status?.setupRequired ? '/auth/setup' : '/auth/login', { name, password, ...(status?.setupRequired ? { token } : {}) }); setPassword(''); setToken(''); setOpen(false); refresh(); } catch (e) { setError(String(e)); } };
-  return <section className="ops-access"><div><span>{status?.user ? `${status.user.name} · ${status.user.role}` : zh ? '只读访问 · 修改项目需要登录' : 'Read-only · sign in to change projects'}</span><button onClick={() => status?.user ? void request('/auth/logout', {}).then(refresh) : setOpen(!open)}>{status?.user ? zh ? '退出' : 'Sign out' : zh ? '登录 / 初始化' : 'Sign in / setup'}</button></div>
-    {open && <form onSubmit={submit}>{status?.setupRequired && <><p>{zh ? '首次初始化：从本机 .data/bootstrap-token.txt 读取令牌。请勿分享令牌或把它打包发布。密码至少 12 位。' : 'First setup: use the local .data/bootstrap-token.txt token. Never share or package it. Password: at least 12 characters.'}</p><input aria-label={zh ? '初始化令牌' : 'Setup token'} type="password" value={token} onChange={e => setToken(e.target.value)} required placeholder={zh ? '初始化令牌' : 'Setup token'} autoComplete="off"/></>}<input aria-label={zh ? '用户名' : 'Username'} value={name} onChange={e => setName(e.target.value)} required placeholder={zh ? '用户名' : 'Username'} autoComplete="username"/><input aria-label={zh ? '密码' : 'Password'} type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder={zh ? '密码' : 'Password'} autoComplete={status?.setupRequired ? 'new-password' : 'current-password'}/><button type="submit">{zh ? '确认' : 'Confirm'}</button></form>}{error && <p role="alert">{error}</p>}
+  const [status, setStatus] = useState<{ user: { name: string; role: string } | null } | null>(null);
+  const [error,setError] = useState('');
+  const [open,setOpen] = useState(false);
+  const refresh = useCallback(() => { void request<typeof status>('/auth/status').then(value=>{setStatus(value);window.dispatchEvent(new Event('nox:auth-changed'));}).catch(() => setError(zh ? '认证状态不可用' : 'Authentication unavailable')); }, [zh]);
+  useEffect(() => {
+    refresh();
+    const login=()=>{setOpen(true);};
+    window.addEventListener('nox:auth-required',login);
+    return()=>window.removeEventListener('nox:auth-required',login);
+  },[refresh]);
+  return <section className="ops-access"><div><span>{status?.user ? `${status.user.name} · ${status.user.role}` : zh ? '只读访问 · 修改项目需要登录' : 'Read-only · sign in to change projects'}</span>
+    <button onClick={()=>status?.user?void request('/auth/logout',{}).then(refresh).catch(()=>setError(zh?'退出失败，请重试':'Sign out failed; please retry')):setOpen(true)}>{status?.user?(zh?'退出':'Sign out'):(zh?'登录':'Sign in')}</button>
+    </div>{error&&<p role="alert">{error}</p>}{open&&<AuthDialog language={language} onClose={()=>setOpen(false)} onSuccess={refresh}/>}
   </section>;
 }
 

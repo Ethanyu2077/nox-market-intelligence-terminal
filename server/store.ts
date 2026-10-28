@@ -96,7 +96,7 @@ export class FileStore {
   }
   private assertMarkets(markets: ProjectMarket[], primaryMarketId: string) {
     if (!markets.length) throw new Error('Select at least one market');
-    if (!markets.some((market) => market.id === primaryMarketId)) throw new Error('Primary market must be selected');
+    if (!markets.some((market) => market.id === primaryMarketId && market.marketType === 'perpetual' && market.quote === 'USDT')) throw new Error('Primary market must be a selected USDT perpetual');
     if (!markets.some((market) => market.marketType === 'perpetual')) throw new Error('Phase 1 requires at least one USDT perpetual market');
   }
   private persist() {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { aggregateSnapshots, computeExchangeContribution, detectCrossExchangeInsights, normalizeContractQuantity } from '../server/exchanges.ts';
+import { normalizeExchangeMessage } from '../server/exchange-streams.ts';
 import type { VenueMarketSnapshot } from '../shared/types.ts';
 
 function row(values: Partial<VenueMarketSnapshot>): VenueMarketSnapshot {
@@ -70,4 +71,19 @@ test('cross-exchange insights disclose concentration as inference with coverage 
 test('a single covered venue is not misclassified as cross-exchange concentration', () => {
   const rows = [row({ exchange: 'binance', volume24hUsd: 900, oiUsd: 900, fundingRate: 0.0001, price: 100 })];
   assert.deepEqual(detectCrossExchangeInsights(rows, computeExchangeContribution(rows, 1)), []);
+});
+
+
+test('OKX ticker WS quote notional is derived from live base volume because volCcyQuote24h is absent', () => {
+  const events = normalizeExchangeMessage('okx', { arg: { channel: 'tickers' }, data: [{ last: '2.5', open24h: '2.0', volCcy24h: '1000', ts: '1793199060000' }] }) as Array<Record<string, unknown>>;
+  assert.equal(events.length, 1);
+  assert.equal(events[0].volumeBase, 1000);
+  assert.equal(events[0].volumeUsd, 2500);
+});
+test('KuCoin ticker frames without a price never advance a fresh-looking frozen ticker', () => {
+  const v2 = normalizeExchangeMessage('kucoin', { topic: '/contractMarket/tickerV2:XBTUSDTM', data: { ts: 1_793_199_060_000_000_000 } }) as Array<Record<string, unknown>>;
+  assert.equal(v2.length, 0, 'tickerV2 has no price field, so it must not emit a ticker');
+  const v1 = normalizeExchangeMessage('kucoin', { topic: '/contractMarket/ticker:XBTUSDTM', data: { price: '80595.3', ts: 1_793_199_060_000_000_000 } }) as Array<Record<string, unknown>>;
+  assert.equal(v1.length, 1);
+  assert.equal(v1[0].price, 80595.3);
 });

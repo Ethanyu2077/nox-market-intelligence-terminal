@@ -20,3 +20,4 @@ Official endpoints/docs:
 - https://apidocs.bithumb.com/reference/거래-대상-목록-조회
 - https://apidocs.bithumb.com/reference/현재가-조회
 - https://apidocs.bithumb.com/reference/호가-조회
+

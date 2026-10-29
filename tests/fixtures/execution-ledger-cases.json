@@ -1,0 +1,47 @@
+{
+  "ledger": [
+    {
+      "name": "fixed-quantity short 100 to 50 is +50% not +100%",
+      "input": { "side": "short", "quantity": 1, "entryPrice": 100, "exitPrice": 50 },
+      "expect": { "priceReturnPct": -50, "directionalGrossPct": 50, "grossPnlQuote": 50, "netPnlQuote": 50, "notionalReturnPct": 50 }
+    },
+    {
+      "name": "short 100 to 110 loses 10% of notional",
+      "input": { "side": "short", "quantity": 2, "entryPrice": 100, "exitPrice": 110, "contractMultiplier": 1 },
+      "expect": { "priceReturnPct": 10, "directionalGrossPct": -10, "grossPnlQuote": -20, "notionalReturnPct": -10 }
+    },
+    {
+      "name": "long 100 to 110 gains 10%",
+      "input": { "side": "long", "quantity": 1, "entryPrice": 100, "exitPrice": 110 },
+      "expect": { "priceReturnPct": 10, "directionalGrossPct": 10, "grossPnlQuote": 10, "notionalReturnPct": 10 }
+    }
+  ],
+  "fees": [
+    {
+      "name": "fees cover a tiny long gain and produce a loss",
+      "input": { "side": "long", "quantity": 1, "entryPrice": 100, "exitPrice": 100.05, "feeBpsPerSide": 5, "slippageBpsPerSide": 0 },
+      "expect": { "netPnlQuote": -0.050025, "notionalReturnPct": -0.050025 }
+    }
+  ],
+  "funding": [
+    { "name": "negative rate: short pays", "input": { "side": "short", "quantity": 10, "markPrice": 100, "rate": -0.01 }, "expectCash": -10 },
+    { "name": "positive rate: long pays", "input": { "side": "long", "quantity": 10, "markPrice": 100, "rate": 0.01 }, "expectCash": -10 },
+    { "name": "positive rate: short receives", "input": { "side": "short", "quantity": 10, "markPrice": 100, "rate": 0.01 }, "expectCash": 10 }
+  ],
+  "equity": [
+    { "name": "zero trades has no win rate", "initialCapital": 100000, "trades": [], "expect": { "finalEquity": 100000, "winRatePct": null, "maxDrawdownPct": 0 } },
+    { "name": "loss then gain drawdown is peak-to-trough", "initialCapital": 100000, "trades": [{ "netPnlQuote": -5000 }, { "netPnlQuote": 8000 }], "expect": { "finalEquity": 103000, "winRatePct": 50, "maxDrawdownPct": 5 } }
+  ],
+  "capital": [
+    {
+      "name": "second overlapping position rejected beyond capital",
+      "capital": 10000,
+      "maxLeverage": 1,
+      "trades": [
+        { "entryNotional": 8000, "entryTime": 1, "exitTime": 5 },
+        { "entryNotional": 8000, "entryTime": 2, "exitTime": 6 }
+      ],
+      "expect": { "accepted": [0], "rejected": [1] }
+    }
+  ]
+}

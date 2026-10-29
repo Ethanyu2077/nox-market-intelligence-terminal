@@ -17,7 +17,7 @@ export type { HistoryEvent } from "../shared/history.ts";
 import type { HistoryEvent } from "../shared/history.ts";
 import type {RegimeReport} from '../shared/regime-v2.ts';
 
-const KINDS = ["trade", "liquidation", "snapshot", "regime"] as const;
+const KINDS = ["trade", "liquidation", "snapshot", "regime", "volume", "alignment"] as const;
 type Link = {
   projectId: string;
   marketKey: string;
@@ -224,7 +224,7 @@ export class HistoryStore {
       await readdir(path.join(this.directory, "history"))
     ).sort())
       if (
-        /^\d{4}-\d{2}-\d{2}-(trade|liquidation|snapshot|regime)\.ndjson$/.test(
+        /^\d{4}-\d{2}-\d{2}-(trade|liquidation|snapshot|regime|volume|alignment)\.ndjson$/.test(
           name,
         ) &&
         (!kind || name.endsWith(`-${kind}.ndjson`))

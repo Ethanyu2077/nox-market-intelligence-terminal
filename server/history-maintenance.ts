@@ -1,3 +1,5 @@
+import {loadLocalEnv} from "./env.ts";
+loadLocalEnv();
 import { Pool } from "pg";
 import { historyPolicy } from "./history-policy.ts";
 

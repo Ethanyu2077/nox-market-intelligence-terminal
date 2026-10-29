@@ -36,6 +36,24 @@ Independent, project-based crypto market monitoring for user-selected external t
 - A versioned `nox.research-context.v1` JSON export that packages the project identity, CEX snapshots, on-chain context, evidence-backed inferences, nulls and methodology for downstream AI/MCP research workflows.
 - Persistent project identity, selected markets, ordering and monitoring preferences in the local atomic data store.
 - Explicit source, units, timestamps, coverage boundaries and missing-data states.
+- Per-venue spot vs perpetual 24h turnover matrix (rolling as-of counters; USDT totals only, non-USDT quotes excluded without FX conversion) with a coverage gate and no cross-leg summation.
+- Local volume-matrix records persisted as an explicit `volume` history kind, with per-venue spot/perp share deltas (descriptive only; Active 30s / Standard 5m sampling; no event-time alignment).
+- Upbit/Bithumb KRW spot turnover is displayed in a separate KRW block with KRW-only shares; KRW is never converted to USD or added to USDT totals (no reliable timestamped FX source).
+- Local event-time trade-tape volume bars (1m/5m/15m/1h/4h) per venue and market type, with explicit bucket completeness and gaps; USDT tape only, KRW stays in the KRW block.
+- Event-time volume buckets carry both quote notional and normalized base quantity (per side), so a venue's tape can be checked against its own traded price.
+- Volume rows expose perpetual turnover/OI and heuristic quality flags (stale/partial legs, turnover-vs-OI outlier vs covered-venue median, wide basis); flags point to legs for manual inspection and are not wash-trading proof.
+- Event-time buckets also carry base-weighted VWAP, price high/low and the largest single print, so tape rows can be read as price-impact context rather than volume alone.
+- Multi-timeframe alignment (1m/5m/15m/1h/4h) over synchronized OI windows: a directional claim requires ≥3 valid agreeing timeframes; conflicts or missing complete flow produce an explicit refusal instead of a vote.
+- Alignment claims are persisted as a local `alignment` history kind and shown as a claim timeline (state counts, allowed/refused, last change); performance/outcome statistics are explicitly not claimed until a dedicated event study exists.
+- Alignment outcome study (15m/60m/240m/1440m): only allowed claims, post-event entry, half-horizon minimum exit, configurable cost, placebo baseline, censored samples counted, and NO hit rate below 20 resolved samples.
+- Local collection coverage panel: samples the journal per stream (snapshot/volume/alignment/trade), reports last-ingest age, ingest gaps and live/partial/stale/empty state so an empty interface is not mistaken for working collection.
+- Venue coverage panel: from persisted volume records, shows per exchange whether spot/perpetual legs actually returned, their last quality and request failure counts; missing legs are explicit (spot-only/perp-only/missing).
+- See `audit/FINAL_DELIVERY_INDEX.md` in the handoff workspace for the full incremental change/verification index (16+ batches, endpoints, evidence, remaining items).
+- R17 review fixes (2026-10-29): direction-adjusted cost/hit math, point-in-time OI/flow baselines, decision-availableAt for outcomes, withheld-aware watchlist, read-only research GET, NAV/position-flow entry.
+- Shared execution ledger (`shared/execution-ledger.ts`): fixed-base long/short P&L, fees, adverse slippage, settled funding cash, notional return vs margin ROI, equity curve and capital-capped allocation; golden fixtures are also consumed by the ORDER case Python backtest so formulas cannot diverge.
+- Timeframe freshness is interval-aware: one closed candle period plus a 5m collection lag (future timestamps are refused), instead of a fixed 15m threshold that made normal 1h/4h windows look stale.
+- Institutional terminal UI: grayscale-first shell, tabular monospace numbers, dense instrument-style tables/panels, a UTC+8 clock, light-theme contrast fixes, mobile topbar cleanup and compact provider/settings cards.
+- UI hardening: locale-aware relative timestamps (no English leakage in zh), heartbeat events keep an idle-but-open stream from flipping to STALE, and cross-venue cards show coverage unavailable instead of fabricated 0/0 values.
 
 ## Run locally
 
@@ -43,6 +61,7 @@ Requires Node.js 22.13+.
 
 ```bash
 npm install
+cp .env.example .env   # optional; the API loads .env automatically (real env vars win)
 npm run dev
 ```
 

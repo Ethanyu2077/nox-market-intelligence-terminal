@@ -172,8 +172,10 @@ export async function marketSeries(symbol: string, interval = '5m', limit = 120)
       methodology: {
         oiSpikeRule: 'Robust modified z-score using median absolute deviation; spike threshold |score| ≥ 3.5.',
         volumeDeltaRule: 'Aggressor buy notional minus aggressor sell notional from Binance buyer-maker flag.',
-        classificationRule: 'Price direction + base-unit OI delta + available aggressive flow; classifications are probabilistic.',
-        oneMinuteOiNotice: interval === '1m' ? 'Binance historical OI is available at 5m minimum; 1m price/flow panels use 1m data while OI panels retain authoritative 5m timestamps.' : null,
+        classificationRule: 'Price direction + base-unit OI delta + synchronised aggressive flow; labels are probabilistic hypotheses, never observed position changes.',
+        evidenceGateRule: 'A label is asserted only when the OI window, closing-candle price window and >=80% aggressor-flow bucket coverage all exist. Liquidation labels additionally require per-event liquidation data and absorption labels require sequence-correct L2 depth; both are withheld in this version.',
+        reliabilityRule: 'Gross direction is descriptive, compared with a same-window baseline and chronological holdout (not true out-of-sample). A separate unified-ledger scenario applies assumed 5bps fees and 1bps slippage per side; funding and account constraints unavailable. Completed contiguous outcomes only.',
+        oneMinuteOiNotice: interval === '1m' ? 'Binance historical OI is available at 5m minimum; 1m price/flow panels use 1m data while OI panels retain authoritative 5m timestamps and OI windows are aligned to closing candles.' : null,
         forwardHorizonBars: 3
       }
     },

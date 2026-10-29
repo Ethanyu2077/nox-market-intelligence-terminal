@@ -59,3 +59,4 @@ test('CoinGlass on-demand histories send explicit USD and intervals without mixi
   const initial=await service.project(project);assert.equal(initial.history,undefined);assert.equal(paths.some(p=>p.endsWith('aggregated-history')),false);
   const result=await service.project(project,'24h','4h');assert.equal(result.history?.oi.state,'available');assert.equal(result.history?.funding.state,'available');assert.equal(result.flow.data?.[0].deltaUsd,0);
 });
+

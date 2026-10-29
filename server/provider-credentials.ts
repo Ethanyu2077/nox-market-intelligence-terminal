@@ -66,3 +66,4 @@ export function installProviderSettings(app:Express,auth:AuthStore,store:Provide
     catch(error){const reason=error instanceof Error&&/^(authentication-failed|permission-or-plan-restricted|rate-limited|network-unavailable|invalid-response|upstream-rejected|upstream-\d+)$/.test(error.message)?error.message:'upstream-unavailable';if(testing===client)lastTest={state:'error',reason,checkedAt:Date.now()};res.status(502).json({error:{message:reason}});}
   });
 }
+

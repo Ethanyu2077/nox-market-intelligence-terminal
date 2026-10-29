@@ -15,7 +15,7 @@ async function kucoinSubscription(symbol: string): Promise<Subscription> {
   if (!token || !endpoint) throw new Error('KuCoin WebSocket token unavailable');
   const id = `${Date.now()}`;
   return { url: `${endpoint}?token=${encodeURIComponent(token)}&connectId=${id}`, messages: [
-    { id: `${id}-ticker`, type: 'subscribe', topic: `/contractMarket/tickerV2:${symbol}`, privateChannel: false, response: true },
+    { id: `${id}-ticker`, type: 'subscribe', topic: `/contractMarket/ticker:${symbol}`, privateChannel: false, response: true },
     { id: `${id}-trade`, type: 'subscribe', topic: `/contractMarket/execution:${symbol}`, privateChannel: false, response: true }
   ], ping: { id, type: 'ping' } };
 }
@@ -30,7 +30,7 @@ async function subscription(exchange: Exclude<ExchangeId, 'binance'>, symbol: st
 }
 
 function n(value: unknown) { if (value == null || value === '') return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null; }
-function normalize(exchange: Exclude<ExchangeId, 'binance'>, message: Record<string, unknown>, contractMultiplier = 1) {
+export function normalizeExchangeMessage(exchange: Exclude<ExchangeId, 'binance'>, message: Record<string, unknown>, contractMultiplier = 1) {
   const output: unknown[] = []; const data = message.data as Record<string, unknown> | Array<Record<string, unknown>> | undefined;
   if (exchange === 'bybit') {
     const topic = String(message.topic ?? ''); const rows = Array.isArray(data) ? data : data ? [data] : [];
@@ -39,7 +39,7 @@ function normalize(exchange: Exclude<ExchangeId, 'binance'>, message: Record<str
   } else if (exchange === 'okx') {
     const arg = message.arg as Record<string, unknown> | undefined; const rows = Array.isArray(data) ? data : [];
     if (arg?.channel === 'trades') for (const row of rows) output.push({ kind: 'trade', id: row.tradeId, price: n(row.px), quantity: n(row.sz) == null ? null : n(row.sz)! * contractMultiplier, side: row.side, time: n(row.ts) });
-    if (arg?.channel === 'tickers' && rows[0]) { const last = n(rows[0].last), open = n(rows[0].open24h); output.push({ kind: 'ticker', price: last, change24hPct: last != null && open ? (last / open - 1) * 100 : null, volumeBase: n(rows[0].volCcy24h), volumeUsd: n(rows[0].volCcyQuote24h), eventTime: n(rows[0].ts) ?? Date.now() }); }
+    if (arg?.channel === 'tickers' && rows[0]) { const last = n(rows[0].last), open = n(rows[0].open24h), baseVolume = n(rows[0].volCcy24h); output.push({ kind: 'ticker', price: last, change24hPct: last != null && open ? (last / open - 1) * 100 : null, volumeBase: baseVolume, volumeUsd: baseVolume != null && last != null ? baseVolume * last : n(rows[0].volCcyQuote24h), eventTime: n(rows[0].ts) ?? Date.now() }); }
     if (arg?.channel === 'open-interest' && rows[0]) output.push({ kind: 'openInterest', oiBase: n(rows[0].oiCcy), oiUsd: n(rows[0].oiUsd), eventTime: n(rows[0].ts) ?? Date.now() });
     if (arg?.channel === 'funding-rate' && rows[0]) output.push({ kind: 'funding', fundingRate: n(rows[0].fundingRate), nextFundingTime: n(rows[0].nextFundingTime), eventTime: n(rows[0].ts) ?? Date.now() });
   } else if (exchange === 'bitget') {
@@ -53,7 +53,7 @@ function normalize(exchange: Exclude<ExchangeId, 'binance'>, message: Record<str
   } else if (exchange === 'kucoin') {
     const topic = String(message.topic ?? ''); const row = data && !Array.isArray(data) ? data : undefined;
     if (topic.includes('execution') && row) output.push({ kind: 'trade', id: row.tradeId ?? row.sequence, price: n(row.price), quantity: n(row.size) == null ? null : n(row.size)! * contractMultiplier, side: row.side, time: n(row.ts) ? n(row.ts)! / 1_000_000 : Date.now() });
-    if (topic.includes('ticker') && row) output.push({ kind: 'ticker', price: n(row.price), eventTime: n(row.ts) ? n(row.ts)! / 1_000_000 : Date.now() });
+    if (topic.includes('ticker') && row) { const price = n(row.price ?? row.lastTradePrice); if (price != null) output.push({ kind: 'ticker', price, eventTime: n(row.ts) ? n(row.ts)! / 1_000_000 : Date.now() }); }
   } else {
     const channel = String(message.channel ?? ''); const row = data && !Array.isArray(data) ? data : undefined;
     if (channel.includes('deal')) { const deals = Array.isArray(data) ? data : (row?.deals as Array<Record<string, unknown>> ?? []); for (const deal of deals) output.push({ kind: 'trade', id: deal.i ?? deal.id ?? `${deal.t}:${deal.p}:${deal.v}`, price: n(deal.p), quantity: n(deal.v) == null ? null : n(deal.v)! * contractMultiplier, side: Number(deal.T ?? deal.S) === 1 ? 'Buy' : 'Sell', time: (n(deal.t) ?? Date.now()) }); }
@@ -82,7 +82,7 @@ function openExchangeStreamRaw(exchange: ExchangeId, symbol: string, onEvent: Ev
       });
       socket.on('message', (raw) => {
         if (raw.toString() === 'pong') return;
-        try { const message = JSON.parse(raw.toString()) as Record<string, unknown>; for (const event of normalize(exchange, message, multiplier)) { const row = event as Record<string, unknown>; if (row.kind === 'trade') { const id = String(row.id); if (seen.has(id)) continue; seen.add(id); order.push(id); if (order.length > 2_048) seen.delete(order.shift()!); } onEvent({ exchange, stream: row.kind, data: row }); } } catch { onState('degraded', 'Invalid upstream payload'); }
+        try { const message = JSON.parse(raw.toString()) as Record<string, unknown>; for (const event of normalizeExchangeMessage(exchange, message, multiplier)) { const row = event as Record<string, unknown>; if (row.kind === 'trade') { const id = String(row.id); if (seen.has(id)) continue; seen.add(id); order.push(id); if (order.length > 2_048) seen.delete(order.shift()!); } onEvent({ exchange, stream: row.kind, data: row }); } } catch { onState('degraded', 'Invalid upstream payload'); }
       });
       socket.on('error', (error) => onState('degraded', error.message));
       socket.on('close', () => { if (pingTimer) clearInterval(pingTimer); if (stopped) return; onState('stale', `Reconnecting in ${Math.round(retry / 1000)}s`); reconnectTimer = setTimeout(() => void connect(), retry); retry = Math.min(retry * 2, 30_000); });

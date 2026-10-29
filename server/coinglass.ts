@@ -101,3 +101,4 @@ export class CoinGlassService {
     return result;
   }
 }
+

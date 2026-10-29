@@ -268,15 +268,19 @@ export interface CandlePoint {
 }
 
 export interface LinePoint { time: number; value: number }
-export interface CvdPoint extends LinePoint { delta: number; buyNotional: number; sellNotional: number }
+// `complete` is false when the venue/API window cuts the bucket (first/last buckets of the returned
+// 1000-trade window are partial), so coverage gates cannot mistake truncated flow for full flow.
+export interface CvdPoint extends LinePoint { delta: number; buyNotional: number; sellNotional: number; complete: boolean }
 
 export interface OiDeltaPoint extends LinePoint {
   baseValue: number;
-  usdValue: number;
+  /** USD OI is null when the venue did not return sumOpenInterestValue for that timestamp. */
+  usdValue: number | null;
   deltaBase: number;
-  deltaUsd: number;
+  /** Null when either side of the USD OI pair is unavailable; never filled with zero. */
+  deltaUsd: number | null;
   pctBase: number;
-  pctUsd: number;
+  pctUsd: number | null;
   robustScore: number;
   spike: boolean;
 }
@@ -287,6 +291,8 @@ export interface VolumeFlowPoint extends LinePoint {
   deltaNotional: number;
   imbalancePct: number;
   deltaChangePct: number | null;
+  /** False when the bucket is truncated by the fetched trade-window boundary. */
+  complete: boolean;
 }
 
 export type PositionSignalType =
@@ -297,12 +303,32 @@ export type PositionSignalType =
   | 'market_absorption'
   | 'price_oi_delta_divergence';
 
+export type SignalStatus = 'hypothesis' | 'withheld';
+
+/** Explicit record of which required data actually existed when a label was produced. */
+export interface SignalCoverage {
+  /** Candle bars inside the OI window that the label should cover. */
+  expectedWindowBars: number;
+  /** Aggressor-flow buckets actually present inside that window. */
+  flowBars: number;
+  /** flowBars / expectedWindowBars; null when the window cannot be measured. */
+  flowCoveragePct: number | null;
+  /** Sequence-correct L2 depth is not collected in this version. */
+  depth: 'unavailable';
+  /** Per-event liquidations are not collected in this version. */
+  liquidationEvents: 'unavailable';
+}
+
 export interface PositionFlowSignal {
   id: string;
   time: number;
   type: PositionSignalType;
   label: string;
+  /** 'withheld' = pattern observed, but required data is missing so NO directional label is asserted. */
+  status: SignalStatus;
+  /** Rule score, never a calibrated probability. Kept explicit so the UI cannot call it a win rate. */
   confidence: number;
+  confidenceBasis: 'heuristic-rule-uncalibrated';
   priceChangePct: number;
   oiDeltaBase: number;
   oiDeltaPct: number;
@@ -310,18 +336,41 @@ export interface PositionFlowSignal {
   observed: string[];
   evidence: string[];
   counterevidence: string[];
+  /** Alternative explanations that the same observations are compatible with. */
+  alternatives: string[];
+  /** Concrete future observations that would invalidate the label. */
+  invalidation: string[];
+  /** Required data that was missing when the label was evaluated. */
+  missing: string[];
+  coverage: SignalCoverage;
+  withheldReason: string | null;
   freshness: Quality;
   inferenceNotice: string;
 }
 
 export interface BacktestResult {
+  execution?: {
+    version: 'nox-ledger-v1'; ruleVersion: 'position-flow-v3';
+    feeBpsPerSide: number; slippageBpsPerSide: number;
+    funding: 'unavailable'; samples: number;
+    averageNetBeforeFundingPct: number | null; positiveAfterCostsPct: number | null; basis: string;
+  };
   type: PositionSignalType;
   label: string;
   samples: number;
   resolvedSamples: number;
+  /** Signals of this type suppressed by evidence gates; never counted as hits. */
+  withheldSamples: number;
   hitRate: number | null;
   averageForwardReturnPct: number | null;
+  /** Unconditional same-direction hit rate of the fetched window (descriptive baseline). */
+  baselineHitRate: number | null;
+  /** hitRate - baselineHitRate in percentage points; null when either is unavailable. */
+  liftPct: number | null;
+  /** Last 30% of resolved signals by time, evaluated chronologically as a descriptive holdout. */
+  holdout: { samples: number; resolvedSamples: number; hitRate: number | null } | null;
   horizonBars: number;
+  edgeStatement: string;
   caveat: string;
 }
 
@@ -336,6 +385,8 @@ export interface PositionFlowAnalytics {
     oiSpikeRule: string;
     volumeDeltaRule: string;
     classificationRule: string;
+    evidenceGateRule: string;
+    reliabilityRule: string;
     oneMinuteOiNotice: string | null;
     forwardHorizonBars: number;
   };
@@ -362,15 +413,16 @@ export interface MarketSeries {
 
 export interface Overview {
   symbol: string;
-  price: number;
-  markPrice: number;
-  change24hPct: number;
-  volume24hBase: number;
-  volume24hUsd: number;
-  oiBase: number;
-  oiUsd: number;
-  fundingRate: number;
-  nextFundingTime: number;
+  /** Venue fields stay nullable: an unavailable metric is never substituted with zero. */
+  price: number | null;
+  markPrice: number | null;
+  change24hPct: number | null;
+  volume24hBase: number | null;
+  volume24hUsd: number | null;
+  oiBase: number | null;
+  oiUsd: number | null;
+  fundingRate: number | null;
+  nextFundingTime: number | null;
   cvdWindowDelta: number | null;
   cvdWindowFrom: number | null;
   eventTime: number;

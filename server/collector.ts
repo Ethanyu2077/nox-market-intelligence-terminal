@@ -1,5 +1,7 @@
 import type { MarketProject } from '../shared/types.ts';
 import { projectVenueSnapshots } from './exchanges.ts';
+import { buildVolumeRecord, fetchSpotLegs } from './volume-matrix.ts';
+import type { TimeframeAlignmentResponse } from '../shared/timeframe.ts';
 import { OrderFlowService } from './orderflow-service.ts';
 import { HistoryStore } from './history-store.ts';
 import { evaluateRegimeV2 } from './regime-v2.ts';
@@ -16,7 +18,8 @@ export class ProjectCollector {
   private timer?: NodeJS.Timeout;
   private running?: Promise<void>;
   private stopped = false;
-  constructor(private projects: () => MarketProject[], private flow: OrderFlowService, private history: HistoryStore, private snapshots = projectVenueSnapshots, private recorder?: RegimeRecorder, private afterSnapshot?: (project:MarketProject)=>void) {}
+  constructor(private projects: () => MarketProject[], private flow: OrderFlowService, private history: HistoryStore, private snapshots = projectVenueSnapshots, private recorder?: RegimeRecorder, private afterSnapshot?: (project:MarketProject)=>void, private spotVolumes = fetchSpotLegs, private alignmentRecorder?: (project: MarketProject) => Promise<TimeframeAlignmentResponse>) {}
+  private lastAlignment = new Map<string, number>();
   start() { void this.tick(); this.timer = setInterval(() => void this.tick(), 5000); }
   status() { return [...this.states.entries()].map(([projectId, value]) => ({ projectId, ...value })); }
   tick() {
@@ -44,6 +47,26 @@ export class ProjectCollector {
         const data = await this.snapshots(project.markets);
         const now = Date.now();
         for (const snapshot of data.snapshots) await this.history.append({ id: `${project.id}:${snapshot.exchange}:${snapshot.marketType}:${snapshot.symbol}:${now}`, kind: 'snapshot', marketKey: `${snapshot.exchange}:${snapshot.marketType}:${snapshot.symbol}`, projectId: project.id, eventTime: snapshot.eventTime, ingestTime: now, source: snapshot.source, quality: snapshot.quality, payload: snapshot });
+        // Persist the per-venue spot/perpetual turnover matrix so share migration can be studied
+        // over time. Spot legs are fetched once here; perpetual legs reuse the snapshots above.
+        const spotLegs = await this.spotVolumes(project);
+        const volumeRecord = buildVolumeRecord(project, spotLegs.legs, spotLegs.failures, data.snapshots, data.failures.map((failure) => ({ ...failure, marketType: 'perpetual' as const, quote: 'USDT' })), now);
+        await this.history.append({ id: `${project.id}:volume:${now}`, kind: 'volume', marketKey: `project:${project.id}`, projectId: project.id, eventTime: now, ingestTime: now, source: 'nox.volume-matrix.v1', quality: volumeRecord.claimGate.state === 'available' && !volumeRecord.failures.length ? 'live' : 'partial', payload: volumeRecord });
+        // Persist the multi-timeframe alignment claim (auditable timeline of allowed/refused judgments).
+        // Optional recorder: production passes timeframeAlignment; tests and offline runs leave it undefined.
+        if (this.alignmentRecorder) {
+          const cadence = mode === 'active' ? 30_000 : 300_000;
+          if (now - (this.lastAlignment.get(project.id) ?? 0) >= cadence) {
+            try {
+              const alignment = await this.alignmentRecorder(project);
+              // Decision is only available after the fetches complete: both eventTime and
+              // ingestTime use completion time so outcome entries cannot use an earlier price.
+              const completedAt = Date.now();
+              this.lastAlignment.set(project.id, completedAt);
+              await this.history.append({ id: `${project.id}:alignment:${completedAt}`, kind: 'alignment', marketKey: `project:${project.id}`, projectId: project.id, eventTime: completedAt, ingestTime: completedAt, source: 'nox.timeframe-alignment.v1', quality: 'live', payload: alignment });
+            } catch { /* alignment requires an eligible Binance perpetual; skip without fabricating a claim */ }
+          }
+        }
         if (this.recorder) {
           for (const interval of Object.keys(REGIME_WINDOWS) as RegimeWindow[]) {
             const end=Math.floor((now-90_000)/REGIME_WINDOWS[interval])*REGIME_WINDOWS[interval];

@@ -121,7 +121,7 @@ export class AuthStore {
     });
     app.post('/api/auth/logout',(req,res)=>{const cookie=this.cookie(req);if(cookie)this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(cookie));res.clearCookie('nox_session',{path:'/'});res.json({ok:true});});
     app.use('/api',(req,res,next)=>{
-      if(['GET','HEAD','OPTIONS'].includes(req.method)||req.path==='/projects/discover'){next();return;}
+      if(['GET','HEAD','OPTIONS'].includes(req.method)||(req.method==='POST'&&req.path==='/projects/discover')){next();return;}
       const user=this.user(req);if(!user){res.status(401).json({error:{message:'Sign in to change projects or settings'}});return;}
       const required=req.method==='DELETE'||req.path.startsWith('/settings')?'admin':'analyst';
       if(!canWrite(user.role,required)){res.status(403).json({error:{message:`Requires ${required} role`}});return;}next();

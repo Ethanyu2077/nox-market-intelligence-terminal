@@ -12,6 +12,7 @@ coverage/
 *.log
 *.tsbuildinfo
 .DS_Store
+.preview*/
 
 /var/auth/
 *.sqlite

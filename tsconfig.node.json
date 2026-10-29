@@ -9,5 +9,5 @@
     "strict": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "server", "tests", "shared"]
+  "include": ["vite.config.ts", "server", "tests", "shared", "src/api.ts", "src/format.ts"]
 }

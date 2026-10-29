@@ -1,0 +1,6 @@
+bars=10080 barsWithAnyLabel=5393 (53.5%)
+all         {"n":3751,"hit":46.8,"netHit":45.7,"meanDir":-0.21,"meanNet":-0.31}
+spike       {"n":631,"hit":44.4,"netHit":43.1,"meanDir":-0.125,"meanNet":-0.225}
+conf70      {"n":2101,"hit":46,"netHit":44.8,"meanDir":-0.214,"meanNet":-0.314}
+nonOverlap  {"n":654,"hit":45.4,"netHit":43.6,"meanDir":-0.265,"meanNet":-0.365}
+baseline    {"n":20050,"hit":49.6,"netHit":46.9,"meanDir":0,"meanNet":-0.1}

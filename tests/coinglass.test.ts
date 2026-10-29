@@ -57,3 +57,4 @@ test('real CoinGlass capability authentication (explicit opt-in)', {skip:process
   const response=await client.request('/api/futures/supported-coins');
   assert.ok(Array.isArray(response.data)&&response.data.length>0,'Expected supported coin list');
 });
+

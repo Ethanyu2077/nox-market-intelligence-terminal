@@ -20,3 +20,4 @@ export function KoreanSpotPanel({project,language}:{project:MarketProject;langua
     <p>{zh?'盘口是 REST 买一卖一快照，不是序列校验后的深度或可执行交易报价。添加市场时仍需核对同名代币身份。':'Orderbook data is a REST top-of-book snapshot, not sequence-verified depth or an executable quote. Verify token identity when selecting markets.'}</p>
   </section>;
 }
+

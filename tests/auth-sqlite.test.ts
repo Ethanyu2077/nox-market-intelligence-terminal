@@ -9,7 +9,7 @@ import express from 'express';
 import {AuthStore} from '../server/auth.ts';
 async function host(auth:AuthStore){
   const app=express();app.use(express.json());auth.install(app);
-  app.post('/api/projects',(_req,res)=>res.json({ok:true}));app.delete('/api/projects/p',(_req,res)=>res.json({ok:true}));
+  app.post('/api/projects',(_req,res)=>res.json({ok:true}));app.delete('/api/projects/p',(_req,res)=>res.json({ok:true}));app.post('/api/projects/discover',(_req,res)=>res.json({ok:true}));app.patch('/api/projects/:id',(_req,res)=>res.json({ok:true}));
   const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));
   const base=`http://127.0.0.1:${(server.address() as {port:number}).port}/api`;
   const post=(route:string,body:unknown={},cookie='')=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json',cookie},body:JSON.stringify(body)});
@@ -25,6 +25,10 @@ test('SQLite migrates existing password hashes and roles; read-only policy and w
     assert.equal((await fetch(app.base+'/auth/status')).status,200);
     assert.equal((await app.post('/projects')).status,401);
     assert.equal((await fetch(app.base+'/projects/p',{method:'DELETE'})).status,401);
+    // The anonymous discovery exemption is POST-only; other methods must not reach :id handlers.
+    assert.equal((await app.post('/projects/discover',{query:'ARB'})).status,200);
+    assert.equal((await fetch(app.base+'/projects/discover',{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{}'})).status,401);
+    assert.equal((await fetch(app.base+'/projects/discover',{method:'DELETE'})).status,401);
     for(const role of ['admin','analyst','viewer']){
       const r=await app.post('/auth/login',{name:role,password});assert.equal(r.status,200);
       const cookie=r.headers.get('set-cookie')!.split(';')[0];
@@ -63,3 +67,4 @@ test('invalid legacy credentials abort migration without removing the original; 
   const db=new DatabaseSync(path.join(directory,'auth.sqlite'));db.exec('UPDATE setup SET expires=1');db.close();
   const app=await host(auth);try{assert.equal((await app.post('/auth/setup',{name:'admin',password:'fixture-password-123',token:code})).status,400);}finally{await app.close();}
 });
+

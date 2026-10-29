@@ -19,3 +19,4 @@ export interface CoinGlassResponse {
 }
 export interface CoinGlassFlow {exchange:string;buyUsd:number|null;sellUsd:number|null;deltaUsd:number|null;buyPct:number|null;sellPct:number|null}
 export interface CoinGlassHistoryBar {time:number;open:number;high:number;low:number;close:number}
+

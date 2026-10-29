@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import AuthDialog from './AuthDialog';
 import type { MarketProject } from '../shared/types';
 import type { RegimeSignal } from '../server/regime';
+import type { DataCoverageResponse, VenueCoverageResponse } from '../shared/coverage';
 
 function signalText(value: string, zh: boolean) {
   if (!zh) return value;
@@ -56,12 +57,76 @@ export function CollectionPanel({ projects, language, onRefresh }: { projects: M
     <div className="table-wrap"><table><thead><tr><th>{zh ? '项目' : 'Project'}</th><th>{zh ? '采集模式' : 'Collection mode'}</th><th>{zh ? '最近快照' : 'Last snapshot'}</th><th>{zh ? '状态' : 'Status'}</th></tr></thead><tbody>{projects.filter(p => !p.archived).map(project => { const state = data?.collectors.find(c => c.projectId === project.id); return <tr key={project.id}><td>{project.name}</td><td><select aria-label={`${project.name} collection mode`} value={project.monitoring.streamingEnabled ? project.monitoring.collectionMode ?? 'standard' : 'paused'} onChange={e => void change(project, e.target.value)}>{['active','standard','paused'].map(mode => <option key={mode} value={mode}>{mode === 'active' ? 'Active' : mode === 'standard' ? 'Standard' : 'Paused'}</option>)}</select></td><td>{state?.checkedAt ? new Date(state.checkedAt).toLocaleString(zh ? 'zh-CN' : 'en') : '—'}</td><td>{state?.error ?? (state?.mode === 'paused' ? zh ? '已暂停' : 'Paused' : zh ? '仅已选市场' : 'Selected markets only')}</td></tr>; })}</tbody></table></div>{error && <p role="alert">{error}</p>}<p>{zh ? '历史深度、完整清算和未支持的源仍标为不可用。文件日志不自动清理，请监控磁盘；生产环境应配置 TimescaleDB、备份与保留策略。' : 'Historical depth, complete liquidations and unsupported sources remain unavailable. Journal has no automatic retention: monitor disk. Configure TimescaleDB, backups and retention for production.'}</p></section>;
 }
 
+export function DataCoveragePanel({ projects, language }: { projects: MarketProject[]; language: string }) {
+  const zh = language === 'zh';
+  const [rows, setRows] = useState<Array<{ project: MarketProject; coverage: DataCoverageResponse }>>([]);
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      const targets = projects.filter((project) => !project.archived).slice(0, 5);
+      void Promise.allSettled(targets.map((project) => request<DataCoverageResponse>(`/projects/${project.id}/data-coverage`).then((coverage) => ({ project, coverage })))).then((results) => {
+        if (!active) return;
+        setRows(results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []));
+      });
+    };
+    load(); const timer = setInterval(load, 30_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [projects]);
+  return <section className="ops-panel"><h2>{zh ? '本地采集覆盖' : 'Local collection coverage'}</h2>
+    <p>{zh ? '按事件流检查本地 journal 是否真的在积累：快照、成交量矩阵、alignment 判断、逐笔 tape。采样为最新 N 条，不是全量计数；缺口只说明采集连续性未验证，不代表市场无数据。' : 'Checks whether the local journal is actually accumulating streams: snapshots, volume matrix, alignment claims and trade tape. Counts are newest-N samples, not lifetime totals; a gap means sampling continuity is unverified, not that the market had no data.'}</p>
+    <div className="table-wrap"><table><thead><tr>{['Project', 'Stream', 'Sampled', 'Last ingest', 'Gaps', 'State'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
+      {rows.flatMap(({ project, coverage }) => coverage.kinds.map((kind) => <tr key={`${project.id}:${kind.kind}`}>
+        <td>{project.name}<small>{coverage.mode}</small></td>
+        <td>{kind.kind}</td>
+        <td>{kind.sampledEvents}</td>
+        <td>{kind.lastIngestAgeMs == null ? '—' : `${Math.round(kind.lastIngestAgeMs / 1000)}s`}</td>
+        <td>{kind.gaps}</td>
+        <td><span className={`coverage-badge ${kind.state}`}>{kind.state}</span></td>
+      </tr>))}
+      {!rows.length && <tr><td colSpan={6}>{zh ? '等待本地采集数据。' : 'Awaiting local collection data.'}</td></tr>}
+    </tbody></table></div>
+    <p>{rows.flatMap(({ coverage }) => coverage.summary.notes).filter(Boolean).join(' · ') || (zh ? '所有必需事件流均有本地样本。' : 'All required streams have local samples.')}</p>
+  </section>;
+}
+
+export function VenueCoveragePanel({ projects, language }: { projects: MarketProject[]; language: string }) {
+  const zh = language === 'zh';
+  const [rows, setRows] = useState<Array<{ project: MarketProject; coverage: VenueCoverageResponse }>>([]);
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      const targets = projects.filter((project) => !project.archived).slice(0, 5);
+      void Promise.allSettled(targets.map((project) => request<VenueCoverageResponse>(`/projects/${project.id}/venue-coverage`).then((coverage) => ({ project, coverage })))).then((results) => {
+        if (!active) return;
+        setRows(results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []));
+      });
+    };
+    load(); const timer = setInterval(load, 30_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [projects]);
+  return <section className="ops-panel"><h2>{zh ? '交易所采集覆盖（本地记录）' : 'Venue coverage (local records)'}</h2>
+    <p>{zh ? '从本地 volume 记录检查每个所选交易所是否真的返回了现货/永续腿、最后质量与失败次数；缺失腿显式标注，不填零。' : 'Reads persisted volume records to show whether each selected venue actually returned spot/perpetual legs, the last quality and failure count. Missing legs stay explicit, never zero-filled.'}</p>
+    <div className="table-wrap"><table><thead><tr>{['Project', 'Venue', 'Spot', 'Perp', 'Failures', 'State'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
+      {rows.flatMap(({ project, coverage }) => coverage.venues.map((venue) => <tr key={`${project.id}:${venue.exchange}`}>
+        <td>{project.name}<small>{coverage.points} {zh ? '个样本' : 'records'}</small></td>
+        <td><strong>{venue.exchange.toUpperCase()}</strong></td>
+        <td>{venue.expectedSpot ? `${venue.spotSamples}${venue.spotQuality ? ` · ${venue.spotQuality}` : ''}` : '—'}</td>
+        <td>{venue.expectedPerp ? `${venue.perpSamples}${venue.perpQuality ? ` · ${venue.perpQuality}` : ''}` : '—'}</td>
+        <td>{coverage.failures.filter((failure) => failure.exchange === venue.exchange).reduce((sum, failure) => sum + failure.count, 0)}</td>
+        <td><span className={`coverage-badge ${venue.state === 'both' ? 'live' : venue.state === 'missing' ? 'empty' : 'partial'}`}>{venue.state}</span></td>
+      </tr>))}
+      {!rows.length && <tr><td colSpan={6}>{zh ? '等待本地 volume 记录。' : 'Awaiting local volume records.'}</td></tr>}
+    </tbody></table></div>
+    <p>{rows.flatMap(({ coverage }) => coverage.summary.missingLegs).filter(Boolean).join(' · ') || (zh ? '所有所选交易所至少各条腿都有本地样本。' : 'Every selected venue has at least one sample for each expected leg.')}</p>
+  </section>;
+}
+
 type Lab = { rows: { id: string; timestamp: number; label: string; complete: boolean; priceReturnPct: number | null; researchDirectionalReturnAfterCostsPct: number | null; sampledMfePct: number | null; sampledMaePct: number | null; samples: number; cohort: string }[]; coverage: { recorded: number; evaluated: number }; methodology: string[] };
 export function SignalLabPage({ project, language, historical }: { project: MarketProject; language: string; historical: boolean }) {
   const zh = language === 'zh', [signals, setSignals] = useState<RegimeSignal[]>([]), [lab, setLab] = useState<Lab | null>(null), [horizon, setHorizon] = useState(60), [cost, setCost] = useState(10), [error, setError] = useState('');
   useEffect(() => { const load = () => { void Promise.all([request<{ items: RegimeSignal[] }>(`/projects/${project.id}/regimes`), request<Lab>(`/projects/${project.id}/signal-lab?horizon=${horizon}&costBps=${cost}`)]).then(([s,l]) => { setSignals(s.items); setLab(l); setError(''); }).catch(e => setError(String(e))); }; load(); const timer = setInterval(load, 15_000); return () => clearInterval(timer); }, [project.id,horizon,cost]);
   const latest = signals.at(-1), n = (v: number | null | undefined) => v == null ? '—' : `${v.toFixed(3)}%`;
-  return <section className="ops-panel"><h1>{historical ? 'Signal Lab' : zh ? '市场结构信号' : 'Market structure signals'}</h1><p>{zh ? '已记录事实与统计推断严格区分。置信度是启发式评分，不是已校准概率，不构成交易建议。' : 'Observed inputs and statistical inferences are distinct. Confidence is a heuristic, not a calibrated probability or trading advice.'}</p>{error && <p role="alert">{error}</p>}
+  return <section className="ops-panel"><h1>{historical ? 'Signal Lab' : zh ? '市场结构信号' : 'Market structure signals'}</h1><p>{zh ? '已记录事实与统计推断严格区分。置信度是启发式评分，不是已校准概率，不构成交易建议。' : 'Observed inputs and statistical inferences are distinct. Confidence is a heuristic, not a calibrated probability or trading advice.'}</p>{!historical && <p>{zh ? '此页显示历史 v1 规则引擎记录，用于回放；它不经过 Position Flow 的证据门槛（完整主动成交覆盖 / 逐事件爆仓 / L2 深度）。带“证据不足·已抑制”的 Position Flow 标签才是当前研究口径。' : 'This page replays legacy v1 rule-engine records. They do NOT pass the Position Flow evidence gates (complete aggressor-flow coverage / per-event liquidations / L2 depth). Position Flow labels marked withheld are the current research contract.'}</p>}{error && <p role="alert">{error}</p>}
     {!historical && <>{latest ? <><h2>{signalText(latest.label, zh)}</h2><p>{zh ? '启发式置信度' : 'Heuristic confidence'}: {latest.heuristicConfidence == null ? '—' : `${Math.round(latest.heuristicConfidence*100)} / 100`} · {new Date(latest.timestamp).toLocaleString()} · {latest.venue ?? '—'}</p><div className="ops-evidence"><article><h3>{zh ? '已观测输入' : 'Observed inputs'}</h3>{latest.evidence.map(s => <p key={s}>{signalText(s, zh)}</p>)}</article><article><h3>{zh ? '反向证据与边界' : 'Counterevidence & boundaries'}</h3>{latest.counterevidence.map(s => <p key={s}>{signalText(s, zh)}</p>)}</article><article><h3>{zh ? '缺失或不完整数据' : 'Missing / incomplete data'}</h3>{latest.missing.map(s => <p key={s}>{signalText(s, zh)}</p>)}</article></div></> : <p>{zh ? '等待真实采集样本，不生成演示信号。' : 'Waiting for real collection samples. No demo signals.'}</p>}</>}
     <div className="ops-controls"><label>{zh ? '观察周期' : 'Forward horizon'} <select value={horizon} onChange={e => setHorizon(Number(e.target.value))}>{[5,15,60,240,1440].map(m => <option key={m} value={m}>{m} min</option>)}</select></label><label>{zh ? '往返成本假设（bps）' : 'Round-trip cost assumption (bps)'} <input type="number" min="0" max="1000" value={cost} onChange={e => setCost(Math.max(0, Math.min(1000, Number(e.target.value))))}/></label><span>{zh ? '可评估 / 已记录' : 'Evaluated / recorded'}: {lab?.coverage.evaluated ?? '—'} / {lab?.coverage.recorded ?? '—'}</span></div>
     <div className="table-wrap"><table><thead><tr><th>{zh ? '记录时间' : 'Recorded at'}</th><th>{zh ? '推断' : 'Inference'}</th><th>{zh ? '价格收益' : 'Price return'}</th><th>{zh ? '方向情景净收益' : 'Directional scenario net'}</th><th>MFE / MAE*</th><th>{zh ? '样本 / 状态' : 'Samples / status'}</th></tr></thead><tbody>{lab?.rows.slice(-100).reverse().map(row => <tr key={row.id}><td>{new Date(row.timestamp).toLocaleString()}</td><td>{signalText(row.label, zh)}</td><td>{n(row.priceReturnPct)}</td><td>{n(row.researchDirectionalReturnAfterCostsPct)}</td><td>{n(row.sampledMfePct)} / {n(row.sampledMaePct)}</td><td>{row.samples} · {row.complete ? zh ? '路径合格' : 'Path eligible' : zh ? '未到期 / 数据不足' : 'Pending / insufficient'}</td></tr>)}</tbody></table></div><p>{zh ? '* MFE/MAE 仅基于快照采样，不是真实逐笔极值。最近7天标记为时间留出候选，不代表已通过样本外验证。只使用截止时点之前已入库的数据；历史不足时保持空值。' : '* MFE/MAE are snapshot-sampled, not tick extremes. Last 7 days are temporal holdout candidates, not validated out-of-sample results. Only data ingested by the cutoff are eligible; insufficient history stays null.'}</p></section>;

@@ -1,0 +1,274 @@
+<title>NOX Signal Rule Walk-Forward</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: single research-note column (max ~960px): verdict and figures, scatter of train vs test, variant table, selected-variant detail, code changes, method. NOX grayscale terminal look. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --fg: #16191d;
+  --muted: #5d656f;
+  --line: #d9dde2;
+  --accent: #3a5f8a;
+  --good: #2f7a4f;
+  --bad: #b0412e;
+  --chip: #eceff2;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111316; --surface: #181b1f; --fg: #e7eaee; --muted: #9aa3ad; --line: #2c3137;
+    --accent: #7fa6d3; --good: #6cc391; --bad: #ec8a76; --chip: #23272c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111316; --surface: #181b1f; --fg: #e7eaee; --muted: #9aa3ad; --line: #2c3137;
+  --accent: #7fa6d3; --good: #6cc391; --bad: #ec8a76; --chip: #23272c; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 64px;
+}
+.wrap { max-width: 960px; margin: 0 auto; display: grid; gap: 40px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font-family: var(--font-data); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(30px, 5vw, 44px); line-height: 1.08; margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 22px; margin: 0; text-wrap: balance; }
+h3 { font-size: 15px; font-weight: 600; margin: 0; }
+p { margin: 0; max-width: 70ch; }
+.lede { font-size: 17px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--font-data); font-size: 12.5px; color: var(--muted); }
+section { display: grid; gap: 14px; min-width: 0; }
+.verdict { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; display: grid; gap: 6px; }
+.figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+.fig { background: var(--surface); padding: 14px 14px 12px; display: grid; gap: 4px; align-content: start; }
+.fig .num { font-family: var(--font-data); font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.fig .num small { font-size: 13px; color: var(--muted); font-weight: 400; }
+.fig .lbl { font-size: 13px; color: var(--muted); line-height: 1.35; }
+@media (max-width: 720px) { .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.scroll { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { padding: 7px 11px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child, .l { text-align: left; }
+thead th { font-family: var(--font-data); font-weight: 500; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+thead tr.band th { border-bottom: 0; padding-bottom: 0; color: var(--fg); }
+th.split, td.split { border-left: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: 0; }
+td.n { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+tr.cur td { background: var(--chip); }
+tr.sel td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.pill { display: inline-block; min-width: 58px; padding: 1px 7px; border-radius: 3px; font-family: var(--font-data); font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; background: var(--chip); }
+.pill.neg { color: var(--bad); }
+.pill.pos { color: var(--good); }
+.tag { font-family: var(--font-data); font-size: 11px; color: var(--muted); border: 1px solid var(--line); padding: 0 5px; border-radius: 3px; margin-left: 6px; }
+.tag.sel { color: var(--accent); border-color: var(--accent); }
+.chart { border: 1px solid var(--line); background: var(--surface); padding: 12px 8px 6px; overflow-x: auto; }
+.chart svg { display: block; width: 100%; min-width: 520px; height: auto; }
+.chart text { font-family: var(--font-data); font-size: 11px; fill: var(--muted); }
+.chart .axis-label { font-family: var(--font-body); font-size: 12px; fill: var(--fg); }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .pt { fill: var(--muted); fill-opacity: .55; }
+.chart .pt.cur { fill: var(--fg); fill-opacity: 1; }
+.chart .pt.sel { fill: var(--accent); fill-opacity: 1; }
+.chart .ptlabel { font-family: var(--font-body); font-size: 12px; fill: var(--fg); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--muted); padding: 0 8px 8px; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; margin-right: 6px; background: var(--muted); opacity: .55; }
+.legend i.cur { background: var(--fg); opacity: 1; }
+.legend i.sel { background: var(--accent); opacity: 1; }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+@media (max-width: 760px) { .two { grid-template-columns: minmax(0, 1fr); } }
+.two > div { display: grid; gap: 10px; align-content: start; min-width: 0; }
+ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 6px; max-width: 74ch; }
+.note { font-size: 13px; color: var(--muted); }
+code { font-family: var(--font-data); font-size: 12.5px; background: var(--chip); padding: 0 4px; border-radius: 3px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+footer { border-top: 1px solid var(--line); padding-top: 16px; font-size: 12.5px; color: var(--muted); display: grid; gap: 4px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">NOX research · position-flow labels · rule changes</div>
+    <h1>NOX Signal Rule Walk-Forward: IDOL, DOS, JCT, DOOD, EVAA</h1>
+    <p class="lede">New label rules make NOX label fewer bars and behave the same in calm and volatile weeks. They still don't predict price. On 9 days the rules never saw, the best variant from training was right 52.5% of the time against a 49.5% baseline, but its return after costs is indistinguishable from zero.</p>
+    <div class="meta">
+      <span>Binance USDT-M perpetuals · 5m candles + 5m OI</span>
+      <span>Train 2026-10-01 → 10-20 (19 days)</span>
+      <span>Test 2026-10-20 → 10-29 (9 days)</span>
+      <span>18 rule variants · 5 tokens</span>
+    </div>
+  </header>
+
+  <section aria-labelledby="summary">
+    <h2 id="summary">Summary</h2>
+    <div class="verdict">
+      <p><strong>Recommendation: keep the new rules opt-in.</strong> They fix how often labels fire, which is a real improvement. They don't add a measurable edge, so the app should stay on its current defaults until better inputs (funding, liquidations, cross-exchange confirmation, longer history) are tested.</p>
+    </div>
+    <div class="figures">
+      <div class="fig"><div class="num">27→52<small>%</small></div><div class="lbl">Bars labelled by the current rules, train → test, as markets got more volatile</div></div>
+      <div class="fig"><div class="num">11→11<small>%</small></div><div class="lbl">Bars labelled with adaptive 90th-percentile thresholds (5m window)</div></div>
+      <div class="fig"><div class="num">52.5<small>% vs 49.5</small></div><div class="lbl">Best training variant's hit rate on the test days, against baseline</div></div>
+      <div class="fig"><div class="num">+0.11<small>% · t 0.10</small></div><div class="lbl">Its average after-cost return on the test days (non-overlapping, n=100)</div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="scatter-h">
+    <h2 id="scatter-h">Does training performance carry over?</h2>
+    <p class="note">Each dot is one of the 18 variants: after-cost 60m return on the training days (x) against the test days (y), non-overlapping signals only. If good training results meant good test results, the dots would rise to the right. They don't: the rank correlation is 0.10.</p>
+    <div class="chart">
+      <div class="legend"><span><i class="cur"></i>Current rules</span><span><i class="sel"></i>Selected on training</span><span><i></i>Other variants</span></div>
+      <svg id="scatter" viewBox="0 0 760 420" role="img" aria-label="Scatter plot of 18 rule variants, training return against test return, showing almost no relationship"></svg>
+    </div>
+  </section>
+
+  <section aria-labelledby="variants-h">
+    <h2 id="variants-h">All 18 variants, 60m horizon</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr class="band"><th></th><th colspan="5" class="split">Train (Oct 1–20)</th><th colspan="5" class="split">Test (Oct 20–29)</th></tr>
+          <tr><th>Variant</th><th class="split">Fires</th><th>Hit / base</th><th>n*</th><th>After cost</th><th>t</th><th class="split">Fires</th><th>Hit / base</th><th>n*</th><th>After cost</th><th>t</th></tr>
+        </thead>
+        <tbody id="variants"></tbody>
+      </table>
+    </div>
+    <p class="note">Variant names: window length (5m, 15m or 60m), threshold (fixed 0.08% price / 0.05% OI, or the token's own 80th / 90th percentile over the previous day), and minimum flow imbalance (0% or 15%). "Fires" is the share of bars with any label. "Hit / base" uses every directional signal; *n, after-cost return and t use non-overlapping signals only (at most one per token per hour). Cost is 10 bps per round trip.</p>
+  </section>
+
+  <section aria-labelledby="sel-h">
+    <h2 id="sel-h">Selected variant: 60m window, 90th percentile, no imbalance minimum</h2>
+    <div class="two">
+      <div>
+        <h3>By horizon</h3>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Horizon</th><th>Period</th><th>Hit / base</th><th>n*</th><th>After cost</th><th>t</th></tr></thead>
+            <tbody>
+              <tr><td>15m</td><td class="l">Train</td><td class="n">47.4 / 46.6</td><td class="n">434</td><td><span class="pill pos">+0.08%</span></td><td class="n">0.41</td></tr>
+              <tr><td></td><td class="l">Test</td><td class="n">52.5 / 48.9</td><td class="n">211</td><td><span class="pill">−0.01%</span></td><td class="n">−0.04</td></tr>
+              <tr><td>60m</td><td class="l">Train</td><td class="n">52.5 / 48.5</td><td class="n">207</td><td><span class="pill pos">+0.51%</span></td><td class="n">1.05</td></tr>
+              <tr><td></td><td class="l">Test</td><td class="n">52.5 / 49.5</td><td class="n">100</td><td><span class="pill pos">+0.11%</span></td><td class="n">0.10</td></tr>
+              <tr><td>4h</td><td class="l">Train</td><td class="n">46.2 / 49.5</td><td class="n">140</td><td><span class="pill pos">+0.70%</span></td><td class="n">0.88</td></tr>
+              <tr><td></td><td class="l">Test</td><td class="n">53.0 / 49.7</td><td class="n">60</td><td><span class="pill pos">+0.43%</span></td><td class="n">0.15</td></tr>
+              <tr><td>60m</td><td class="l">Test, entry 1 bar later</td><td class="n">—</td><td class="n">100</td><td><span class="pill neg">−0.31%</span></td><td class="n">−0.34</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3>By label, test days, 60m</h3>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Label</th><th>Signals</th><th>Hit</th><th>Avg move, label direction</th></tr></thead>
+            <tbody>
+              <tr><td>Long build-up</td><td class="n">238</td><td class="n">54.6%</td><td class="n">+2.04%</td></tr>
+              <tr><td>Long liquidation<span class="tag">withheld in app</span></td><td class="n">181</td><td class="n">49.7%</td><td class="n">+0.34%</td></tr>
+              <tr><td>Short build-up</td><td class="n">29</td><td class="n">55.2%</td><td class="n">−7.58%</td></tr>
+              <tr><td>Short covering</td><td class="n">9</td><td class="n">44.4%</td><td class="n">+1.82%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">Averages are dominated by a few very large moves. Short build-up was right more than half the time yet averaged −7.6%, because a few short squeezes moved price sharply up. Read hit rates before averages here.</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="read-h">
+    <h2 id="read-h">What the results show</h2>
+    <ul class="plain">
+      <li><strong>Labelling is steadier.</strong> The fixed thresholds labelled 27% of bars in training and 52% in testing because volatility rose. Adaptive thresholds scale with each token, so the 5m adaptive variants labelled about 11% of bars in both periods.</li>
+      <li><strong>Accuracy barely moves.</strong> The selected variant beat its baseline by 3 points on the test days, but t = 0.10 is noise, it came from picking the best of 18 variants, and it turns negative with a one-bar entry delay.</li>
+      <li><strong>No variant reached t ≥ 2 on the test days</strong>, positive or negative, on non-overlapping signals. Training performance did not predict test performance (rank correlation 0.10).</li>
+      <li><strong>The 60m-window variants label about 40% of bars</strong> because each bar's window overlaps the previous one, so neighbouring labels are near-duplicates. The non-overlapping columns account for this.</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="code-h">
+    <h2 id="code-h">What changed in NOX</h2>
+    <p><code>detectPositionFlowSignals</code> in <code>server/calculations.ts</code> takes an optional fifth argument. Without it, labels are exactly the same as before.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Option</th><th class="l">What it does</th><th>Default</th></tr></thead>
+        <tbody>
+          <tr><td><code>adaptive</code></td><td class="l">A move must exceed the token's own q-quantile of earlier windows. Too little history gives no label, never a fallback.</td><td class="n">off</td></tr>
+          <tr><td><code>minFlowImbalancePct</code></td><td class="l">Flow must be at least this one-sided: (buy − sell) / (buy + sell).</td><td class="n">0</td></tr>
+          <tr><td><code>windowSteps</code></td><td class="l">Measures price, OI change and flow over several 5m steps.</td><td class="n">1</td></tr>
+          <tr><td><code>limit</code></td><td class="l">How many recent labels to return.</td><td class="n">80</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="plain">
+      <li>Invalid settings (NaN, out of range, non-integer windows) are rejected with an error.</li>
+      <li>Fixed a bug where a bar with zero flow counted as "absorption" whenever recent flow was all zero. Absorption is always withheld in the app, so nothing visible changes.</li>
+      <li>Six new tests cover unchanged defaults, adaptive thresholds, no rewriting of earlier labels when later data arrives, the imbalance rule, wider windows and invalid settings.</li>
+      <li>Full suite: 196 tests, 193 pass, 0 fail, 3 skipped (opt-in live-provider tests). Lint and typecheck pass. On the 7-day data, the defaults reproduce all 6,073 original labels exactly.</li>
+      <li>The app itself (<code>server/binance.ts</code>) still calls the function with its defaults.</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="method-h">
+    <h2 id="method-h">Method</h2>
+    <ul class="plain">
+      <li><strong>Data:</strong> Binance <code>/fapi/v1/klines</code> and <code>/futures/data/openInterestHist</code> at 5m, 28 days plus one day of warm-up. That's 8,352 bars per token, all complete. Binance's public OI history only reaches back about 30 days.</li>
+      <li><strong>Flow:</strong> each candle's taker-buy volume, which uses the same buyer-maker rule as the trade feed, so every bucket is complete. This tests the rules, not the live app's 1,000-trade window.</li>
+      <li><strong>Selection rule, fixed before running:</strong> the variant with the best non-overlapping 60m after-cost return on the training days, with at least 100 samples. Only that variant's test result counts as the outcome.</li>
+      <li><strong>Scoring:</strong> entry at the open of the signal bar, exit at the close 15m, 60m or 4h later. A hit means price moved the way the label implies. The baseline applies the same scoring to every bar in the period. Cost is 10 bps per round trip.</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="limits-h">
+    <h2 id="limits-h">Limits</h2>
+    <ul class="plain">
+      <li>28 days and 5 small-cap tokens that tend to move together; the test period is only 9 days.</li>
+      <li>18 variants were compared, so the best training result is partly luck.</li>
+      <li>Assumes OI at each timestamp was known at that time and that entry fills at the bar open. Funding and slippage are not included.</li>
+      <li>Covers only the position-flow labels, not Regime V2 or timeframe alignment.</li>
+    </ul>
+    <p class="note">The earlier 7-day report on the original rules: <a href="https://claude.ai/artifact/Nncw7pnjwNR4LDFFQ3ScPv">NOX Label Backtest</a>.</p>
+  </section>
+
+  <footer>
+    <span>Descriptive research on past data. Not investment advice and not a trading recommendation.</span>
+    <span>Generated 2026-10-29 from NOX handoff R23 with the rule changes applied in a working copy.</span>
+  </footer>
+</div>
+
+<script>
+// [name, current, selected, train[fire,n,hit,base,nFree,hitFree,net,t], test[...]]
+const ROWS = [{"name":"w5m fixed imb0","cur":true,"sel":false,"train":[27.3,4690,47.7,48.4,1335,46.1,-0.076,-1.02],"test":[52.4,4785,47.1,49.5,829,45.8,-0.264,-1.32]},{"name":"w5m fixed imb15","cur":false,"sel":false,"train":[22.5,3375,47.3,48.5,1238,46.1,-0.077,-1.33],"test":[29.8,1879,45,49.4,634,46.8,-0.349,-1.82]},{"name":"w5m q80 imb0","cur":false,"sel":false,"train":[18,2113,47.6,48.3,927,45.1,-0.27,-2.71],"test":[17.7,1104,46.3,49.4,442,46.4,-0.128,-0.4]},{"name":"w5m q80 imb15","cur":false,"sel":false,"train":[16.4,1678,46.2,48.4,851,45,-0.096,-1.28],"test":[13.5,560,44.3,49.4,316,46.5,-0.136,-0.47]},{"name":"w5m q90 imb0","cur":false,"sel":false,"train":[11.4,996,48.8,48.3,556,47.3,-0.071,-0.45],"test":[11,533,46.9,49.5,267,47.2,0.403,0.84]},{"name":"w5m q90 imb15","cur":false,"sel":false,"train":[10.6,765,47.1,48.5,490,46.1,-0.104,-0.81],"test":[8.9,266,45.5,49.4,181,47.5,0.376,0.79]},{"name":"w15m fixed imb0","cur":false,"sel":false,"train":[52.5,8660,48.5,48.4,1629,48.4,-0.008,-0.09],"test":[72.3,6428,46.9,49.4,910,47.4,-0.093,-0.52]},{"name":"w15m fixed imb15","cur":false,"sel":false,"train":[40.6,5404,47.9,48.5,1366,47,-0.131,-2.29],"test":[37.6,1956,46.3,49.4,537,46.4,-0.16,-0.87]},{"name":"w15m q80 imb0","cur":false,"sel":false,"train":[29.3,2017,49.2,48.4,690,48.8,-0.055,-0.43],"test":[28.9,1082,47,49.5,337,43.9,-0.401,-1.03]},{"name":"w15m q80 imb15","cur":false,"sel":false,"train":[27,1388,48.7,48.5,579,46.6,0.01,0.13],"test":[23.6,401,46.6,49.4,176,40.3,-0.356,-0.88]},{"name":"w15m q90 imb0","cur":false,"sel":false,"train":[23.4,968,48,48.3,377,46.9,-0.035,-0.16],"test":[22.3,488,47.3,49.5,179,48.6,0.338,0.49]},{"name":"w15m q90 imb15","cur":false,"sel":false,"train":[22.2,644,46.7,48.5,306,45.1,0.03,0.23],"test":[19.9,174,47.7,49.4,84,41.7,-0.211,-0.28]},{"name":"w60m fixed imb0","cur":false,"sel":false,"train":[85.6,14470,49.6,48.5,1846,49.1,-0.007,-0.12],"test":[92.2,7758,47.7,49.4,933,45.6,-0.167,-0.97]},{"name":"w60m fixed imb15","cur":false,"sel":false,"train":[55.6,6260,48,48.6,1100,47.1,-0.035,-0.77],"test":[43.2,1441,46,49.4,291,43,-0.341,-1.74]},{"name":"w60m q80 imb0","cur":false,"sel":false,"train":[47.7,1977,51.5,48.5,421,48.7,0.241,0.99],"test":[46.2,968,52.1,49.5,209,45.9,-0.148,-0.27]},{"name":"w60m q80 imb15","cur":false,"sel":false,"train":[44.1,1002,47.5,48.8,253,45.8,0.083,0.54],"test":[40.2,191,47.1,49.4,67,44.8,0.183,0.31]},{"name":"w60m q90 imb0","cur":false,"sel":true,"train":[42.1,985,52.5,48.5,207,46.4,0.506,1.05],"test":[40.4,457,52.5,49.5,100,52,0.106,0.1]},{"name":"w60m q90 imb15","cur":false,"sel":false,"train":[40.3,492,45.7,48.8,113,42.5,0.103,0.36],"test":[37.6,91,45.1,49.4,32,46.9,1.126,0.93]}];
+
+const label = (name) => name.replace(/^w(\d+m) (fixed|q(\d+)) imb(\d+)$/, (_, w, th, q, imb) => `${w} · ${q ? q + 'th pct' : 'fixed'} · imb ${imb}%`);
+const sign = (v, d) => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(d);
+const pill = (v) => `<span class="pill ${v > 0.02 ? 'pos' : v < -0.02 ? 'neg' : ''}">${sign(v, 2)}%</span>`;
+const cells = (s) => `<td class="n split">${s[0].toFixed(1)}%</td><td class="n">${s[2].toFixed(1)} / ${s[3].toFixed(1)}</td><td class="n">${s[4].toLocaleString('en-US')}</td><td>${pill(s[6])}</td><td class="n">${sign(s[7], 2)}</td>`;
+document.getElementById('variants').innerHTML = ROWS.map((r) => `
+  <tr class="${r.cur ? 'cur' : r.sel ? 'sel' : ''}"><td class="l">${label(r.name)}${r.cur ? '<span class="tag">current</span>' : ''}${r.sel ? '<span class="tag sel">selected</span>' : ''}</td>${cells(r.train)}${cells(r.test)}</tr>`).join('');
+
+(function scatter() {
+  const svg = document.getElementById('scatter');
+  const W = 760, H = 420, L = 64, R = 24, T = 20, B = 52;
+  const xmin = -0.3, xmax = 0.6, ymin = -0.5, ymax = 1.2;
+  const x = (v) => L + (v - xmin) / (xmax - xmin) * (W - L - R);
+  const y = (v) => T + (ymax - v) / (ymax - ymin) * (H - T - B);
+  let out = '';
+  for (const t of [-0.2, 0, 0.2, 0.4, 0.6]) out += `<line class="${t === 0 ? 'zero' : 'grid'}" x1="${x(t)}" x2="${x(t)}" y1="${T}" y2="${H - B}"/><text x="${x(t)}" y="${H - B + 16}" text-anchor="middle">${sign(t, 1)}%</text>`;
+  for (const t of [-0.4, 0, 0.4, 0.8, 1.2]) out += `<line class="${t === 0 ? 'zero' : 'grid'}" x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/><text x="${L - 8}" y="${y(t) + 4}" text-anchor="end">${sign(t, 1)}%</text>`;
+  out += `<text class="axis-label" x="${(L + W - R) / 2}" y="${H - 10}" text-anchor="middle">Train: after-cost 60m return</text>`;
+  out += `<text class="axis-label" transform="translate(16 ${(T + H - B) / 2}) rotate(-90)" text-anchor="middle">Test: after-cost 60m return</text>`;
+  const ordered = [...ROWS].sort((a, b) => (a.cur || a.sel) - (b.cur || b.sel));
+  for (const r of ordered) {
+    const cls = r.cur ? 'pt cur' : r.sel ? 'pt sel' : 'pt';
+    const cx = x(r.train[6]), cy = y(r.test[6]);
+    out += `<circle class="${cls}" cx="${cx}" cy="${cy}" r="${r.cur || r.sel ? 6 : 5}"><title>${label(r.name)}: train ${sign(r.train[6], 2)}%, test ${sign(r.test[6], 2)}%</title></circle>`;
+    if (r.cur) out += `<text class="ptlabel" x="${cx + 10}" y="${cy + 4}">Current rules</text>`;
+    if (r.sel) out += `<text class="ptlabel" x="${cx - 10}" y="${cy - 10}" text-anchor="end">Selected</text>`;
+  }
+  svg.innerHTML = out;
+})();
+</script>

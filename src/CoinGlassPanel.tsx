@@ -39,3 +39,4 @@ export function CoinGlassPanel({project,language,onSettings}:{project:MarketProj
     </>}
   </section>;
 }
+

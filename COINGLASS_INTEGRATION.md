@@ -61,3 +61,4 @@ Not implemented: durable CoinGlass historical storage, liquidation heatmaps, ETF
 - https://docs.coinglass.com/reference/fr-exchange-list
 - https://docs.coinglass.com/reference/liquidation-exchange-list
 - https://docs.coinglass.com/reference/responses-error-codes
+

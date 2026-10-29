@@ -1,3 +1,4 @@
+import { resolveAllowedOrigins } from './env.ts';
 import cors from 'cors';
 import express from 'express';
 import path from 'node:path';
@@ -28,6 +29,14 @@ import type { RegimeReport } from '../shared/regime-v2.ts';
 import {REGIME_WINDOWS} from '../shared/regime-v2.ts';
 import {OutcomeStore} from './outcome-store.ts';
 import {EventStudyService} from './event-study-service.ts';
+import {volumeMatrix} from './volume-matrix.ts';
+import {volumeShareHistory} from './volume-share.ts';
+import {buildVolumeBars} from './volume-bars.ts';
+import {timeframeAlignment} from './timeframe-consistency.ts';
+import {alignmentHistory} from './alignment-history.ts';
+import {alignmentOutcomes} from './alignment-outcome.ts';
+import {projectDataCoverage} from './data-coverage.ts';
+import {venueCoverage} from './venue-coverage.ts';
 import {signalReadiness,weightedConsensus} from './research-readiness.ts';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -48,12 +57,15 @@ const orderFlow = new OrderFlowService(dataDirectory, undefined, (kind, event) =
   void history.append({ id: `${key}:${kind}:${event.id}`, kind, marketKey: key, projectId: null, eventTime: event.time, ingestTime: Date.now(), source: 'source' in event ? event.source : 'exchange-liquidation-snapshot', quality: kind === 'liquidation' ? 'partial' : 'verified-aggressor', payload: event }).catch(() => { archiveError = 'History write failed; inspect disk availability'; });
 });
 const eventStudies=new EventStudyService(history,new OutcomeStore(dataDirectory));
-const collector = new ProjectCollector(() => store.getProjects(true), orderFlow, history, undefined, new RegimeRecorder(dataDirectory,history),project=>eventStudies.refresh(project));
-const allowedOrigins = new Set((process.env.NOX_ALLOWED_ORIGINS ?? `http://127.0.0.1:${port},http://localhost:${port},http://127.0.0.1:5173,http://localhost:5173`).split(',').map(s => s.trim()));
+const collector = new ProjectCollector(() => store.getProjects(true), orderFlow, history, undefined, new RegimeRecorder(dataDirectory,history),project=>eventStudies.refresh(project), undefined, project=>timeframeAlignment(project));
+const allowedOrigins = resolveAllowedOrigins(port);
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && !allowedOrigins.has(origin)) { res.status(403).json({ error: { message: 'Origin not allowed' } }); return; }
-  if (!['GET','HEAD','OPTIONS'].includes(req.method) && !req.is('application/json')) { res.status(415).json({ error: { message: 'JSON requests required' } }); return; }
+  // DELETE carries no payload in this API; browsers may omit Content-Length, and type-is treats
+  // a bodyless request as having no media type. Only methods that must send JSON require it.
+  const jsonMethod = !['GET','HEAD','OPTIONS','DELETE'].includes(req.method);
+  if (jsonMethod && !req.is('application/json')) { res.status(415).json({ error: { message: 'JSON requests required' } }); return; }
   next();
 });
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
@@ -89,7 +101,7 @@ app.get('/api/projects/:id/readiness',safe(async(req,res)=>{
 app.get('/api/projects/:id/history', safe(async (req,res) => {
   const project = store.getProjects(true).find(p => p.id === String(req.params.id));
   if (!project) { res.status(404).json({error:{message:'Project not found'}}); return; }
-  const parsed = z.object({kind:z.enum(['trade','liquidation','snapshot','regime']),from:z.coerce.number().finite().min(0).optional(),to:z.coerce.number().finite().min(0).optional(),asOf:z.coerce.number().finite().min(0).optional(),marketKey:z.string().max(200).optional(),limit:z.coerce.number().int().min(1).max(1000).default(200),cursor:z.string().max(2000).optional()}).safeParse(req.query);
+  const parsed = z.object({kind:z.enum(['trade','liquidation','snapshot','regime','volume','alignment']),from:z.coerce.number().finite().min(0).optional(),to:z.coerce.number().finite().min(0).optional(),asOf:z.coerce.number().finite().min(0).optional(),marketKey:z.string().max(200).optional(),limit:z.coerce.number().int().min(1).max(1000).default(200),cursor:z.string().max(2000).optional()}).safeParse(req.query);
   if (!parsed.success) { res.status(400).json({error:{message:'Invalid history query'}}); return; }
   try { res.json(await history.page(project.id,parsed.data)); } catch (error) { if (error instanceof Error && /Invalid historical/.test(error.message)) { res.status(400).json({error:{message:error.message}}); return; } throw error; }
 }));
@@ -153,6 +165,14 @@ app.post('/api/projects/discover', safe(async (req, res) => { const body = z.obj
 app.get('/api/projects/:id/venues', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await projectVenueSnapshots(project.markets)); }));
 app.get('/api/projects/:id/korean-spot',safe(async(req,res)=>{const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}res.json(await koreanSpot.project(project));}));
 app.get('/api/projects/:id/binance',safe(async(req,res)=>{const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}res.json(await binanceExchange.project(project));}));
+app.get('/api/projects/:id/venue-coverage', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } const limit = z.coerce.number().int().min(1).max(2000).default(500).parse(req.query.limit ?? 500); const asOf = Math.min(z.coerce.number().finite().min(1e12).optional().parse(req.query.asOf) ?? Date.now(), Date.now()); res.json(await venueCoverage(history, project, asOf, limit)); }));
+app.get('/api/projects/:id/data-coverage', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } const limit = z.coerce.number().int().min(10).max(20000).default(5000).parse(req.query.limit ?? 5000); res.json(await projectDataCoverage(history, project, Date.now(), limit)); }));
+app.get('/api/projects/:id/alignment-outcomes', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } const query = z.object({ horizon: z.coerce.number().int().refine((value) => [15, 60, 240, 1440].includes(value)).default(60), costBps: z.coerce.number().min(0).max(1000).default(10), asOf: z.coerce.number().finite().min(1e12).optional() }).parse(req.query); res.json(await alignmentOutcomes(history, project, { asOf: query.asOf, horizonMinutes: query.horizon, costBps: query.costBps })); }));
+app.get('/api/projects/:id/alignment-history', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } const limit = z.coerce.number().int().min(1).max(2000).default(500).parse(req.query.limit ?? 500); const asOf = Math.min(z.coerce.number().finite().min(1e12).optional().parse(req.query.asOf) ?? Date.now(), Date.now()); res.json(await alignmentHistory(history, project.id, asOf, limit)); }));
+app.get('/api/projects/:id/timeframe-alignment', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id) && !item.archived); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await timeframeAlignment(project)); }));
+app.get('/api/projects/:id/volume-bars', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id) && !item.archived); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } const query = z.object({ interval: z.enum(['1m','5m','15m','1h','4h']).default('1m'), at: z.coerce.number().finite().min(1e12).optional() }).parse(req.query); const at = Math.min(query.at ?? Date.now(), Date.now()); res.json(buildVolumeBars(project.id, orderFlow.snapshot(project, query.interval, 'window', at), at)); }));
+app.get('/api/projects/:id/volume-share', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } const limit = z.coerce.number().int().min(1).max(2000).default(500).parse(req.query.limit ?? 500); const asOf = Math.min(z.coerce.number().finite().min(1e12).optional().parse(req.query.asOf) ?? Date.now(), Date.now()); res.json(await volumeShareHistory(history, project.id, asOf, limit)); }));
+app.get('/api/projects/:id/volume-matrix', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await volumeMatrix(project)); }));
 app.get('/api/projects/:id/onchain', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await getProjectOnchainSnapshot(project)); }));
 app.get('/api/projects/:id/web3',safe(async(req,res)=>{
   const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}

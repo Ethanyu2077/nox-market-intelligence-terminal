@@ -13,3 +13,4 @@ No separate login page or navigation change is installed. Sign-in is a modal, in
 Requires Node 22.13+ for built-in SQLite (no native package installation). Keep `var/auth` private and back up its SQLite database separately from market journals. A single local SQLite database does not introduce multi-tenant project isolation.
 
 Local launch now honors explicit HTTP(S)_PROXY variables or, on macOS, the already-enabled system HTTPS proxy. Only the child application process receives these settings; localhost remains direct. Node must support `--use-env-proxy` when a proxy is configured (use current Node 24 LTS). OS settings and provider region restrictions are not modified.
+

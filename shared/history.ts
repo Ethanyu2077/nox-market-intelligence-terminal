@@ -1,6 +1,6 @@
 export interface HistoryEvent {
   id: string;
-  kind: "trade" | "liquidation" | "snapshot" | "regime";
+  kind: "trade" | "liquidation" | "snapshot" | "regime" | "volume" | "alignment";
   marketKey: string;
   projectId: string | null;
   eventTime: number;

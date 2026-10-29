@@ -10,6 +10,16 @@ export interface FlowTrade {
 export interface FlowGap { from: number; to: number; reason: string }
 export interface FlowBucket {
   time: number; buy: number | null; sell: number | null; delta: number | null; cvd: number | null;
+  /** Base-asset quantity in the bucket (contract multipliers already applied by the adapters). */
+  base: number | null;
+  buyBase: number | null;
+  sellBase: number | null;
+  /** Base-weighted average trade price inside the bucket; null when no known base quantity. */
+  vwap: number | null;
+  high: number | null;
+  low: number | null;
+  /** Largest single observed print in the bucket (notional), for rough block/whale context. */
+  maxTradeNotional: number | null;
   complete: boolean; count: number; zScore: number | null; reset: boolean;
 }
 export interface FlowVenue {

@@ -23,8 +23,8 @@ const capabilityRows: ExchangeCapabilities[] = [
 
 export function exchangeCapabilities() { return capabilityRows.map((row) => ({ ...row, notes: [...row.notes] })); }
 
-async function json<T>(url: string): Promise<T> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
+async function json<T>(url: string, timeoutMs = TIMEOUT): Promise<T> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
   if (!response.ok) throw new Error(`${new URL(url).hostname} HTTP ${response.status}`);
   return response.json() as Promise<T>;
 }
@@ -119,15 +119,16 @@ async function kucoinCatalog() {
   ];
 }
 async function mexcCatalog() {
+  // MEXC returns full ~1.5-2.3 MB catalogs; a 10s ceiling dropped the venue on slower links.
   const [futures, spots] = await Promise.all([
-    json<Json>('https://contract.mexc.com/api/v1/contract/detail'),
-    json<Json>('https://api.mexc.com/api/v3/exchangeInfo')
+    json<Json>('https://contract.mexc.com/api/v1/contract/detail', 30_000),
+    json<Json>('https://api.mexc.com/api/v3/exchangeInfo', 30_000)
   ]);
   const futureRows = futures.data as Json[] ?? [];
   const spotRows = spots.symbols as Json[] ?? [];
   return [
     ...futureRows.filter((r) => r.quoteCoin === 'USDT' && number(r.state) === 0).map((r) => instrument('mexc', 'perpetual', text(r.symbol), text(r.baseCoin), text(r.quoteCoin), 'trading', { stepSize: number(r.volUnit) ?? 0, contractMultiplier: number(r.contractSize) ?? 1 })),
-    ...spotRows.filter((r) => r.quoteAsset === 'USDT' && r.status === 'ENABLED').map((r) => instrument('mexc', 'spot', text(r.symbol), text(r.baseAsset), text(r.quoteAsset), text(r.status)))
+    ...spotRows.filter((r) => r.quoteAsset === 'USDT' && ['1', 'ENABLED'].includes(text(r.status))).map((r) => instrument('mexc', 'spot', text(r.symbol), text(r.baseAsset), text(r.quoteAsset), text(r.status)))
   ];
 }
 
@@ -198,7 +199,11 @@ export async function marketSnapshot(market: ProjectMarket): Promise<VenueMarket
   }
   if (market.exchange === 'kucoin') {
     const r = (await json<Json>(`https://api-futures.kucoin.com/api/v1/contracts/${encodeURIComponent(market.symbol)}`)).data as Json; const multiplier = number(r.multiplier); const contracts = number(r.openInterest); const price = number(r.lastTradePrice); const mark = number(r.markPrice); const oiBase = normalizeContractQuantity(contracts, multiplier);
-    return unavailableSnapshot('kucoin', market, 'KuCoin Futures contract detail', { price, markPrice: mark, change24hPct: pct(r.priceChgPct), volume24hBase: multiplier != null && number(r.volumeOf24h) != null ? multiplier * number(r.volumeOf24h)! : null, volume24hUsd: number(r.turnoverOf24h), oiBase, oiUsd: oiBase != null && mark != null ? oiBase * mark : null, fundingRate: number(r.fundingFeeRate), nextFundingTime: timestamp(r.nextFundingRateTime), eventTime: timestamp(r.lastTradeTime) ?? Date.now() });
+    // KuCoin volumeOf24h is already BASE quantity (contracts x multiplier), so it must not be
+    // multiplied again. nextFundingRateTime is a countdown duration; nextFundingRateDateTime is
+    // the absolute venue time and is preferred.
+    const fundingDuration = number(r.nextFundingRateTime);
+    return unavailableSnapshot('kucoin', market, 'KuCoin Futures contract detail', { price, markPrice: mark, change24hPct: pct(r.priceChgPct), volume24hBase: number(r.volumeOf24h), volume24hUsd: number(r.turnoverOf24h), oiBase, oiUsd: oiBase != null && mark != null ? oiBase * mark : null, fundingRate: number(r.fundingFeeRate), nextFundingTime: timestamp(r.nextFundingRateDateTime) ?? (fundingDuration != null ? Date.now() + fundingDuration : null), eventTime: timestamp(r.lastTradeTime) ?? Date.now() });
   }
   const p = await json<Json>(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${encodeURIComponent(market.symbol)}`); const r = (Array.isArray(p.data) ? p.data[0] : p.data) as Json | undefined; if (!r) throw new Error(`MEXC ticker unavailable: ${text(p.message || p.code || 'empty response')}`); const details = await getExchangeInstruments('mexc'); const detail = details.find((i) => i.id === market.id); const contractSize = detail?.contractMultiplier ?? 1; const contracts = number(r.holdVol); const mark = number(r.fairPrice); const oiBase = normalizeContractQuantity(contracts, contractSize);
   return unavailableSnapshot('mexc', market, 'MEXC Contract public ticker', { price: number(r.lastPrice), markPrice: mark, change24hPct: pct(r.riseFallRate), volume24hBase: number(r.volume24) != null ? number(r.volume24)! * contractSize : null, volume24hUsd: number(r.amount24), oiBase, oiUsd: oiBase != null && mark != null ? oiBase * mark : null, fundingRate: number(r.fundingRate), nextFundingTime: timestamp(r.nextSettleTime), bid: number(r.bid1), ask: number(r.ask1), eventTime: timestamp(r.timestamp) ?? Date.now() });

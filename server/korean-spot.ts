@@ -72,3 +72,4 @@ export class KoreanSpotService {
   }
 }
 export const koreanSpot=new KoreanSpotService();
+

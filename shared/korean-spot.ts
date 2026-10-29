@@ -28,3 +28,4 @@ export interface KoreanSpotResponse {
   requested:number;
   fetchedAt:number;
 }
+

@@ -29,6 +29,16 @@ test('OKX, Gate and KuCoin contract quantities use multipliers before notional',
   assert.equal(kucoin.time, now); assert.equal(kucoin.notional, 50);
   assert.equal(normalizeFlowTrade({ ...market, exchange: 'okx' }, { tradeId: 'a', px: '50', sz: '100', side: 'sell', ts: now }, null), null);
 });
+test('Gate futures REST fractional-second timestamps are normalised to milliseconds', () => {
+  // Live Gate /futures/usdt/trades returns create_time_ms as fractional seconds (e.g. 1793199068.727).
+  const trade = normalizeFlowTrade({ ...market, exchange: 'gate', marketType: 'perpetual' }, { id: 862161882, price: '80583.3', size: 5279, create_time_ms: 1_793_199_068.727 }, 1)!;
+  assert.ok(trade, 'a verified Gate REST trade must not be rejected');
+  assert.equal(trade.time, 1_793_199_068_727);
+  assert.equal(trade.side, 'buy');
+});
+test('MEXC spot flow is excluded while public trades expose no stable trade ID', () => {
+  assert.equal(orderFlowCapability({ ...market, exchange: 'mexc', marketType: 'spot' }).available, false);
+});
 test('Bybit, Bitget and MEXC spot preserve native ID and verified taker side', () => {
   assert.equal(normalizeFlowTrade({ ...market, exchange: 'bybit' }, { execId: '3', price: '3', size: '4', side: 'Buy', time: now }, 1)?.notional, 12);
   assert.equal(normalizeFlowTrade({ ...market, exchange: 'bitget' }, { tradeId: '4', price: '3', size: '4', side: 'sell', ts: now }, 1)?.side, 'sell');
@@ -52,6 +62,28 @@ test('CVD reset and unrecovered gaps are explicit and never interpolate unknown 
   const hourGrid = [1_789_999_140_000, 1_789_999_200_000];
   const hour = flowBuckets(hourGrid.map((time, i) => trade({ id: String(i), time })), '1m', 'utc-hour', hourGrid, { from: hourGrid[0], to: hourGrid[1] + 60_000, gaps: [] });
   assert.equal(hour[0].cvd, 20); assert.equal(hour[1].cvd, 20);
+});
+test('flow buckets carry normalized base quantity per side', () => {
+  const grid = timeGrid(now, '1m', 3);
+  const buckets = flowBuckets([
+    trade({ time: grid[1] + 100, quantity: 2, notional: 10, side: 'buy' }),
+    trade({ id: '2', time: grid[1] + 200, quantity: 3, notional: 15, side: 'sell' }),
+  ], '1m', 'window', grid, { from: grid[0], to: grid[2], gaps: [] });
+  assert.equal(buckets[1].base, 5);
+  assert.equal(buckets[1].buyBase, 2);
+  assert.equal(buckets[1].sellBase, 3);
+  assert.equal(buckets[0].base, 0);
+});
+test('flow buckets compute base-weighted VWAP, price range and largest print', () => {
+  const grid = timeGrid(now, '1m', 2);
+  const buckets = flowBuckets([
+    trade({ time: grid[0] + 100, price: 100, quantity: 2, notional: 200, side: 'buy' }),
+    trade({ id: '2', time: grid[0] + 200, price: 110, quantity: 1, notional: 110, side: 'sell' }),
+  ], '1m', 'window', [grid[0]], { from: grid[0], to: grid[0] + 60_000, gaps: [] });
+  assert.equal(buckets[0].vwap, 310 / 3);
+  assert.equal(buckets[0].high, 110);
+  assert.equal(buckets[0].low, 100);
+  assert.equal(buckets[0].maxTradeNotional, 200);
 });
 test('aggregation requires complete aligned coverage from every selected venue', () => {
   const grid = timeGrid(now, '1m', 2);

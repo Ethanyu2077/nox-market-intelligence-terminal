@@ -49,3 +49,4 @@ export function ProviderSettings({language,hasProject,onOpenWeb3,onOpenCoinGlass
     </section>
   </section>;
 }
+

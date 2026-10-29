@@ -33,3 +33,4 @@ export default function AuthDialog({language,onClose,onSuccess}:{language:string
     <button className="auth-back" type="button" onClick={onClose}>{zh?'取消，继续只读浏览':'Cancel and continue read-only'}</button>
   </section></div>;
 }
+

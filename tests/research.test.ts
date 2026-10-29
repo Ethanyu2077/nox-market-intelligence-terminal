@@ -73,6 +73,12 @@ test('read-only research separates facts, hypotheses and missing data without fa
   assert.ok(report.hypotheses[0].text.includes('cannot identify'));
   assert.deepEqual(report.tools, [...READ_ONLY_TOOLS]);
   assert.ok(!report.tools.some(t => /trade|publish|exec|wallet|write/.test(t)));
+  // Derived metrics must not be presented as independent confirmations.
+  assert.ok(report.metricDependencies.some(d => d.metric === 'cvd' && d.role === 'cumulative' && d.dependsOn.includes('volumeDeltaUsd')));
+  assert.ok(report.metricDependencies.some(d => d.metric === 'oiUsd' && d.dependsOn.includes('markPrice')));
+  assert.ok(report.metricDependencies.some(d => d.metric === 'CoinGlass All row vs venue rows' && d.duplicateOf.includes('venue rows')));
+  assert.ok(report.nonIdentifiable.some(item => /who opened/i.test(item)));
+  assert.ok(report.nonIdentifiable.some(item => /liquidat/i.test(item)));
 });
 
 test('signal engine normalizes heuristic percentage and excludes stale evidence', () => {

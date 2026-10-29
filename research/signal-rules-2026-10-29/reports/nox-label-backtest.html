@@ -1,0 +1,277 @@
+<title>NOX Label Backtest</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: single research-note column (max ~920px), summary figures first, then chart, tables, method. NOX grayscale terminal look. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --fg: #16191d;
+  --muted: #5d656f;
+  --line: #d9dde2;
+  --accent: #3a5f8a;
+  --good: #2f7a4f;
+  --bad: #b0412e;
+  --neutral-chip: #eceff2;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111316; --surface: #181b1f; --fg: #e7eaee; --muted: #9aa3ad; --line: #2c3137;
+    --accent: #7fa6d3; --good: #6cc391; --bad: #ec8a76; --neutral-chip: #23272c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111316; --surface: #181b1f; --fg: #e7eaee; --muted: #9aa3ad; --line: #2c3137;
+  --accent: #7fa6d3; --good: #6cc391; --bad: #ec8a76; --neutral-chip: #23272c; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 64px;
+}
+.wrap { max-width: 920px; margin: 0 auto; display: grid; gap: 40px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font-family: var(--font-data); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(30px, 5vw, 44px); line-height: 1.08; margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 22px; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+.lede { font-size: 17px; color: var(--fg); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--font-data); font-size: 12.5px; color: var(--muted); }
+section { display: grid; gap: 14px; min-width: 0; }
+.verdict { border-left: 3px solid var(--bad); padding: 4px 0 4px 16px; display: grid; gap: 6px; }
+.verdict strong { font-weight: 600; }
+.figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+.fig { background: var(--surface); padding: 14px 14px 12px; display: grid; gap: 4px; align-content: start; }
+.fig .num { font-family: var(--font-data); font-size: 26px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.fig .num small { font-size: 14px; color: var(--muted); font-weight: 400; }
+.fig .lbl { font-size: 13px; color: var(--muted); line-height: 1.35; }
+@media (max-width: 700px) { .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.scroll { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { padding: 8px 12px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child, th.l, td.l { text-align: left; }
+thead th { font-family: var(--font-data); font-weight: 500; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); background: var(--surface); }
+tbody tr:last-child td { border-bottom: 0; }
+td.n { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+tr.group td { background: var(--neutral-chip); font-family: var(--font-data); font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+.pill { display: inline-block; min-width: 54px; padding: 1px 7px; border-radius: 3px; font-family: var(--font-data); font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; background: var(--neutral-chip); }
+.pill.neg { color: var(--bad); }
+.pill.pos { color: var(--good); }
+.tag { font-family: var(--font-data); font-size: 11px; color: var(--muted); border: 1px solid var(--line); padding: 0 5px; border-radius: 3px; margin-left: 6px; }
+.chart { border: 1px solid var(--line); background: var(--surface); padding: 12px 8px 4px; overflow-x: auto; }
+.chart svg { display: block; width: 100%; min-width: 560px; height: auto; }
+.chart text { font-family: var(--font-data); font-size: 11px; fill: var(--muted); }
+.chart .lab { font-family: var(--font-body); font-size: 12.5px; fill: var(--fg); }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .fifty { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; }
+.chart .base { stroke: var(--muted); stroke-width: 2; }
+.chart .hit { fill: var(--bad); }
+.chart .hit.up { fill: var(--good); }
+.chart .link { stroke: var(--bad); stroke-width: 1.5; opacity: .55; }
+.chart .link.up { stroke: var(--good); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--muted); padding: 0 8px 8px; }
+.legend i { display: inline-block; vertical-align: middle; margin-right: 6px; }
+.key-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
+.key-dot.up { background: var(--good); }
+.key-tick { width: 2px; height: 12px; background: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; width: max-content; }
+.seg button { font: 500 12.5px var(--font-data); color: var(--muted); background: var(--surface); border: 0; padding: 6px 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 6px; max-width: 72ch; }
+.note { font-size: 13px; color: var(--muted); }
+code { font-family: var(--font-data); font-size: 12.5px; background: var(--neutral-chip); padding: 0 4px; border-radius: 3px; }
+footer { border-top: 1px solid var(--line); padding-top: 16px; font-size: 12.5px; color: var(--muted); display: grid; gap: 4px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">NOX research · position-flow labels · R23</div>
+    <h1>NOX Label Backtest: IDOL, DOS, JCT, DOOD, EVAA</h1>
+    <p class="lede">Did NOX's position-flow labels predict the next price move over the past 7 days? No. Every directional label was right slightly less often than a coin flip, and losing after costs.</p>
+    <div class="meta">
+      <span>Binance USDT-M perpetuals</span>
+      <span>5m candles + 5m OI</span>
+      <span>2026-10-22 13:00 → 2026-10-29 13:00 UTC</span>
+      <span>2,016 bars × 5 tokens</span>
+    </div>
+  </header>
+
+  <section aria-labelledby="summary">
+    <h2 id="summary">Summary</h2>
+    <div class="verdict">
+      <p><strong>No predictive edge found.</strong> At a 60-minute horizon the four directional labels were right 46.8% of the time, against a 49.6% baseline for any bar. Stricter versions (OI spikes only, confidence ≥ 70, non-overlapping signals) were no better.</p>
+    </div>
+    <div class="figures">
+      <div class="fig"><div class="num">46.8<small>%</small></div><div class="lbl">Directional hit rate at 60m (3,751 signals)</div></div>
+      <div class="fig"><div class="num">49.6<small>%</small></div><div class="lbl">Baseline: every bar, both directions</div></div>
+      <div class="fig"><div class="num">−0.31<small>%</small></div><div class="lbl">Average move in the label's direction after 10 bps cost</div></div>
+      <div class="fig"><div class="num">53.5<small>%</small></div><div class="lbl">Share of all bars that received a label</div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="chart-h">
+    <h2 id="chart-h">Hit rate against baseline</h2>
+    <p class="note">All five tokens pooled. Each dot is a label's hit rate; each grey tick is the baseline for the same direction and horizon. A label with an edge would sit to the right of its tick.</p>
+    <div class="chart">
+      <div class="legend"><span><i class="key-dot up"></i>Bullish label</span><span><i class="key-dot"></i>Bearish label</span><span><i class="key-tick"></i>Baseline</span></div>
+      <svg id="dotplot" viewBox="0 0 860 420" role="img" aria-label="Dot plot of hit rate versus baseline for four labels at three horizons; all dots sit at or left of their baseline"></svg>
+    </div>
+  </section>
+
+  <section aria-labelledby="pooled-h">
+    <h2 id="pooled-h">Pooled results by label</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Label</th><th>Horizon</th><th>Signals</th><th>Hit</th><th>Hit after cost</th><th>Baseline</th><th>Lift</th><th>z*</th></tr></thead>
+        <tbody id="pooled"></tbody>
+      </table>
+    </div>
+    <p class="note">*Binomial z against the baseline rate. Signals on neighbouring bars overlap, so z overstates certainty, especially at 60m and 4h. Long liquidation is withheld in the live app (no liquidation data) and is scored here for comparison only. Absorption (175 signals) and divergence (≈1,430) imply no direction and are not scored.</p>
+  </section>
+
+  <section aria-labelledby="strict-h">
+    <h2 id="strict-h">Stricter versions, 60m horizon</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Version</th><th>Samples</th><th>Hit</th><th>Hit after cost</th><th>Avg move, label direction</th><th>After cost</th></tr></thead>
+        <tbody>
+          <tr><td>All directional labels</td><td class="n">3,751</td><td class="n">46.8%</td><td class="n">45.7%</td><td class="n">−0.21%</td><td class="n">−0.31%</td></tr>
+          <tr><td>OI spikes only (robust score ≥ 3.5)</td><td class="n">631</td><td class="n">44.4%</td><td class="n">43.1%</td><td class="n">−0.13%</td><td class="n">−0.23%</td></tr>
+          <tr><td>Confidence ≥ 70</td><td class="n">2,101</td><td class="n">46.0%</td><td class="n">44.8%</td><td class="n">−0.21%</td><td class="n">−0.31%</td></tr>
+          <tr><td>Non-overlapping signals only</td><td class="n">654</td><td class="n">45.4%</td><td class="n">43.6%</td><td class="n">−0.27%</td><td class="n">−0.37%</td></tr>
+          <tr><td>Baseline: every bar, both directions</td><td class="n">20,050</td><td class="n">49.6%</td><td class="n">46.9%</td><td class="n">0.00%</td><td class="n">−0.10%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">The non-overlapping version keeps at most one signal per token per 60-minute window, so its samples are close to independent. It sits about 2 standard errors below the baseline (z ≈ −2.1), which is borderline once you account for how many combinations were tested.</p>
+  </section>
+
+  <section aria-labelledby="token-h">
+    <div class="row">
+      <h2 id="token-h">By token</h2>
+      <div class="seg" role="group" aria-label="Horizon">
+        <button type="button" id="h15" data-h="15" aria-pressed="false">15m</button>
+        <button type="button" id="h60" data-h="60" aria-pressed="true">60m</button>
+        <button type="button" id="h240" data-h="240" aria-pressed="false">4h</button>
+      </div>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Label</th><th>Signals</th><th>Hit</th><th>Baseline</th><th>Lift</th><th>Avg move, label direction</th></tr></thead>
+        <tbody id="tokens"></tbody>
+      </table>
+    </div>
+    <p class="note">Per-token samples are small, and each token's baseline reflects its own trend that week. DOOD fell, so its bearish labels and bearish baseline both score high. No single token shows a clear, consistent edge across horizons.</p>
+  </section>
+
+  <section aria-labelledby="why-h">
+    <h2 id="why-h">Why the labels underperform</h2>
+    <ul class="plain">
+      <li><strong>The thresholds are too small for these tokens.</strong> A label needs only a 0.05% OI change and a 0.08% price move in 5 minutes. These tokens moved 1.3% to 4.7% in an average hour, so more than half of all bars got a label and most of them tag noise.</li>
+      <li><strong>The confidence score isn't calibrated.</strong> It is a fixed formula of OI score, price move and flow agreement, and higher scores were not more accurate here. The code itself marks it <code>heuristic-rule-uncalibrated</code>.</li>
+      <li><strong>Same-bar momentum doesn't carry forward.</strong> Each label describes the bar that just closed. On these tokens, the next move reversed that bar's direction slightly more often than it continued it.</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="method-h">
+    <h2 id="method-h">Method</h2>
+    <ul class="plain">
+      <li><strong>Data:</strong> Binance USDT-M <code>/fapi/v1/klines</code> and <code>/futures/data/openInterestHist</code> at 5m, with 300 extra earlier bars so NOX's baselines had history. All five tokens returned complete data.</li>
+      <li><strong>Labels:</strong> generated by NOX's own code, <code>computeOiDeltas</code> and <code>detectPositionFlowSignals</code> in <code>server/calculations.ts</code>, unmodified.</li>
+      <li><strong>Flow:</strong> taken from each candle's taker-buy volume, which uses the same buyer-maker rule as the trade feed. Every bucket is therefore complete. This tests the label rules; the live app sees only the latest 1,000 trades and would withhold most of these bars.</li>
+      <li><strong>Scoring:</strong> entry at the open of the signal bar, exit at the close 15m, 60m or 4h later, the convention NOX's own backtest uses. A hit means price moved the way the label implies. The baseline applies the same scoring to every bar. Cost is 10 bps per round trip (about 5 bps taker fee per side).</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="limits-h">
+    <h2 id="limits-h">Limits</h2>
+    <ul class="plain">
+      <li>Seven days is a single market period, and these five small-cap tokens tend to move together.</li>
+      <li>Signals at 60m and 4h overlap heavily, so they are not independent samples.</li>
+      <li>Assumes the OI value at each timestamp was known at that time, and that entry fills exactly at the bar open. Funding and slippage are not included.</li>
+      <li>Covers only the position-flow labels. Regime V2 and timeframe-alignment claims depend on NOX's own stored history and were not tested.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>Descriptive research on past data. Not investment advice and not a trading recommendation.</span>
+    <span>Generated 2026-10-29 from NOX handoff R23.</span>
+  </footer>
+</div>
+
+<script>
+const NAMES = { potential_long_buildup: 'Long build-up', potential_short_covering: 'Short covering', potential_short_buildup: 'Short build-up', potential_long_liquidation: 'Long liquidation' };
+const UP = new Set(['potential_long_buildup', 'potential_short_covering']);
+const ORDER = ['potential_long_buildup', 'potential_short_covering', 'potential_short_buildup', 'potential_long_liquidation'];
+// [horizonMin, type, n, hit, hitAfterCost, baseline, z]
+const POOLED = [
+  [15,'potential_long_buildup',1187,46.3,43.4,49.3,-2.13],[15,'potential_short_covering',687,45.9,42.8,49.3,-1.83],[15,'potential_short_buildup',762,46.6,44.5,48.9,-1.30],[15,'potential_long_liquidation',1142,46.8,43.6,48.9,-1.47],
+  [60,'potential_long_buildup',1179,46.8,45.6,50.3,-2.40],[60,'potential_short_covering',683,46.3,44.8,50.3,-2.12],[60,'potential_short_buildup',753,49.1,48.5,48.9,0.11],[60,'potential_long_liquidation',1136,45.5,44.4,48.9,-2.31],
+  [240,'potential_long_buildup',1141,47.0,46.5,48.9,-1.31],[240,'potential_short_covering',663,42.8,42.5,48.9,-3.13],[240,'potential_short_buildup',725,49.4,49.0,50.7,-0.70],[240,'potential_long_liquidation',1113,49.8,48.9,50.7,-0.60]
+];
+// [token, horizonMin, type, n, hit, baseline, avgDirectionalMovePct]
+const TOKENS = [["IDOL",15,"potential_short_buildup",69,46.4,46.7,-0.43],["IDOL",15,"potential_long_liquidation",90,35.6,46.7,-0.21],["IDOL",15,"potential_short_covering",38,50,51.3,0.58],["IDOL",15,"potential_long_buildup",117,48.7,51.3,0.27],["IDOL",60,"potential_short_buildup",67,43.3,45.3,-1.75],["IDOL",60,"potential_long_liquidation",88,28.4,45.3,-1.54],["IDOL",60,"potential_short_covering",36,41.7,53.6,0.51],["IDOL",60,"potential_long_buildup",115,49.6,53.6,1],["IDOL",240,"potential_short_buildup",59,54.2,44.6,-4.48],["IDOL",240,"potential_long_liquidation",84,35.7,44.6,-2.62],["IDOL",240,"potential_short_covering",32,50,55.2,-0.38],["IDOL",240,"potential_long_buildup",107,58.9,55.2,4.52],["DOS",15,"potential_long_liquidation",311,48.2,47.6,-0.05],["DOS",15,"potential_short_buildup",196,44.4,47.6,0.01],["DOS",15,"potential_short_covering",173,44.5,50.5,-0.11],["DOS",15,"potential_long_buildup",297,47.8,50.5,-0.01],["DOS",60,"potential_long_liquidation",310,41.3,45.5,-0.19],["DOS",60,"potential_short_buildup",195,43.1,45.5,-0.52],["DOS",60,"potential_short_covering",173,47.4,53.8,-0.04],["DOS",60,"potential_long_buildup",295,48.5,53.8,-0.12],["DOS",240,"potential_long_liquidation",307,45.6,44.1,-0.03],["DOS",240,"potential_short_buildup",189,40.7,44.1,-0.6],["DOS",240,"potential_short_covering",171,44.4,55.2,-0.29],["DOS",240,"potential_long_buildup",284,53.2,55.2,-0.57],["JCT",15,"potential_short_covering",170,45.3,50.5,-0.13],["JCT",15,"potential_long_buildup",274,46,50.5,-0.27],["JCT",15,"potential_long_liquidation",268,47.8,49.1,-0.28],["JCT",15,"potential_short_buildup",146,42.5,49.1,-0.68],["JCT",60,"potential_short_covering",170,48.2,52.9,0.46],["JCT",60,"potential_long_buildup",272,48.2,52.9,-0.82],["JCT",60,"potential_long_liquidation",268,43.7,47,-0.92],["JCT",60,"potential_short_buildup",145,42.1,47,-2.71],["JCT",240,"potential_short_covering",167,47.3,50.1,1.31],["JCT",240,"potential_long_buildup",264,45.8,50.1,-0.56],["JCT",240,"potential_long_liquidation",263,48.7,49.8,-1.57],["JCT",240,"potential_short_buildup",138,37.7,49.8,-10.39],["DOOD",15,"potential_long_buildup",263,39.5,43.9,-0.03],["DOOD",15,"potential_short_buildup",264,53,53.5,-0.02],["DOOD",15,"potential_long_liquidation",308,49.7,53.5,0.09],["DOOD",15,"potential_short_covering",236,44.9,43.9,0.13],["DOOD",60,"potential_long_buildup",262,34,39.1,0.29],["DOOD",60,"potential_short_buildup",262,63,59.8,-0.09],["DOOD",60,"potential_long_liquidation",307,59.6,59.8,0.24],["DOOD",60,"potential_short_covering",235,43.4,39.1,0.52],["DOOD",240,"potential_long_buildup",257,28,32.8,-0.35],["DOOD",240,"potential_short_buildup",260,63.8,66.5,0.07],["DOOD",240,"potential_long_liquidation",302,64.9,66.5,1.02],["DOOD",240,"potential_short_covering",232,34.9,32.8,1],["EVAA",15,"potential_short_buildup",87,39.1,47.8,-0.16],["EVAA",15,"potential_long_liquidation",165,43,47.8,-0.5],["EVAA",15,"potential_short_covering",70,51.4,50.4,-0.14],["EVAA",15,"potential_long_buildup",236,50.8,50.4,0.44],["EVAA",60,"potential_short_buildup",84,36.9,47,-2.2],["EVAA",60,"potential_long_liquidation",163,39.3,47,-1.12],["EVAA",60,"potential_short_covering",69,50.7,52.3,0.56],["EVAA",60,"potential_long_buildup",235,56.2,52.3,1.71],["EVAA",240,"potential_short_buildup",79,39.2,48.3,-6.04],["EVAA",240,"potential_long_liquidation",157,38.2,48.3,-5.36],["EVAA",240,"potential_short_covering",61,52.5,51.3,2.86],["EVAA",240,"potential_long_buildup",229,56.3,51.3,5.26]];
+
+const HLABEL = { 15: '15m', 60: '60m', 240: '4h' };
+const sign = (v, d = 1) => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(d);
+const pill = (v, d = 1, unit = '') => `<span class="pill ${v > 0.05 ? 'pos' : v < -0.05 ? 'neg' : ''}">${sign(v, d)}${unit}</span>`;
+const withheld = (t) => t === 'potential_long_liquidation' ? '<span class="tag">withheld in app</span>' : '';
+
+// Pooled table
+document.getElementById('pooled').innerHTML = ORDER.map((t) => POOLED.filter((r) => r[1] === t).map((r, i) => `
+  <tr><td class="l">${i ? '' : NAMES[t] + withheld(t)}</td><td class="n">${HLABEL[r[0]]}</td><td class="n">${r[2].toLocaleString('en-US')}</td>
+  <td class="n">${r[3].toFixed(1)}%</td><td class="n">${r[4].toFixed(1)}%</td><td class="n">${r[5].toFixed(1)}%</td>
+  <td>${pill(r[3] - r[5], 1, ' pp')}</td><td class="n">${sign(r[6], 2)}</td></tr>`).join('')).join('');
+
+// Per-token table with horizon switch
+function renderTokens(h) {
+  const tokens = ['IDOL', 'DOS', 'JCT', 'DOOD', 'EVAA'];
+  document.getElementById('tokens').innerHTML = tokens.map((tok) => {
+    const rows = ORDER.map((t) => TOKENS.find((r) => r[0] === tok && r[1] === h && r[2] === t)).filter(Boolean);
+    return `<tr class="group"><td colspan="6">$${tok}</td></tr>` + rows.map((r) => `
+      <tr><td class="l">${NAMES[r[2]]}${withheld(r[2])}</td><td class="n">${r[3]}</td><td class="n">${r[4].toFixed(1)}%</td><td class="n">${r[5].toFixed(1)}%</td>
+      <td>${pill(r[4] - r[5], 1, ' pp')}</td><td class="n">${sign(r[6], 2)}%</td></tr>`).join('');
+  }).join('');
+  document.querySelectorAll('.seg button').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.h === h)));
+}
+document.querySelectorAll('.seg button').forEach((b) => b.addEventListener('click', () => renderTokens(+b.dataset.h)));
+renderTokens(60);
+
+// Dot plot: rows grouped by horizon, x = hit rate %
+(function dotplot() {
+  const svg = document.getElementById('dotplot');
+  const W = 860, left = 170, right = 30, top = 28, rowH = 26, groupGap = 22, min = 40, max = 54;
+  const x = (v) => left + (v - min) / (max - min) * (W - left - right);
+  let out = '', y = top;
+  const ticks = [40, 42, 44, 46, 48, 50, 52, 54];
+  const groups = [15, 60, 240];
+  const totalH = top + groups.length * (ORDER.length * rowH + groupGap) + 8;
+  for (const t of ticks) out += `<line class="${t === 50 ? 'fifty' : 'grid'}" x1="${x(t)}" x2="${x(t)}" y1="${top - 8}" y2="${totalH - 30}"/><text x="${x(t)}" y="${totalH - 14}" text-anchor="middle">${t}%</text>`;
+  for (const h of groups) {
+    out += `<text x="8" y="${y + 4}" style="font-weight:500">${HLABEL[h]} horizon</text>`;
+    y += 14;
+    for (const t of ORDER) {
+      const r = POOLED.find((p) => p[0] === h && p[1] === t);
+      const up = UP.has(t) ? ' up' : '';
+      const cy = y + rowH / 2;
+      out += `<text class="lab" x="20" y="${cy + 4}">${NAMES[t]}</text>`;
+      out += `<line class="link${up}" x1="${x(r[3])}" x2="${x(r[5])}" y1="${cy}" y2="${cy}"/>`;
+      out += `<line class="base" x1="${x(r[5])}" x2="${x(r[5])}" y1="${cy - 7}" y2="${cy + 7}"/>`;
+      out += `<circle class="hit${up}" cx="${x(r[3])}" cy="${cy}" r="5"><title>${NAMES[t]} ${HLABEL[h]}: ${r[3]}% vs baseline ${r[5]}%</title></circle>`;
+      y += rowH;
+    }
+    y += groupGap - 14;
+  }
+  svg.setAttribute('viewBox', `0 0 ${W} ${totalH}`);
+  svg.innerHTML = out;
+})();
+</script>

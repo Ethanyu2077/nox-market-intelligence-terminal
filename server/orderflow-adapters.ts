@@ -15,13 +15,17 @@ export function normalizeFlowTrade(market: ProjectMarket, row: Row, multiplier: 
     case 'bybit': id = row.execId ?? row.i; price = row.price ?? row.p; quantity = row.size ?? row.v; side = row.side ?? row.S; time = row.time ?? row.T; break;
     case 'okx': id = row.tradeId; price = row.px; quantity = row.sz; side = row.side; time = row.ts; break;
     case 'bitget': id = row.tradeId; price = row.price; quantity = row.size; side = row.side; time = row.ts; break;
-    case 'gate': id = row.id; price = row.price; quantity = market.marketType === 'spot' ? row.amount : Math.abs(num(row.size) ?? NaN); side = market.marketType === 'spot' ? row.side : num(row.size) == null || num(row.size) === 0 ? null : Number(row.size) > 0 ? 'buy' : 'sell'; time = row.create_time_ms; break;
+    case 'gate': id = row.id; price = row.price; quantity = market.marketType === 'spot' ? row.amount : Math.abs(num(row.size) ?? NaN); side = market.marketType === 'spot' ? row.side : num(row.size) == null || num(row.size) === 0 ? null : Number(row.size) > 0 ? 'buy' : 'sell'; time = row.create_time_ms ?? row.create_time; break;
     case 'kucoin': id = row.tradeId ?? row.sequence; price = row.price; quantity = row.size; side = row.side; time = (num(row.ts ?? row.time) ?? NaN) / 1e6; break;
     case 'mexc': id = row.id; price = row.price; quantity = row.qty; side = typeof row.isBuyerMaker === 'boolean' ? row.isBuyerMaker ? 'sell' : 'buy' : null; time = row.time; break;
   }
-  const p = num(price), q = num(quantity), t = num(time); const s = String(side).toLowerCase();
+  const p = num(price), q = num(quantity), rawTime = num(time); const s = String(side).toLowerCase();
+  // Gate futures REST timestamps are fractional SECONDS while its WebSocket feed uses ms, so
+  // every venue timestamp is normalised to ms before validation. Anything below 1e11 can only
+  // be a seconds value; above it is already milliseconds.
+  const t = rawTime == null ? null : rawTime < 1e11 ? rawTime * 1000 : rawTime;
   // All accepted markets are USDT-quoted. Missing multiplier, ID, taker side or timestamp is a hard rejection.
-  if (market.quote !== 'USDT' || id == null || String(id) === '' || (typeof id === 'number' && !Number.isSafeInteger(id)) || !p || p <= 0 || !q || q <= 0 || !t || t < 1e12 || t > Date.now() + 60_000 || !['buy', 'sell'].includes(s) || multiplier == null || !Number.isFinite(multiplier) || multiplier <= 0) return null;
+  if (market.quote !== 'USDT' || id == null || String(id) === '' || (typeof id === 'number' && !Number.isSafeInteger(id)) || !p || p <= 0 || !q || q <= 0 || t == null || t < 1e12 || t > Date.now() + 60_000 || !['buy', 'sell'].includes(s) || multiplier == null || !Number.isFinite(multiplier) || multiplier <= 0) return null;
   const base = q * multiplier;
   if (!Number.isFinite(base) || !Number.isFinite(p * base)) return null;
   return { id: String(id), exchange: market.exchange, marketType: market.marketType, symbol: market.symbol, price: p, quantity: base, notional: p * base, side: s as 'buy' | 'sell', time: Math.floor(t), source };
@@ -31,7 +35,10 @@ export function orderFlowCapability(market: ProjectMarket) {
   if(market.exchange==='upbit'||market.exchange==='bithumb')return {available:false,reason:'KRW spot REST only; excluded from USDT aggressor flow.'};
   if (market.quote !== 'USDT') return { available: false, reason: 'Only USDT pairs are comparable; no unverified FX conversion.' };
   if (market.exchange === 'mexc' && market.marketType === 'perpetual') return { available: false, reason: 'MEXC public deal feed has no documented stable event ID; reliable deduplication not verified. Flow excluded.' };
-  return { available: true, reason: market.exchange === 'mexc' ? 'REST recent trades only; Protobuf spot WebSocket decoder not yet verified.' : 'Public aggressor trades; bounded REST recovery + WebSocket.' };
+  // Live MEXC spot /api/v3/trades returns id:null on every row (verified 2026-10-28); without a
+  // stable native id REST/WebSocket overlap cannot be deduplicated, so flow is explicitly excluded.
+  if (market.exchange === 'mexc' && market.marketType === 'spot') return { available: false, reason: 'MEXC spot public trades expose no stable trade ID; deduplicated flow cannot be verified. Flow excluded.' };
+  return { available: true, reason: 'Public aggressor trades; bounded REST recovery + WebSocket.' };
 }
 
 export async function verifiedFlowInstrument(market: ProjectMarket): Promise<Instrument> {

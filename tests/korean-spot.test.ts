@@ -52,3 +52,4 @@ test('unlisted KRW pairs never cause ticker requests; errors retain selected-mar
 test('new spot venues disclose unsupported derivatives/streaming capabilities',()=>{
   for(const exchange of ['upbit','bithumb']){const c=exchangeCapabilities().find(c=>c.exchange===exchange)!;assert.ok(c.restDiscovery&&c.restSnapshot);assert.equal(c.openInterest,false);assert.equal(c.funding,false);assert.equal(c.websocketTrades,false);assert.equal(c.websocketTicker,false);}
 });
+

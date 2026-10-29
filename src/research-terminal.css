@@ -1,0 +1,62 @@
+.research-terminal { min-width: 0; }
+.app-shell .research-terminal .kpi { min-height: 88px; padding: 12px 16px; gap: 5px; }
+.app-shell .research-terminal .kpi strong { font-size: 22px; }
+.terminal-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
+.terminal-heading > div > span { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+.terminal-heading h1 { display: flex; align-items: baseline; gap: 12px; margin: 6px 0 0; font-size: 22px; }
+.terminal-heading h1 small { color: var(--muted); font: 12px var(--num); }
+.research-terminal button { border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 9px 12px; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.terminal-heading > button, .terminal-validation > button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.research-terminal button:hover { background: var(--surface-2); }
+.terminal-workbench { display: grid; grid-template-columns: minmax(0, 7fr) minmax(280px, 3fr); gap: 16px; align-items: start; scroll-margin-top: 90px; }
+.terminal-analysis, .terminal-context { min-width: 0; }
+.terminal-section-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.terminal-section-head strong { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.terminal-section-head small, .terminal-section-head > span { display: block; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.terminal-section-head small { margin-top: 4px; }
+.terminal-indicators { display: flex; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--line-soft); }
+.terminal-indicators button { padding: 5px 10px; min-height: 32px; font-size: 11px; color: var(--muted); }
+.terminal-indicators button[aria-pressed=true] { color: var(--text); background: var(--surface-2); border-color: var(--line-strong); }
+.terminal-chart { width: 100%; touch-action: pan-y; }
+.terminal-chart svg { display: block; width: 100%; height: 100%; }
+.terminal-grid line { stroke: var(--line-soft); stroke-width: .6; }
+.terminal-crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.terminal-chart-label { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; min-height: 34px; padding: 8px 16px; font-size: 11px; }
+.terminal-chart-label strong { font-weight: 500; }
+.terminal-chart-label span { color: var(--muted); font: 10px/1.5 var(--num); }
+.terminal-plot { border-top: 1px solid var(--line-soft); }
+.terminal-plot-empty { height: 82px; display: grid; place-items: center; color: var(--muted); }
+.terminal-axis { display: flex; justify-content: space-between; padding: 12px 16px; color: var(--muted); font: 10px var(--num); border-top: 1px solid var(--line-soft); }
+.terminal-source-note { margin: 0; padding: 12px 16px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 11px; line-height: 1.7; }
+.terminal-context { display: flex; flex-direction: column; gap: 16px; }
+.terminal-context > .panel { margin: 0; }
+.terminal-quality dl { margin: 0; padding: 8px 16px; }
+.terminal-quality dl > div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.terminal-quality dt { font-size: 12px; color: var(--muted); }
+.terminal-quality dd { margin: 0; font: 12px var(--num); }
+.terminal-quality > small { display: block; padding: 0 16px 14px; color: var(--muted); font-size: 11px; }
+.terminal-evidence-body { padding: 16px; max-height: 540px; overflow-y: auto; }
+.terminal-evidence-body h2 { font-size: 15px; margin: 0 0 6px; }
+.terminal-evidence-body > small { color: var(--muted); font-size: 11px; }
+.terminal-evidence-block h3 { font-size: 12px; margin: 18px 0 8px; }
+.terminal-evidence-block ul { padding-left: 16px; margin: 0; }
+.terminal-evidence-block li { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; margin-bottom: 5px; }
+.terminal-evidence-body details { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; font-size: 12px; }
+.terminal-evidence-body summary { cursor: pointer; }
+.terminal-inference { color: var(--muted); font-size: 11px; line-height: 1.7; border-top: 1px solid var(--line); padding-top: 12px; }
+.terminal-venues { margin-top: 20px; min-width: 0; }
+.terminal-venues .table-wrap { overflow-x: auto; }
+.terminal-bottom { display: grid; grid-template-columns: minmax(0, 7fr) minmax(280px, 3fr); gap: 16px; margin-top: 20px; }
+.terminal-event-list { max-height: 230px; overflow-y: auto; }
+.terminal-event-list button { display: grid; grid-template-columns: 135px minmax(0, 1fr) auto; gap: 12px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; padding: 12px 16px; }
+.terminal-event-list button.selected { background: var(--surface-2); }
+.terminal-event-list time, .terminal-event-list button > span { color: var(--muted); font-size: 11px; }
+.terminal-event-list strong { font-size: 12px; font-weight: 500; }
+.terminal-validation > p { margin: 16px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.terminal-validation > button { margin: 0 16px 16px; }
+.terminal-empty { padding: 24px 16px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.terminal-price .terminal-chart { height: 170px !important; }
+.terminal-plot .terminal-chart { height: 58px !important; }
+.terminal-chart-label { min-height: 30px; }
+@media (max-width: 1180px) { .terminal-workbench, .terminal-bottom { grid-template-columns: minmax(0, 1fr); }.terminal-context { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }.terminal-evidence-body { max-height: 360px; } }
+@media (max-width: 640px) { .terminal-heading { align-items: flex-start; flex-direction: column; }.terminal-context { display: flex; }.terminal-event-list button { grid-template-columns: minmax(0, 1fr) auto; }.terminal-event-list time { grid-column: 1 / -1; }.terminal-section-head { padding: 12px; }.terminal-indicators button { min-height: 44px; }.research-terminal button { min-height: 40px; }.terminal-chart-label { padding-inline: 12px; }.terminal-chart-label span { font-size: 10px; } }

@@ -1,5 +1,5 @@
 import type { MarketProject, ProjectVenueResponse } from '../shared/types.ts';
-import type { ResearchReport, SignalEvent } from '../shared/research.ts';
+import { METRIC_DEPENDENCIES, NON_IDENTIFIABLE_PHENOMENA, type ResearchReport, type SignalEvent } from '../shared/research.ts';
 import { createHash } from 'node:crypto';
 
 export const READ_ONLY_TOOLS = ['market_snapshot', 'cross_exchange_evidence', 'data_freshness'] as const;
@@ -7,7 +7,7 @@ export const READ_ONLY_TOOLS = ['market_snapshot', 'cross_exchange_evidence', 'd
 // Only normalized public market data crosses this boundary. No store, wallet, or execution tool is exposed.
 export function analyzeResearch(project: MarketProject, data: ProjectVenueResponse, now = Date.now()): ResearchReport {
   const sources = data.snapshots.map((s, i) => ({ id: `S${i + 1}`, venue: s.exchange, symbol: s.symbol, source: s.source, eventTime: s.eventTime, quality: s.quality }));
-  const report: ResearchReport = { projectId: project.id, generatedAt: now, mode: 'evidence-only', sources, tools: [...READ_ONLY_TOOLS], observed: [], inferences: [], hypotheses: [], limitations: [] };
+  const report: ResearchReport = { projectId: project.id, generatedAt: now, mode: 'evidence-only', sources, tools: [...READ_ONLY_TOOLS], observed: [], inferences: [], hypotheses: [], limitations: [], metricDependencies: METRIC_DEPENDENCIES.map((entry) => ({ ...entry, dependsOn: [...entry.dependsOn], duplicateOf: [...entry.duplicateOf] })), nonIdentifiable: [...NON_IDENTIFIABLE_PHENOMENA] };
   data.snapshots.forEach((s, i) => {
     const refs = [`S${i + 1}`];
     for (const [key, unit] of [['price', 'quote/base'], ['volume24hUsd', 'USD/24h'], ['oiBase', 'base'], ['oiUsd', 'USD'], ['fundingRate', 'decimal/settlement'], ['cvd', 'USD']] as const) {
@@ -22,6 +22,8 @@ export function analyzeResearch(project: MarketProject, data: ProjectVenueRespon
   report.limitations.push({ text: 'CVD is the returned venue-specific trade window, not lifetime CVD. Snapshot windows are not guaranteed aligned across venues; these values must not be summed.', sources: sources.map(s => s.id) });
   report.hypotheses.push({ text: 'A positioning imbalance may explain venue differences, but OI and aggressive flow alone cannot identify ownership, position opening/closing, or liquidation causality.', sources: sources.map(s => s.id) });
   report.limitations.push({ text: 'No LLM provider is configured: this is a deterministic, read-only evidence report, not an AI-generated answer. Confidence is heuristic, not a calibrated probability. Historical replay is not an out-of-sample backtest.', sources: [] });
+  report.limitations.push({ text: 'Derived metrics are not independent confirmations: CVD is the cumulative sum of Volume Delta, and OI USD is base OI revalued at mark price. See metricDependencies before treating agreement as convergence.', sources: sources.map(s => s.id) });
+  report.limitations.push({ text: 'Directional claims require synchronised price/OI/flow windows with >=80% aggressor-flow bucket coverage; liquidation and absorption labels additionally require per-event liquidation and sequence-correct L2 depth data, which this version does not collect.', sources: [] });
   return report;
 }
 

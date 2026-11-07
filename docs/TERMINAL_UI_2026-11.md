@@ -25,6 +25,14 @@
 - **字阶**：11 / 12 / 13 / 14 / 16 / 20 / 24，数字统一 tabular-nums；标题用 UI 字体，数据用等宽字体。
 - **密度**：表格行 44px、表头 30px、KPI 条 78px，比原实现更紧凑但保留 12px 正文。
 
+## 2.1 预览 / Preview
+
+![观察列表实时报价](screenshots/watchlist.jpg)
+*观察列表：每个项目实时价格、24H、成交、OI、资金费率、24h 迷你走势与覆盖状态。*
+
+![研究终端（中文）](screenshots/terminal-zh.jpg)
+*研究终端：常驻市场条 + 统一 KPI 条 + 同步结构图。*
+
 ## 3. 结构变化
 
 ```
@@ -52,6 +60,13 @@
 
 ## 4. AI 集成
 
+![DeepSeek 流式回答与来源引用](screenshots/assistant-answer.jpg)
+*流式回答：每个事实后跟可悬停的来源编号，模型只读取服务端证据包。*
+
+![结构化研判简报](screenshots/assistant-brief.jpg)
+*研判简报：观测 / 推断 / 风险各自独立，引用编号经过服务端白名单校验。*
+
+
 详见 [DEEPSEEK_INTEGRATION.md](DEEPSEEK_INTEGRATION.md)。摘要：
 
 - 研究面板改为 **DeepSeek / 证据报告** 双标签：模型回答与确定性报告并列，数值永远来自服务端。
@@ -76,4 +91,6 @@
 npm run typecheck && npm run lint && npm test && npm run build
 ```
 
-截图（1600×1000）覆盖：观察列表、研究终端、研究工作区（AI 对话 + 研判）、订单流、设置、430px 移动端。
+截图（1600×1000）覆盖：观察列表、研究终端、研究工作区（AI 对话 + 研判）、订单流、设置、430px 移动端：
+
+![移动端](screenshots/mobile-watchlist.jpg)

@@ -4,6 +4,8 @@ Latest (2026-11): [terminal shell redesign](docs/TERMINAL_UI_2026-11.md) and the
 [DeepSeek research analyst](docs/DEEPSEEK_INTEGRATION.md). The watchlist is now a live price board,
 the market strip is persistent across pages, and ⌘K / ⌘J drive navigation and AI from the keyboard.
 
+![Watchlist](docs/screenshots/watchlist.jpg)
+
 New: [Upbit / Bithumb KRW spot discovery and quotes](KOREAN_SPOT.md), displayed separately from USDT derivatives.
 
 Current authentication: [SQLite storage and sign-in dialog](AUTH_SQLITE.md). Anonymous read-only access and mutation roles are preserved.

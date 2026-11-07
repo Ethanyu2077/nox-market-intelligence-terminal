@@ -49,6 +49,7 @@ import { acquireL2 } from './l2/feed.ts';
 import { analyzeLeadLag } from './leadlag.ts';
 import { L2Collector } from './l2/collector.ts';
 import { buildFactorEvidence, factorSamplesFromL2, factorSamplesFromSnapshots, resampleFactorSamples, FACTOR_TIMEFRAMES } from './crossfactor.ts';
+import { scanHistory } from './history-scan.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
@@ -192,18 +193,39 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
   const start = z.coerce.number().int().optional().parse(req.query.start);
   const end = z.coerce.number().int().optional().parse(req.query.end);
   const asOf = z.coerce.number().int().optional().parse(req.query.asOf);
-  const limit = z.coerce.number().int().min(1).max(2_000).default(2_000).parse(req.query.limit);
-  const query = { kind: 'snapshot' as const, from: start, to: end, asOf, limit };
+  const limit = z.coerce.number().int().min(1).max(2_000).default(1_000).parse(req.query.limit);
+  const snapshotCursor = z.string().optional().parse(req.query.snapshotCursor);
+  const l2Cursor = z.string().optional().parse(req.query.l2Cursor);
+  const scanBase = { from: start, to: end, asOf, limit, maxPages: 5, maxRecords: 5_000, timeoutMs: 5_000 };
   const [snapshots, l2] = await Promise.all([
-    history.page(project.id, query),
-    history.page(project.id, { ...query, kind: 'l2' as const }),
+    scanHistory(history, project.id, { ...scanBase, kind: 'snapshot', cursor: snapshotCursor }),
+    scanHistory(history, project.id, { ...scanBase, kind: 'l2', cursor: l2Cursor }),
   ]);
   const raw = [...factorSamplesFromSnapshots(snapshots.items), ...factorSamplesFromL2(l2.items)].filter((sample) => sample.factor === factor);
   // Factors that need per-venue spot/perp/cvd series not present in the journal stay empty
   // and therefore return `unavailable` rather than an inferred value.
   const report = buildFactorEvidence(factor, resampleFactorSamples(raw, FACTOR_TIMEFRAMES[timeframe]));
-  const partial = Boolean(snapshots.nextCursor || l2.nextCursor);
-  res.json({ ...report, partial, cursor: snapshots.nextCursor ?? null, dataWindow: { ...report.dataWindow, bucketMs: FACTOR_TIMEFRAMES[timeframe] } });
+  const truncated = snapshots.truncated || l2.truncated;
+  const truncationReason = snapshots.reason ?? l2.reason;
+  const researchComplete = !truncated && snapshots.scanned > 0;
+  if (!researchComplete) {
+    // Partial history cannot support a complete-range lead relationship.
+    report.verdict = 'insufficient';
+    report.counterEvidence = [...report.counterEvidence, `Historical scan incomplete (${truncationReason ?? 'no snapshot history'}); conclusions are limited to the scanned range`];
+  }
+  res.json({
+    ...report,
+    partial: !researchComplete,
+    snapshotCursor: snapshots.cursor,
+    l2Cursor: l2.cursor,
+    scannedRecords: snapshots.scanned + l2.scanned,
+    excludedRecords: snapshots.duplicates + l2.duplicates + report.excludedSamples,
+    truncated,
+    truncationReason,
+    researchComplete,
+    asOf: asOf ?? Date.now(),
+    dataWindow: { ...report.dataWindow, bucketMs: FACTOR_TIMEFRAMES[timeframe] },
+  });
 }));
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));

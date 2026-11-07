@@ -9,9 +9,10 @@
  */
 import { execSync } from 'node:child_process';
 import { evaluateRestart } from './lib/restart.mjs';
+import { isWritableDatabase } from './lib/db-safety.mjs';
 
 const url = process.env.DATABASE_URL;
-const allowWrites = process.env.ACCEPTANCE_ALLOW_WRITES === '1' && /(test|acceptance|tmp|ci)/i.test(url ?? '');
+let allowWrites = false;
 const status = { read: 'NOT VERIFIED', write: 'NOT VERIFIED', connectionRecovery: 'NOT VERIFIED', processRestartRecovery: 'NOT VERIFIED' };
 const details = {};
 const finish = (overall) => {
@@ -38,9 +39,13 @@ try {
   if (!table.rows[0]?.name) { details.read = 'nox_history_events missing (run migrations)'; finish('NOT VERIFIED'); }
   const range = await pool.query('SELECT count(*)::int AS n FROM nox_history_events WHERE event_time >= now() - interval \'7 days\'');
   status.read = 'PASS'; details.read = { table: 'nox_history_events', last7d: range.rows[0].n };
+  const identity = await pool.query('SELECT current_database() AS name');
+  const safety = isWritableDatabase({ allowWrites: process.env.ACCEPTANCE_ALLOW_WRITES === '1', expectedName: process.env.ACCEPTANCE_TEST_DB_NAME, actualName: identity.rows[0]?.name });
+  allowWrites = safety.ok;
+  details.database = { name: identity.rows[0]?.name ?? null, writeAllowed: allowWrites };
 
   if (!allowWrites) {
-    details.write = 'requires ACCEPTANCE_ALLOW_WRITES=1 and a disposable (test) DATABASE_URL';
+    details.write = safety.reason;
     details.connectionRecovery = details.write;
     details.processRestartRecovery = details.write;
     finish('NOT VERIFIED');

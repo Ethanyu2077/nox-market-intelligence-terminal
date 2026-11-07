@@ -56,3 +56,17 @@
 - 断网重连：可控网络中断（或 tc/netem）。
 - Timescale：一个可丢弃的 PostgreSQL+Timescale 实例与 `DATABASE_URL`。
 - 冻结复现：经授权的真实历史导出（含 event/received/available 时间）+ SHA256 清单。
+
+## 2026-11 增补（研究完整性轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| Outcome 可用时间（outcomeAvailableAt / censoredLate） | TESTED | 单元测试覆盖；延迟数据不进入训练/OOS |
+| Fold 边界与 embargo（horizon + maxDelay） | TESTED | 每折审计字段与 censored 计数 |
+| 历史覆盖率（quality × density） | TESTED | 不再强制 100；L2 桶用真实 coverage |
+| 历史分页参数（start/end/asOf/limit、partial、cursor） | IMPLEMENTED | API 返回 partial/cursor/dataWindow；route 级未做集成测试 |
+| Evidence Panel V2（筛选/排序/覆盖/数据窗口） | IMPLEMENTED | 使用真实 API；OOS 显示 NOT VERIFIED |
+| Evidence Panel 专项 E2E（切换/错误/移动端） | **NOT VERIFIED** | 本轮未扩展 e2e.mjs 的面板交互断言 |
+| 真实历史冻结样本 + SHA256 | **NOT VERIFIED** | 无授权真实导出 |
+| Spot VD / Perp VD / CVD 完整覆盖 | **NOT VERIFIED** | Journal 无逐所历史序列 |
+| Binance L2 实机、断网重连、Timescale、重启恢复、抽样核对 | **NOT VERIFIED** | 缺相应环境 |

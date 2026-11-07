@@ -20,7 +20,7 @@ test('authorization rules', () => {
   assert.equal(authorizeAcceptance({ role: 'admin' }, 'proj-dood').status, 400);
 });
 
-async function withApp(env: Record<string, string>, run: (url: string, calls: string[]) => Promise<void>) {
+async function withApp(env: Record<string, string | undefined>, run: (url: string, calls: string[]) => Promise<void>) {
   const app = express();
   const calls: string[] = [];
   registerAcceptanceRoute(app, {

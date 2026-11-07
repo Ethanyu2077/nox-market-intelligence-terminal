@@ -64,7 +64,9 @@ async function probe(venue, symbol) {
       framesReceived: frames.length, validUpdates: metrics.updatedFrames, duplicates: metrics.duplicates,
       gaps: metrics.finalSequence == null ? null : undefined, gapsDelta: metrics.gapsDelta,
       resyncsDelta: metrics.resyncsDelta,
-      maxDelayMs: maxDelay, integrity: metrics.finalState, finalState: metrics.finalState,
+      maxDelayMs: maxDelay, integrity: metrics.finalIntegrity, state: metrics.finalState, finalState: metrics.finalState,
+      gapDetected: metrics.gapDetected, gapRecovered: metrics.gapRecovered,
+      resyncStarted: metrics.resyncStarted, resyncCompleted: metrics.resyncCompleted,
       spreadBps: metrics.spreadBps, bidDepthUsd: metrics.bidDepthUsd, askDepthUsd: metrics.askDepthUsd,
       endedEarly,
       reason: healthy ? null : metrics.updatedFrames < 2 ? 'fewer than two valid live updates in the window'

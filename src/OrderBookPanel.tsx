@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import type { ExchangeSelection, MarketProject } from '../shared/types';
 import type { OrderBookSnapshot } from '../shared/orderbook';
+import type { L2Metrics, L2Snapshot } from '../shared/l2';
 
 /**
  * Depth panel.
@@ -24,6 +25,7 @@ export function OrderBookPanel({ project, exchange, language }: {
   }, [project, venue]);
 
   const [book, setBook] = useState<OrderBookSnapshot | null>(null);
+  const [l2, setL2] = useState<{ snapshot: L2Snapshot; metrics: L2Metrics | null } | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -48,6 +50,17 @@ export function OrderBookPanel({ project, exchange, language }: {
     const timer = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 4_000);
     return () => clearInterval(timer);
   }, [load]);
+
+  // Continuous sequence-validated book (separate from the REST snapshot above).
+  useEffect(() => {
+    if (!market || !['binance', 'bybit', 'okx'].includes(market.exchange)) { setL2(null); return; }
+    const events = new EventSource(`/api/market/${market.exchange}/${encodeURIComponent(market.symbol)}/book/stream`);
+    const onBook = (event: MessageEvent) => {
+      try { setL2(JSON.parse(event.data) as { snapshot: L2Snapshot; metrics: L2Metrics | null }); } catch { /* ignore malformed frame */ }
+    };
+    events.addEventListener('book', onBook as EventListener);
+    return () => events.close();
+  }, [market]);
 
   const maxNotional = Math.max(1, ...(book?.bids ?? []).map((level) => level.notional), ...(book?.asks ?? []).map((level) => level.notional));
   const age = book ? Math.max(0, Math.round((Date.now() - book.eventTime) / 1000)) : null;
@@ -80,6 +93,19 @@ export function OrderBookPanel({ project, exchange, language }: {
           </div>
 
           {error && <p role="alert" className="ob-error"><AlertTriangle size={12} />{error}</p>}
+
+          {l2 && (
+            <div className="ob-l2">
+              <span className={`l2-state ${l2.snapshot.state}`}>{l2.snapshot.state}</span>
+              <span>seq {l2.snapshot.sequence.last ?? '—'}</span>
+              <span>gaps {l2.snapshot.gaps}</span>
+              <span>resyncs {l2.snapshot.resyncs}</span>
+              <span>{zh ? '失衡' : 'imbalance'} {l2.metrics?.imbalancePct == null ? '—' : `${l2.metrics.imbalancePct.toFixed(1)}%`}</span>
+              <span>{zh ? '买盘撤出' : 'bid withdrawal'} {l2.metrics?.bidWithdrawalPct == null ? '—' : `${l2.metrics.bidWithdrawalPct.toFixed(1)}%`}</span>
+              <span>{zh ? '卖盘撤出' : 'ask withdrawal'} {l2.metrics?.askWithdrawalPct == null ? '—' : `${l2.metrics.askWithdrawalPct.toFixed(1)}%`}</span>
+              <span className="l2-integrity">{zh ? '完整性' : 'integrity'} {l2.snapshot.integrity}</span>
+            </div>
+          )}
 
           {book && (
             <div className="ob-ladder">

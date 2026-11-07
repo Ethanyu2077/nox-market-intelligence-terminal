@@ -2,6 +2,14 @@
 
 For the current V2.2 incremental data/auth/regime architecture and its explicitly unverified production boundaries, see [V2_2_IMPLEMENTATION.md](V2_2_IMPLEMENTATION.md). This note retains the initial-stage architecture audit below.
 
+## L2 boundary (2026-11)
+
+`server/l2/` maintains a sequence-validated continuous book (REST snapshot + deltas) for
+Binance, OKX and Bybit. Gaps force a full resync; a book is never patched across a gap.
+Bybit publishes monotonic but non-contiguous update ids, so it validates ordering only and
+relies on reconnect/resync (documented). The single-shot REST depth in `orderbook.ts` stays a
+separate product with its own TTL and is never presented as sequenced L2.
+
 ## Reliability boundary (2026-11)
 
 Alert evaluation is scoped (project/venue/market type/timeframe) and persists its runtime state, so an

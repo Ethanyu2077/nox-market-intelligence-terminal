@@ -45,6 +45,7 @@ import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
 import { venueBreakers } from './venue-health.ts';
 import { isDepthVenue, orderBookSnapshot } from './orderbook.ts';
 import { capabilityRegistry } from './capability-registry.ts';
+import { acquireL2 } from './l2/feed.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
 
@@ -282,6 +283,31 @@ app.get('/api/market/:exchange/:symbol/series', safe(async (req, res) => {
   }
   res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } });
 }));
+const l2VenueSchema = z.enum(['binance', 'bybit', 'okx']);
+app.get('/api/market/:exchange/:symbol/book', safe(async (req, res) => {
+  const venue = l2VenueSchema.safeParse(req.params.exchange);
+  if (!venue.success) { res.status(501).json({ error: { code: 'L2_UNAVAILABLE', message: 'Continuous L2 is implemented for binance, bybit and okx', timestamp: Date.now() } }); return; }
+  const { feed, release } = acquireL2(venue.data, String(req.params.symbol).toUpperCase());
+  try { res.json({ snapshot: feed.snapshot(), metrics: feed.book.metricHistory().slice(-120) }); }
+  finally { release(); }
+}));
+app.get('/api/market/:exchange/:symbol/book/stream', (req, res) => {
+  const venue = l2VenueSchema.safeParse(req.params.exchange);
+  if (!venue.success) { res.status(501).json({ error: { code: 'L2_UNAVAILABLE', message: 'Continuous L2 is implemented for binance, bybit and okx', timestamp: Date.now() } }); return; }
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  const { feed, release } = acquireL2(venue.data, String(req.params.symbol).toUpperCase());
+  const send = () => {
+    if (res.writableEnded || res.destroyed) return;
+    res.write(`event: book\ndata: ${JSON.stringify({ snapshot: feed.snapshot(), metrics: feed.book.metricHistory().slice(-1)[0] ?? null })}\n\n`);
+  };
+  send();
+  const timer = setInterval(send, 250);
+  req.on('close', () => { clearInterval(timer); release(); });
+});
 app.get('/api/market/:exchange/:symbol/depth', safe(async (req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange);
   if (!exchange.success) { res.status(400).json({ error: { code: 'INVALID_EXCHANGE', message: 'Unsupported exchange', timestamp: Date.now() } }); return; }

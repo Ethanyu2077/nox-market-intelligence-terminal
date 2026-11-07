@@ -144,6 +144,14 @@
 .cap-state.unavailable { color: var(--down); border-color: color-mix(in srgb, var(--down) 30%, transparent); }
 .cap-none { color: var(--faint); }
 
+/* Continuous L2 strip */
+.ob-l2 { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2); color: var(--muted); font: 10px var(--mono); }
+.l2-state { padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); text-transform: uppercase; }
+.l2-state.live { color: var(--up); border-color: color-mix(in srgb, var(--up) 30%, transparent); }
+.l2-state.syncing, .l2-state.connecting, .l2-state.stale { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.l2-state.resyncing { color: var(--down); border-color: color-mix(in srgb, var(--down) 35%, transparent); }
+.l2-integrity { margin-left: auto; color: var(--faint); }
+
 /* Order book snapshot */
 .structure-depth { margin-top: 14px; }
 .orderbook-panel { margin-bottom: 14px; }

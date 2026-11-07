@@ -24,6 +24,8 @@ import { MarketBar } from './shell/MarketBar';
 import { CommandPalette, type PaletteAction } from './shell/CommandPalette';
 import { useAuth } from './shell/useAuth';
 import { useWatchlistQuotes } from './shell/useWatchlistQuotes';
+import { useVenues } from './shell/useVenues';
+import { CcxtPanel } from './CcxtPanel';
 import { Sparkline } from './shell/Sparkline';
 import { AiDrawer } from './ai/AiDrawer';
 import { AiSettingsCard } from './ai/AiSettingsCard';
@@ -206,6 +208,7 @@ export default function App() {
   const loadGeneration = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const auth = useAuth();
+  const venues = useVenues();
   const selectedProject = useMemo(() => projects.find((project) => project.id === selectedProjectId && !project.archived) ?? null, [projects, selectedProjectId]);
   const t = useCallback((value: string) => translate(value, language), [language]);
   const localizedSeries = useMemo(() => language === 'zh' && series ? { ...series, positionFlow: { ...series.positionFlow, signals: series.positionFlow.signals.map((signal) => ({ ...signal, label: translate(signal.label, language) })) } } : series, [language, series]);
@@ -263,7 +266,10 @@ export default function App() {
     // The watchlist page has no instrument view; opening a venue socket there only burns
     // connections and produces misleading "degraded" transport labels.
     if (page === 'projects') { setConnection('polling'); return; }
-    if (!activeMarket || !selectedProject?.monitoring.streamingEnabled) { setConnection('stale'); return; }
+    // A project with streaming switched off is polled on a 60s timer, which is healthy —
+    // only an enabled stream that stops delivering is stale.
+    if (!selectedProject?.monitoring.streamingEnabled) { setConnection('polling'); return; }
+    if (!activeMarket) { setConnection('stale'); return; }
     const streamVenue = activeMarket.exchange;
     // The SSE payload is one venue's feed. It may feed a single-venue view and the native
     // Binance series, but it must never be written into the cross-venue aggregate overview:
@@ -312,6 +318,8 @@ export default function App() {
     loadGeneration.current += 1;
     loadAbort.current?.abort();
     setSelectedProjectId(id); setOverview(null); setSeries(null); setVenueData(null); setError(''); setConnection('connecting'); setLastStreamEvent(0);
+    // A venue selected for the previous project may not exist here.
+    setExchange('aggregated');
     if (project) setIntervalValue(project.monitoring.defaultInterval);
     // Viewing another project is read-only; persist the preference only for signed-in operators.
     const status = await fetch('/api/auth/status').then(r => r.json()).catch(() => null);
@@ -371,6 +379,7 @@ export default function App() {
               coverage={coverage}
               exchange={exchange}
               onExchange={setExchange}
+              venues={venues}
               interval={interval}
               onInterval={setIntervalValue}
               lastEvent={lastStreamEvent}
@@ -389,7 +398,7 @@ export default function App() {
             {page === 'positionFlow' && selectedProject && <PositionFlowPage overview={overview} series={localizedSeries} interval={interval}/>}
             {page === 'derivatives' && selectedProject && <DerivativesPage overview={overview} series={localizedSeries}/>}
             {page === 'liquidity' && selectedProject && <OnchainLiquidityPage project={selectedProject} interval={interval}/>}
-            {page === 'settings' && <><AiSettingsCard language={language} /><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
+            {page === 'settings' && <><AiSettingsCard language={language} /><CcxtPanel language={language} /><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
             {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}
             {page === 'orderflow' && selectedProject && <OrderFlowPage key={selectedProject.id} project={selectedProject} series={localizedSeries} venues={venueData} interval={interval} onInterval={setIntervalValue} language={language} selection={exchange}/>}
             {page === 'signals' && selectedProject && <RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/>}

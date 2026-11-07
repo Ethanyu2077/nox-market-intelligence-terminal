@@ -5,12 +5,15 @@ import type {
 import { getInstruments as getBinanceFutures, getSpotInstruments as getBinanceSpot, overview as getBinanceOverview } from './binance.ts';
 import { resolveDexPaprikaIdentity } from './dexpaprika.ts';
 import {koreanSpot,koreanBaseSymbol} from './korean-spot.ts';
+import { ccxtInstruments, ccxtSnapshot } from './ccxt/adapter.ts';
+import { CCXT_LABELS, enabledCcxtVenues, isCcxtVenue, resolveCcxtConfig } from './ccxt/config.ts';
+import { CCXT_EXCHANGE_IDS } from '../shared/types.ts';
 
 const TIMEOUT = 10_000;
 const CACHE_MS = 30 * 60_000;
 type Json = Record<string, unknown>;
 
-const capabilityRows: ExchangeCapabilities[] = [
+const nativeCapabilityRows: Array<Omit<ExchangeCapabilities, 'transport' | 'enabled'>> = [
   ...(['upbit','bithumb'] as const).map(exchange=>({exchange,label:exchange==='upbit'?'Upbit KRW Spot':'Bithumb KRW Spot',restDiscovery:true,restSnapshot:true,websocketTrades:false,websocketTicker:false,websocketOrderBook:false,historicalSeries:false,openInterest:false,funding:false,liquidations:false,notes:['KRW spot REST snapshots; quote units stay KRW and are excluded from USDT derivatives aggregation.']})),
   { exchange: 'binance', label: 'Binance', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: true, openInterest: true, funding: true, liquidations: false, notes: ['Native aggregate-trade stream and historical analytics are active.', 'Order-book sequence engine is scheduled for Phase 2.'] },
   { exchange: 'bitget', label: 'Bitget', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Public futures trade/ticker stream is normalized and deduplicated.'] },
@@ -21,7 +24,41 @@ const capabilityRows: ExchangeCapabilities[] = [
   { exchange: 'mexc', label: 'MEXC', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Public futures REST and deal/ticker streams are enabled.', 'Contract detail is cached to respect the documented low discovery rate limit.', 'Unsupported metrics remain unavailable.'] }
 ];
 
-export function exchangeCapabilities() { return capabilityRows.map((row) => ({ ...row, notes: [...row.notes] })); }
+const ccxtConfig = resolveCcxtConfig();
+
+function capabilityRows(): ExchangeCapabilities[] {
+  const native = nativeCapabilityRows.map((row) => ({ ...row, transport: 'native' as const, enabled: true, notes: [...row.notes] }));
+  const enabled = new Set(enabledCcxtVenues(ccxtConfig));
+  const ccxt = CCXT_EXCHANGE_IDS.map<ExchangeCapabilities>((exchange) => ({
+    exchange,
+    label: CCXT_LABELS[exchange],
+    restDiscovery: true,
+    restSnapshot: true,
+    websocketTrades: false,
+    websocketTicker: false,
+    websocketOrderBook: false,
+    historicalSeries: false,
+    openInterest: true,
+    funding: true,
+    liquidations: false,
+    transport: 'ccxt',
+    enabled: enabled.has(exchange),
+    notes: [
+      'USDT perpetual quotes via the CCXT unified adapter (server-side).',
+      'No aggressor-side tape, CVD or WebSocket: those rows stay unavailable rather than estimated.',
+      'Open-interest units are normalised from the venue contract size; USD value is preferred when reported.',
+    ],
+  }));
+  return [...native, ...ccxt];
+}
+
+export function exchangeCapabilities() { return capabilityRows(); }
+
+/** Venues that should appear in discovery / selectors for this process. */
+export function activeExchangeIds(): ExchangeId[] {
+  return capabilityRows().filter((row) => row.enabled).map((row) => row.exchange);
+}
+
 
 async function json<T>(url: string, timeoutMs = TIMEOUT): Promise<T> {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
@@ -132,7 +169,11 @@ async function mexcCatalog() {
   ];
 }
 
-const catalogs: Record<ExchangeId, CatalogLoader> = { binance: binanceCatalog, bitget: bitgetCatalog, bybit: bybitCatalog, okx: okxCatalog, gate: gateCatalog, kucoin: kucoinCatalog, mexc: mexcCatalog,upbit:()=>koreanSpot.instruments('upbit'),bithumb:()=>koreanSpot.instruments('bithumb') };
+const catalogs: Record<ExchangeId, CatalogLoader> = {
+  binance: binanceCatalog, bitget: bitgetCatalog, bybit: bybitCatalog, okx: okxCatalog, gate: gateCatalog, kucoin: kucoinCatalog, mexc: mexcCatalog,
+  upbit: () => koreanSpot.instruments('upbit'), bithumb: () => koreanSpot.instruments('bithumb'),
+  htx: () => ccxtInstruments('htx'), bingx: () => ccxtInstruments('bingx'), phemex: () => ccxtInstruments('phemex'), bitfinex: () => ccxtInstruments('bitfinex'),
+};
 export async function getExchangeInstruments(exchange: ExchangeId) { return cached(exchange, catalogs[exchange]); }
 
 function isContractAddress(query: string) { return /^0x[a-fA-F0-9]{40}$/.test(query) || /^[1-9A-HJ-NP-Za-km-z]{32,50}$/.test(query); }
@@ -152,7 +193,8 @@ async function resolveIdentity(raw: string) {
 
 export async function discoverAcrossExchanges(rawQuery: string): Promise<ProjectDiscoveryResult> {
   const identity = await resolveIdentity(rawQuery);
-  const results = await Promise.allSettled((Object.keys(catalogs) as ExchangeId[]).map(async (exchange) => ({ exchange, rows: await getExchangeInstruments(exchange) })));
+  const active = new Set(activeExchangeIds());
+  const results = await Promise.allSettled((Object.keys(catalogs) as ExchangeId[]).filter((exchange) => active.has(exchange)).map(async (exchange) => ({ exchange, rows: await getExchangeInstruments(exchange) })));
   const markets: ProjectMarket[] = []; const warnings: string[] = [];
   for (const result of results) {
     if (result.status === 'rejected') { warnings.push(`One exchange catalog was unavailable: ${result.reason instanceof Error ? result.reason.message : 'unknown error'}.`); continue; }
@@ -173,9 +215,7 @@ function unavailableSnapshot(exchange: ExchangeId, market: ProjectMarket, source
   return result;
 }
 
-export async function marketSnapshot(market: ProjectMarket): Promise<VenueMarketSnapshot> {
-  if (market.exchange === 'upbit' || market.exchange === 'bithumb') throw new Error('KRW spot uses the independent korean-spot endpoint');
-  if (market.marketType !== 'perpetual') throw new Error('Cross-exchange Phase 1 snapshot currently requires a perpetual market');
+async function nativeSnapshot(market: ProjectMarket): Promise<VenueMarketSnapshot> {
   if (market.exchange === 'binance') {
     const row = await getBinanceOverview(market.symbol);
     return unavailableSnapshot('binance', market, row.source, { price: row.price, markPrice: row.markPrice, change24hPct: row.change24hPct, volume24hBase: row.volume24hBase, volume24hUsd: row.volume24hUsd, cvd: row.cvdWindowDelta, oiBase: row.oiBase, oiUsd: row.oiUsd, fundingRate: row.fundingRate, nextFundingTime: row.nextFundingTime, eventTime: row.eventTime, quality: row.quality });
@@ -205,8 +245,42 @@ export async function marketSnapshot(market: ProjectMarket): Promise<VenueMarket
     const fundingDuration = number(r.nextFundingRateTime);
     return unavailableSnapshot('kucoin', market, 'KuCoin Futures contract detail', { price, markPrice: mark, change24hPct: pct(r.priceChgPct), volume24hBase: number(r.volumeOf24h), volume24hUsd: number(r.turnoverOf24h), oiBase, oiUsd: oiBase != null && mark != null ? oiBase * mark : null, fundingRate: number(r.fundingFeeRate), nextFundingTime: timestamp(r.nextFundingRateDateTime) ?? (fundingDuration != null ? Date.now() + fundingDuration : null), eventTime: timestamp(r.lastTradeTime) ?? Date.now() });
   }
-  const p = await json<Json>(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${encodeURIComponent(market.symbol)}`); const r = (Array.isArray(p.data) ? p.data[0] : p.data) as Json | undefined; if (!r) throw new Error(`MEXC ticker unavailable: ${text(p.message || p.code || 'empty response')}`); const details = await getExchangeInstruments('mexc'); const detail = details.find((i) => i.id === market.id); const contractSize = detail?.contractMultiplier ?? 1; const contracts = number(r.holdVol); const mark = number(r.fairPrice); const oiBase = normalizeContractQuantity(contracts, contractSize);
-  return unavailableSnapshot('mexc', market, 'MEXC Contract public ticker', { price: number(r.lastPrice), markPrice: mark, change24hPct: pct(r.riseFallRate), volume24hBase: number(r.volume24) != null ? number(r.volume24)! * contractSize : null, volume24hUsd: number(r.amount24), oiBase, oiUsd: oiBase != null && mark != null ? oiBase * mark : null, fundingRate: number(r.fundingRate), nextFundingTime: timestamp(r.nextSettleTime), bid: number(r.bid1), ask: number(r.ask1), eventTime: timestamp(r.timestamp) ?? Date.now() });
+  if (market.exchange === 'mexc') {
+    const p = await json<Json>(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${encodeURIComponent(market.symbol)}`); const r = (Array.isArray(p.data) ? p.data[0] : p.data) as Json | undefined; if (!r) throw new Error(`MEXC ticker unavailable: ${text(p.message || p.code || 'empty response')}`); const details = await getExchangeInstruments('mexc'); const detail = details.find((i) => i.id === market.id); const contractSize = detail?.contractMultiplier ?? 1; const contracts = number(r.holdVol); const mark = number(r.fairPrice); const oiBase = normalizeContractQuantity(contracts, contractSize);
+    return unavailableSnapshot('mexc', market, 'MEXC Contract public ticker', { price: number(r.lastPrice), markPrice: mark, change24hPct: pct(r.riseFallRate), volume24hBase: number(r.volume24) != null ? number(r.volume24)! * contractSize : null, volume24hUsd: number(r.amount24), oiBase, oiUsd: oiBase != null && mark != null ? oiBase * mark : null, fundingRate: number(r.fundingRate), nextFundingTime: timestamp(r.nextSettleTime), bid: number(r.bid1), ask: number(r.ask1), eventTime: timestamp(r.timestamp) ?? Date.now() });
+  }
+  // Never let an unknown venue fall through to a different exchange's endpoint.
+  throw new Error(`${market.exchange} has no native snapshot adapter`);
+}
+
+/**
+ * Snapshot routing.
+ *
+ * 1. KRW spot never enters the USDT path.
+ * 2. CCXT-only venues are served by the unified adapter.
+ * 3. Spot markets have no native snapshot adapter; CCXT fills them when enabled.
+ * 4. A native venue is always tried first; CCXT is a labelled fallback, never a silent swap.
+ */
+export async function marketSnapshot(market: ProjectMarket): Promise<VenueMarketSnapshot> {
+  if (market.exchange === 'upbit' || market.exchange === 'bithumb') throw new Error('KRW spot uses the independent korean-spot endpoint');
+  if (isCcxtVenue(market.exchange, ccxtConfig)) return ccxtSnapshot(market, ccxtConfig);
+  if (market.marketType === 'spot') {
+    if (!ccxtConfig.spot) throw new Error('Spot snapshots require CCXT (NOX_CCXT_SPOT)');
+    return ccxtSnapshot(market, ccxtConfig);
+  }
+  try {
+    return await nativeSnapshot(market);
+  } catch (error) {
+    if (!ccxtConfig.fallback) throw error;
+    const reason = error instanceof Error ? error.message : 'native request failed';
+    const fallback = await ccxtSnapshot(market, ccxtConfig).catch(() => null);
+    if (!fallback) throw error;
+    return {
+      ...fallback,
+      source: `${fallback.source} · fallback (native: ${reason.slice(0, 80)})`,
+      quality: 'partial',
+    };
+  }
 }
 
 export function aggregateSnapshots(rows: VenueMarketSnapshot[], requested = rows.length): AggregatedMarketSnapshot {

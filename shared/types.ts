@@ -18,8 +18,17 @@ export interface Instrument {
   contractMultiplier?: number;
 }
 
-export const EXCHANGE_IDS = ['binance', 'bitget', 'bybit', 'okx', 'gate', 'kucoin', 'mexc', 'upbit', 'bithumb'] as const;
+/** Venues with a hand-written native adapter (REST + where available WebSocket). */
+export const NATIVE_EXCHANGE_IDS = ['binance', 'bitget', 'bybit', 'okx', 'gate', 'kucoin', 'mexc', 'upbit', 'bithumb'] as const;
+/**
+ * Venues served exclusively through CCXT. They are inert until enabled with
+ * NOX_CCXT_VENUES, so discovery latency and UI clutter stay opt-in.
+ */
+export const CCXT_EXCHANGE_IDS = ['htx', 'bingx', 'phemex', 'bitfinex'] as const;
+export const EXCHANGE_IDS = [...NATIVE_EXCHANGE_IDS, ...CCXT_EXCHANGE_IDS] as const;
 export type ExchangeId = typeof EXCHANGE_IDS[number];
+export type NativeExchangeId = typeof NATIVE_EXCHANGE_IDS[number];
+export type CcxtExchangeId = typeof CCXT_EXCHANGE_IDS[number];
 export type ExchangeSelection = 'aggregated' | ExchangeId;
 export type ProjectMarketType = 'spot' | 'perpetual';
 
@@ -45,6 +54,10 @@ export interface ExchangeCapabilities {
   openInterest: boolean;
   funding: boolean;
   liquidations: boolean;
+  /** 'native' = bespoke adapter with its own WS/HIST support; 'ccxt' = unified CCXT adapter. */
+  transport: 'native' | 'ccxt';
+  /** False for a CCXT venue that is not listed in NOX_CCXT_VENUES. */
+  enabled: boolean;
   notes: string[];
 }
 

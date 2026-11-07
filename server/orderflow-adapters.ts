@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { Instrument, ProjectMarket } from '../shared/types.ts';
+import { CCXT_EXCHANGE_IDS, type Instrument, type ProjectMarket } from '../shared/types.ts';
 import type { FlowTrade, LiquidationEvent } from '../shared/orderflow.ts';
 import { getExchangeInstruments } from './exchanges.ts';
 import { openExchangeStream } from './exchange-streams.ts';
@@ -32,6 +32,8 @@ export function normalizeFlowTrade(market: ProjectMarket, row: Row, multiplier: 
 }
 
 export function orderFlowCapability(market: ProjectMarket) {
+  // CCXT venues expose quotes only; there is no verified aggressor tape to bucket.
+  if ((CCXT_EXCHANGE_IDS as readonly string[]).includes(market.exchange)) return { available: false, reason: 'CCXT venue: snapshot quotes only, no verified aggressor trade tape.' };
   if(market.exchange==='upbit'||market.exchange==='bithumb')return {available:false,reason:'KRW spot REST only; excluded from USDT aggressor flow.'};
   if (market.quote !== 'USDT') return { available: false, reason: 'Only USDT pairs are comparable; no unverified FX conversion.' };
   if (market.exchange === 'mexc' && market.marketType === 'perpetual') return { available: false, reason: 'MEXC public deal feed has no documented stable event ID; reliable deduplication not verified. Flow excluded.' };
@@ -50,7 +52,7 @@ export async function verifiedFlowInstrument(market: ProjectMarket): Promise<Ins
 export async function recentFlowTrades(market: ProjectMarket, instrument: Instrument): Promise<FlowTrade[]> {
   if(market.exchange==='upbit'||market.exchange==='bithumb')throw new Error('KRW spot does not support this USDT flow adapter');
   const symbol = encodeURIComponent(market.symbol), spot = market.marketType === 'spot';
-  const urls = {
+  const urls: Partial<Record<ProjectMarket['exchange'], string>> = {
     binance: spot ? `https://api.binance.com/api/v3/aggTrades?symbol=${symbol}&limit=1000` : `https://fapi.binance.com/fapi/v1/aggTrades?symbol=${symbol}&limit=1000`,
     bybit: `https://api.bybit.com/v5/market/recent-trade?category=${spot ? 'spot' : 'linear'}&symbol=${symbol}&limit=${spot ? 60 : 1000}`,
     okx: `https://www.okx.com/api/v5/market/trades?instId=${symbol}&limit=500`,
@@ -59,7 +61,10 @@ export async function recentFlowTrades(market: ProjectMarket, instrument: Instru
     kucoin: spot ? `https://api.kucoin.com/api/v1/market/histories?symbol=${symbol}` : `https://api-futures.kucoin.com/api/v1/trade/history?symbol=${symbol}`,
     mexc: `https://api.mexc.com/api/v3/trades?symbol=${symbol}&limit=1000`,
   };
-  const response = await fetch(urls[market.exchange], { signal: AbortSignal.timeout(10_000) });
+  const url = urls[market.exchange];
+  // CCXT-only venues expose snapshots but no normalised trade tape; fail explicitly.
+  if (!url) throw new Error(`${market.exchange} has no native trade-tape adapter`);
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`${market.exchange} recent trades HTTP ${response.status}`);
   const raw = await response.json();
   if (market.exchange === 'bybit' && raw.retCode !== 0) throw new Error(`Bybit ${raw.retCode}`);

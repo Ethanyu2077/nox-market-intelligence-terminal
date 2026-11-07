@@ -40,6 +40,8 @@ import {projectDataCoverage} from './data-coverage.ts';
 import {venueCoverage} from './venue-coverage.ts';
 import {signalReadiness,weightedConsensus} from './research-readiness.ts';
 import { watchlistQuotes } from './watchlist.ts';
+import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
+import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
 
 const port = Number(process.env.PORT ?? 8787);
 const app = express();
@@ -146,6 +148,15 @@ app.get('/api/projects/:id/orderflow/stream', (req, res) => {
 
 app.get('/api/health', (_req, res) => res.json({ service: 'nox-market-intelligence-api', status: 'ok', mode: 'live-public', venues: EXCHANGE_IDS, timestamp: Date.now() }));
 app.get('/api/exchanges', (_req, res) => res.json({ items: exchangeCapabilities(), timestamp: Date.now() }));
+// CCXT diagnostics. `probe=1` loads the enabled venue catalogues so the settings panel can
+// show real market counts and latency; without it the response is cache-only.
+app.get('/api/ccxt/health', safe(async (req, res) => {
+  const config = resolveCcxtConfig();
+  if (config.enabled && req.query.probe === '1') {
+    await Promise.allSettled(enabledCcxtVenues(config).map((id) => getCcxtMarkets(id, config)));
+  }
+  res.json({ ...ccxtHealth(config), ignored: config.ignored });
+}));
 app.get('/api/research/capabilities', (_req, res) => res.json({ tools: READ_ONLY_TOOLS, mode: process.env.NOX_RESEARCH_AI_ENABLED === 'true' ? 'ai-assisted-available' : 'evidence-only', aiProviderConfigured: process.env.NOX_RESEARCH_AI_ENABLED === 'true', publishingEnabled: false, publishingMode: 'disabled', livePublishingRoute: false }));
 app.get('/api/projects/:id/research/analysis', safe(async (req, res) => {
   const project = store.getProjects(true).find(p => p.id === String(req.params.id));
@@ -245,6 +256,19 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(root)); app.get('*', (_req, res) => res.sendFile(path.join(root, 'index.html')));
 }
 const server = app.listen(port, '127.0.0.1', () => console.log(`NOX API listening on http://127.0.0.1:${port}`));
+
+// CCXT catalogues are large (HTX ~2.5k markets) and slow on a cold cache. Warm them in
+// the background so the first project discovery is not blocked by a 20s loadMarkets().
+{
+  const ccxt = resolveCcxtConfig();
+  if (ccxt.enabled && ccxt.venues.length) {
+    void Promise.allSettled(enabledCcxtVenues(ccxt).map((id) => getCcxtMarkets(id, ccxt)))
+      .then((rows) => {
+        const loaded = rows.filter((row) => row.status === 'fulfilled').length;
+        console.log(`CCXT catalogues warmed: ${loaded}/${rows.length} (${ccxt.venues.join(', ')})`);
+      });
+  }
+}
 let shuttingDown = false;
 const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });

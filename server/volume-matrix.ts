@@ -215,6 +215,8 @@ function applyQualityFlags(rows: VenueVolumeRow[]): void {
   const median = medianValue(turnovers);
   for (const row of rows) {
     const flags: VenueVolumeRow['qualityFlags'] = [];
+    // Mark CCXT-sourced turnover so a "live" quality flag is not read as full native coverage.
+    if ([row.spot, row.perpetual].some((leg) => leg?.source.startsWith('CCXT'))) flags.push('ccxt-source');
     const qualities = [row.spot?.quality, row.perpetual?.quality];
     if (qualities.includes('stale')) flags.push('stale-leg');
     if (qualities.includes('partial')) flags.push('partial-leg');

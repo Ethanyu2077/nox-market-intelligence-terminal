@@ -16,6 +16,7 @@
     "auth:setup-token": "node --import tsx server/auth-setup.ts"
   },
   "dependencies": {
+    "ccxt": "^4.5.92",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",

@@ -26,7 +26,9 @@ export type VolumeQualityFlag =
   | 'partial-leg'
   | 'volume-oi-outlier-high'
   | 'volume-oi-outlier-low'
-  | 'wide-basis';
+  | 'wide-basis'
+  /** Turnover came from the CCXT adapter: quote/volume are venue-reported, flow fields are not. */
+  | 'ccxt-source';
 
 export interface VenueVolumeRow {
   exchange: ExchangeId;

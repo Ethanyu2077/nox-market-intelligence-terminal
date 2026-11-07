@@ -2,6 +2,19 @@
 
 For the current V2.2 incremental data/auth/regime architecture and its explicitly unverified production boundaries, see [V2_2_IMPLEMENTATION.md](V2_2_IMPLEMENTATION.md). This note retains the initial-stage architecture audit below.
 
+## Venue layer: native adapters + CCXT (2026-11)
+
+The nine native venues stay on their own REST/WebSocket adapters. CCXT is a **coverage and
+resilience layer**, imported lazily and disabled by default for extra venues:
+
+- `NOX_CCXT_VENUES` enables `htx` / `bingx` / `phemex` / `bitfinex` USDT perpetuals;
+- a failed native snapshot may be retried through CCXT and is labelled `fallback`;
+- spot snapshots that have no native adapter are served by CCXT;
+- CCXT rows are always `partial` (no aggressor flow) and carry a `ccxt-source` quality flag
+  in the volume matrix. KRW/USD legs never enter USDT aggregates.
+
+See [CCXT_INTEGRATION.md](CCXT_INTEGRATION.md).
+
 ## AI analyst boundary (2026-11)
 
 ```text

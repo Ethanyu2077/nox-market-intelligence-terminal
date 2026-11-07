@@ -2,17 +2,6 @@ import { useEffect, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { ExchangeSelection, MarketProject, Overview, ProjectMarket } from '../../shared/types';
 
-const EXCHANGES: Array<{ id: ExchangeSelection; label: string }> = [
-  { id: 'aggregated', label: 'Aggregated' },
-  { id: 'binance', label: 'Binance' },
-  { id: 'bitget', label: 'Bitget' },
-  { id: 'bybit', label: 'Bybit' },
-  { id: 'okx', label: 'OKX' },
-  { id: 'gate', label: 'Gate' },
-  { id: 'kucoin', label: 'KuCoin' },
-  { id: 'mexc', label: 'MEXC' },
-];
-
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h'] as const;
 
 function price(value: number | null | undefined): string {
@@ -35,13 +24,16 @@ function pct(value: number | null | undefined): string {
  * The market strip is the terminal's persistent context: whatever page you are on, the
  * instrument, price, funding and freshness stay visible and the timeframe is one click away.
  */
-export function MarketBar({ project, primary, overview, coverage, exchange, onExchange, interval, onInterval, lastEvent, language, onSwitchProject }: {
+export interface VenueOption { id: ExchangeSelection; label: string; transport: 'native' | 'ccxt' | 'aggregate' }
+
+export function MarketBar({ project, primary, overview, coverage, exchange, onExchange, venues, interval, onInterval, lastEvent, language, onSwitchProject }: {
   project: MarketProject | null;
   primary: ProjectMarket | null;
   overview: Overview | null;
   coverage: { successful: number; requested: number } | null;
   exchange: ExchangeSelection;
   onExchange: (value: ExchangeSelection) => void;
+  venues: VenueOption[];
   interval: string;
   onInterval: (value: '1m' | '5m' | '15m' | '1h' | '4h') => void;
   lastEvent: number;
@@ -49,6 +41,9 @@ export function MarketBar({ project, primary, overview, coverage, exchange, onEx
   onSwitchProject: () => void;
 }) {
   const zh = language === 'zh';
+  // Only offer venues that this project actually monitors, plus the aggregate. Listing a
+  // venue with no mapping would select an empty instrument view.
+  const options = project ? venues.filter((venue) => venue.id === 'aggregated' || project.markets.some((market) => market.exchange === venue.id)) : venues;
   const change = overview?.change24hPct ?? null;
   const tone = change == null ? '' : change >= 0 ? 'up' : 'down';
   const stale = lastEvent > 0 && Date.now() - lastEvent > 60_000;
@@ -98,7 +93,7 @@ export function MarketBar({ project, primary, overview, coverage, exchange, onEx
         <span className={`wl-tag ${stale ? 'stale' : 'live'}`} title={zh ? '数据新鲜度' : 'Data freshness'}>{age == null ? '—' : stale ? `${Math.round(age / 60)}m` : `${age}s`}</span>
         <div className="mb-select">
           <select value={exchange} onChange={(event) => onExchange(event.target.value as ExchangeSelection)} aria-label={zh ? '交易所' : 'Exchange'}>
-            {EXCHANGES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            {options.map((item) => <option key={item.id} value={item.id}>{item.transport === 'ccxt' ? `${item.label} · CCXT` : item.label}</option>)}
           </select>
         </div>
         <div className="segmented" role="group" aria-label={zh ? '时间周期' : 'Timeframe'}>

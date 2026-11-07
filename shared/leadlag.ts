@@ -1,8 +1,11 @@
 /** Cross-venue lead-lag research types. Descriptive statistics only: never a trade signal. */
 export interface PriceSample {
   venue: string;
+  /** Exchange event time. */
   time: number;
-  /** When this value actually became available to the terminal (ingest). */
+  /** Local receive time; defaults to `time` when the venue provides no separate clock. */
+  receivedAt?: number;
+  /** When the value became usable locally (ingest + parse). */
   availableAt: number;
   price: number;
 }
@@ -23,23 +26,56 @@ export interface LeadLagOptions {
   minSamples: number;
   costBpsPerSide: number;
   bootstrapRounds: number;
+  folds: number;
 }
 
-export interface LagScore { lagMs: number; correlation: number | null; samples: number }
+export interface LagScore {
+  lagMs: number;
+  /** Correlation on training pairs only; null when not enough pairs. */
+  correlation: number | null;
+  samples: number;
+  /** Distinct definition marker so a positive lag is never a copy of lag 0. */
+  aWindowEnd: number | null;
+  bWindowStart: number | null;
+}
+
 export interface Baseline { name: string; samples: number; hitRate: number | null; meanNetPct: number | null }
-export interface Uncertainty { hitRate: [number, number] | null; meanNetPct: [number, number] | null }
+export interface Uncertainty { hitRate: [number, number] | null; meanNetPct: [number, number] | null; blockSize: number }
+
+export interface FoldResult {
+  testStart: number;
+  testEnd: number;
+  trainSamples: number;
+  testSamples: number;
+  selectedLagMs: number | null;
+  hitRate: number | null;
+  meanNetPct: number | null;
+}
 
 export interface LeadLagReport {
   generatedAt: number;
   pair: string;
   options: LeadLagOptions;
+  timeSemantics: {
+    decisionUses: 'availableAt <= decision time';
+    outcomeRequires: 'time > decision && availableAt > decision';
+    lagDirection: 'A leads B for lag >= 0; negative lags are not evaluated (they would leak)';
+  };
   availability: Array<{ venue: string; samples: number; medianDelayMs: number | null; p95DelayMs: number | null; excludedDelayed: number }>;
-  coverage: { trainSamples: number; holdoutSamples: number; excludedNoFuture: number; excludedNoPrior: number };
+  coverage: {
+    totalDecisions: number;
+    paired: number;
+    excludedNoFuture: number;
+    excludedNoPrior: number;
+    excludedDelayed: number;
+    effectiveSamples: number | null;
+  };
   lags: LagScore[];
-  selectedLagMs: number | null;
-  holdout: { samples: number; hitRate: number | null; meanNetPct: number | null; uncertainty: Uncertainty };
+  folds: FoldResult[];
+  outOfSample: { samples: number; hitRate: number | null; meanNetPct: number | null; uncertainty: Uncertainty };
   baselines: Baseline[];
-  sensitivity: Array<{ windowMs: number; selectedLagMs: number | null; holdoutHitRate: number | null }>;
+  sensitivity: Array<{ windowMs: number; selectedLagMs: number | null; oosHitRate: number | null }>;
+  multipleTesting: { lagsTested: number; bonferroniAlpha: number; note: string };
   verdict: 'insufficient' | 'descriptive' | 'promising-not-tradable';
   notes: string[];
 }

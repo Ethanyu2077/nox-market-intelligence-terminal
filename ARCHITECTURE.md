@@ -4,11 +4,15 @@ For the current V2.2 incremental data/auth/regime architecture and its explicitl
 
 ## Lead-lag research boundary (2026-11)
 
-`server/leadlag.ts` is a pure analysis over locally collected snapshots. Decisions may only use
-samples whose `availableAt` (ingest) has passed; forward outcomes require data observed strictly
-after the decision; lag and parameters are chosen on the first 70% and evaluated on the unseen
-30% with fees, baselines, sensitivity and bootstrap intervals. Insufficient samples or unstable
-results return `descriptive`/`insufficient`, never a trading claim.
+`server/leadlag.ts` is a pure analysis over locally collected snapshots with explicit time
+semantics (event / received / available / decision / outcome). Decisions use only samples whose
+`availableAt <= decision`; outcomes require `time > decision && availableAt > decision`. Only
+non-negative lags are evaluated (A leads B); a negative lag would need post-decision A data and is
+rejected instead of leaking. Validation is purged walk-forward with an embargo equal to the
+horizon; lag selection happens on each training fold only. Results carry moving-block bootstrap
+intervals, effective sample size, lag-count/Bonferroni warnings, window sensitivity and momentum /
+always-long / randomized baselines. Insufficient or unstable evidence returns `descriptive` or
+`insufficient`; the verdict never exceeds `promising-not-tradable`.
 
 ## L2 boundary (2026-11)
 

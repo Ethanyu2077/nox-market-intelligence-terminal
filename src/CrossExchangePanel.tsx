@@ -23,6 +23,10 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
   const zh = language === 'zh';
   const [factor, setFactor] = useState<(typeof FACTORS)[number]['id']>('oi_delta');
   const [timeframe, setTimeframe] = useState<(typeof TIMEFRAMES)[number]>('5m');
+  const [lookback, setLookback] = useState<'6h' | '24h' | '7d' | '30d'>('24h');
+  const [minCoverage, setMinCoverage] = useState(0);
+  const [sort, setSort] = useState<'samples' | 'correlation' | 'lag'>('samples');
+  const [pairFilter, setPairFilter] = useState('all');
   const [report, setReport] = useState<FactorEvidence | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -30,16 +34,25 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
 
   useEffect(() => {
     const controller = new AbortController();
+    const lookbackMs = { '6h': 21_600_000, '24h': 86_400_000, '7d': 604_800_000, '30d': 2_592_000_000 }[lookback];
     setLoading(true);
-    fetch(`/api/projects/${project.id}/research/cross-factor?factor=${factor}&timeframe=${timeframe}`, { signal: controller.signal })
+    fetch(`/api/projects/${project.id}/research/cross-factor?factor=${factor}&timeframe=${timeframe}&start=${Date.now() - lookbackMs}`, { signal: controller.signal })
       .then(async (response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return await response.json() as FactorEvidence; })
-      .then((payload) => { setReport(payload); setError(''); setSelected(payload.pairs?.[0]?.venues.join('→') ?? null); })
+      .then((payload) => { setReport(payload); setError(''); setSelected(payload.pairs?.[0]?.venues.join('→') ?? null); setPairFilter('all'); })
       .catch((cause) => { if ((cause as Error).name !== 'AbortError') setError(cause instanceof Error ? cause.message : 'Request failed'); })
       .finally(() => setLoading(false));
     return () => controller.abort();
-  }, [project.id, factor, timeframe]);
+  }, [project.id, factor, timeframe, lookback]);
 
-  const pair = report?.pairs.find((item) => item.venues.join('→') === selected) ?? null;
+  const venueCoverage = new Map((report?.venues ?? []).map((venue) => [venue.venue, venue.coveragePct]));
+  const pairCoverage = (venues: [string, string]) => Math.min(venueCoverage.get(venues[0]) ?? 0, venueCoverage.get(venues[1]) ?? 0);
+  const visiblePairs = (report?.pairs ?? [])
+    .filter((item) => pairFilter === 'all' || item.venues.join('→') === pairFilter)
+    .filter((item) => pairCoverage(item.venues) >= minCoverage)
+    .sort((left, right) => sort === 'correlation'
+      ? Math.abs(right.correlation ?? 0) - Math.abs(left.correlation ?? 0)
+      : sort === 'lag' ? (right.lagMs ?? -1) - (left.lagMs ?? -1) : right.samples - left.samples);
+  const pair = visiblePairs.find((item) => item.venues.join('→') === selected) ?? visiblePairs[0] ?? null;
   const status = report == null ? 'Unavailable' : !report.comparable ? (report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable') : report.verdict === 'descriptive' ? 'Descriptive' : report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable';
 
   return (
@@ -51,7 +64,11 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
       <div className="cx-controls">
         <label>{zh ? '因子' : 'Factor'}<select value={factor} onChange={(event) => setFactor(event.target.value as typeof factor)}>{FACTORS.map((item) => <option key={item.id} value={item.id}>{zh ? item.zh : item.label}</option>)}</select></label>
         <label>{zh ? '周期' : 'Timeframe'}<select value={timeframe} onChange={(event) => setTimeframe(event.target.value as typeof timeframe)}>{TIMEFRAMES.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-        <span className="cx-meta">{loading ? (zh ? '读取中…' : 'Loading…') : report ? `${report.venues.length} ${zh ? '个交易所' : 'venues'} · ${report.hypothesesTested} ${zh ? '个假设' : 'hypotheses'}` : '—'}</span>
+        <label>{zh ? '回看' : 'Lookback'}<select value={lookback} onChange={(event) => setLookback(event.target.value as typeof lookback)}>{['6h', '24h', '7d', '30d'].map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label>{zh ? '组合' : 'Pair'}<select value={pairFilter} onChange={(event) => { setPairFilter(event.target.value); setSelected(event.target.value === 'all' ? null : event.target.value); }}><option value="all">{zh ? '全部' : 'All'}</option>{(report?.pairs ?? []).map((item) => <option key={item.venues.join('→')} value={item.venues.join('→')}>{item.venues.join(' / ')}</option>)}</select></label>
+        <label>{zh ? '最低覆盖' : 'Min coverage'}<select value={minCoverage} onChange={(event) => setMinCoverage(Number(event.target.value))}>{[0, 50, 80].map((item) => <option key={item} value={item}>{item}%</option>)}</select></label>
+        <label>{zh ? '排序' : 'Sort'}<select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="samples">{zh ? '样本' : 'Samples'}</option><option value="correlation">{zh ? '相关' : 'Correlation'}</option><option value="lag">Lag</option></select></label>
+        <span className="cx-meta">{loading ? (zh ? '读取中…' : 'Loading…') : report ? `${report.venues.length} ${zh ? '个交易所' : 'venues'} · ${report.hypothesesTested} ${zh ? '个假设' : 'hypotheses'}${report.partial ? ' · PARTIAL' : ''}` : '—'}</span>
       </div>
       {error && <p className="alerts-error" role="alert">{error}</p>}
       {report && !report.comparable && (
@@ -62,7 +79,7 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
           <div className="table-wrap"><table className="cx-table"><thead><tr>
             <th>{zh ? '组合' : 'Pair'}</th><th>{zh ? '领先' : 'Leader'}</th><th>Lag</th><th>Corr</th><th>{zh ? '样本' : 'Samples'}</th><th>OOS</th>
           </tr></thead><tbody>
-            {report.pairs.map((item) => {
+            {visiblePairs.map((item) => {
               const key = item.venues.join('→');
               return <tr key={key} className={selected === key ? 'selected' : ''} onClick={() => setSelected(key)}>
                 <td>{item.venues.join(' / ')}</td>
@@ -70,6 +87,7 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
                 <td>{item.lagMs == null ? '—' : `${Math.round(item.lagMs / 1000)}s`}</td>
                 <td>{item.correlation == null ? '—' : item.correlation.toFixed(3)}</td>
                 <td>{item.samples}</td>
+                <td>{pairCoverage(item.venues)}%</td>
                 <td><span className="cx-oos">NOT VERIFIED</span></td>
               </tr>;
             })}
@@ -85,6 +103,7 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
                 <div><h4>{zh ? '反面证据' : 'Contradicting evidence'}</h4><ul>{(pair.leader ? report.counterEvidence : ['Direction not identifiable']).map((item) => <li key={item}>{item}</li>)}</ul></div>
               </div>
               <p className="cx-note">{report.notes.join(' ')}</p>
+              <p className="cx-note">{zh ? '数据窗口' : 'Data window'}: {report.dataWindow.start ? new Date(report.dataWindow.start).toLocaleString() : '—'} → {report.dataWindow.end ? new Date(report.dataWindow.end).toLocaleString() : '—'} · {report.dataWindow.bucketMs / 60_000}m · {zh ? '排除样本' : 'excluded'} {report.excludedSamples} · {zh ? '缺口' : 'gaps'} {report.missingWindows}{report.partial ? ` · ${zh ? '历史被截断，结论可能不完整' : 'history truncated, conclusions may be partial'}` : ''}</p>
             </div>
           )}
         </>

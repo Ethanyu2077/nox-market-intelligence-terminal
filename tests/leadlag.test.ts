@@ -24,8 +24,11 @@ test('walk-forward produces out-of-sample folds and a capped verdict', () => {
   for (const fold of report.folds) {
     assert.ok(fold.trainEnd <= fold.testStart);
     assert.ok(fold.purgedTrain >= 0);
+    assert.ok(fold.outcomeCutoff === fold.testEnd);
     assert.ok(fold.selectedLagMs != null && fold.selectedLagMs >= 0, 'each fold records its own selected lag');
+    assert.ok(fold.baselines && 'momentum' in fold.baselines && 'alwaysLong' in fold.baselines && 'randomized' in fold.baselines);
   }
+  assert.equal(report.folds.reduce((sum, fold) => sum + fold.censored, 0), report.coverage.censored);
   assert.ok(report.outOfSample.samples >= 20);
   assert.ok(report.outOfSample.uncertainty.hitRate != null);
   assert.equal(report.baselines.length, 3);

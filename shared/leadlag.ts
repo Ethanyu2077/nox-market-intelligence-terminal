@@ -47,14 +47,21 @@ export interface FoldResult {
   trainEnd: number;
   testStart: number;
   testEnd: number;
-  /** Training pairs removed because their outcome would overlap the test window. */
+  /** Exclusive outcome boundary for this fold: no outcome may complete after it. */
+  outcomeCutoff: number;
+  /** Training pairs removed because their outcome was not complete by trainEnd. */
   purgedTrain: number;
   trainSamples: number;
   testSamples: number;
+  /** Test decisions dropped because their forward outcome crossed testEnd. */
+  censored: number;
+  /** Test decisions dropped because a common baseline input was missing. */
+  excludedNoMomentum: number;
   /** Lag selected on this fold's training data only. */
   selectedLagMs: number | null;
   hitRate: number | null;
   meanNetPct: number | null;
+  baselines: { momentum: number | null; alwaysLong: number | null; randomized: number | null };
 }
 
 export interface LeadLagReport {
@@ -73,6 +80,7 @@ export interface LeadLagReport {
     excludedNoFuture: number;
     excludedNoPrior: number;
     excludedDelayed: number;
+    censored: number;
     effectiveSamples: number | null;
   };
   lags: LagScore[];

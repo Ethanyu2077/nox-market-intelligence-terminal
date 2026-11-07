@@ -26,7 +26,15 @@ export const DEFAULT_LEADLAG_OPTIONS: LeadLagOptions = {
   folds: 4,
 };
 
-interface Pair { decisionTime: number; leadReturn: number; forwardReturn: number; priorReturn: number | null }
+interface Pair {
+  eventTime: number;
+  availableAt: number;
+  decisionTime: number;
+  outcomeTime: number;
+  leadReturn: number;
+  forwardReturn: number;
+  priorReturn: number | null;
+}
 
 function normalize(samples: PriceSample[]): PriceSample[] {
   return [...samples]
@@ -69,7 +77,10 @@ function buildPairs(a: PriceSample[], b: PriceSample[], options: LeadLagOptions,
     if (!future) { noFuture += 1; continue; }
     const priorB = lastKnown(b, decision - options.windowMs, decision);
     pairs.push({
+      eventTime: sample.time,
+      availableAt: sample.availableAt,
       decisionTime: decision,
+      outcomeTime: future.time,
       leadReturn: aEnd.price / aStart.price - 1,
       forwardReturn: future.price / sample.price - 1,
       priorReturn: priorB && priorB.time < sample.time ? (sample.price - priorB.price) / priorB.price : null,
@@ -146,7 +157,9 @@ function selectLag(a: PriceSample[], b: PriceSample[], options: LeadLagOptions, 
     const lagMs = lag * options.lagStepMs;
     const { pairs } = buildPairs(a, b, options, lagMs);
     // Purge training outcomes that would overlap the test window.
-    const train = pairs.filter((pair) => pair.decisionTime + options.horizonMs + lagMs < trainEnd);
+    // Only training samples whose outcome was fully observable by trainEnd may inform
+    // parameter selection.
+    const train = pairs.filter((pair) => pair.outcomeTime <= trainEnd);
     const correlation = pearson(train);
     const reference = b.find((sample) => sample.availableAt - sample.time <= options.maxDelayMs)?.time ?? null;
     scores.push({ lagMs, correlation, samples: train.length, aWindowEnd: reference == null ? null : reference - lagMs, bWindowStart: reference });
@@ -155,12 +168,18 @@ function selectLag(a: PriceSample[], b: PriceSample[], options: LeadLagOptions, 
   return { lagMs: best?.lagMs ?? null, scores };
 }
 
-function walkForward(a: PriceSample[], b: PriceSample[], options: LeadLagOptions): { folds: FoldResult[]; oosPairs: Pair[]; selectedLagMs: number | null; lagsTested: number } {
+function seedRandom(seed: number): () => number {
+  let state = seed;
+  return () => { state = (state * 1664525 + 1013904223) % 4294967296; return state / 4294967296; };
+}
+
+function walkForward(a: PriceSample[], b: PriceSample[], options: LeadLagOptions): { folds: FoldResult[]; oosPairs: Pair[]; selectedLagMs: number | null; lagsTested: number; censored: number } {
   const times = a.map((sample) => sample.time).concat(b.map((sample) => sample.time)).sort((x, y) => x - y);
-  if (!times.length) return { folds: [], oosPairs: [], selectedLagMs: null, lagsTested: options.maxLags + 1 };
+  if (!times.length) return { folds: [], oosPairs: [], selectedLagMs: null, lagsTested: options.maxLags + 1, censored: 0 };
   const start = times[0], end = times[times.length - 1];
   const folds: FoldResult[] = [];
   const oosPairs: Pair[] = [];
+  let censoredTotal = 0;
   const foldCount = Math.max(2, options.folds);
   let selectedLagMs: number | null = null;
   for (let index = 1; index <= foldCount; index += 1) {
@@ -173,22 +192,41 @@ function walkForward(a: PriceSample[], b: PriceSample[], options: LeadLagOptions
     const { pairs } = buildPairs(a, b, options, lag);
     // Purge training outcomes that reach into the test window.
     const trainAll = pairs.filter((pair) => pair.decisionTime < trainEnd);
-    const train = trainAll.filter((pair) => pair.decisionTime + options.horizonMs + lag < trainEnd);
-    // Strategy and all baselines share one common decision set: a missing momentum input
-    // removes the decision from every side, so hit rates are always comparable.
-    const test = pairs.filter((pair) => pair.decisionTime >= testStart && pair.decisionTime < testEnd && pair.priorReturn != null);
+    const train = trainAll.filter((pair) => pair.outcomeTime <= trainEnd);
+    const testAll = pairs.filter((pair) => pair.decisionTime >= testStart && pair.decisionTime < testEnd);
+    // An outcome that completes after the fold's test end is censored, never used.
+    const censored = testAll.filter((pair) => pair.outcomeTime > testEnd);
+    const completed = testAll.filter((pair) => pair.outcomeTime <= testEnd);
+    const excludedNoMomentum = completed.filter((pair) => pair.priorReturn == null);
+    // Strategy and every baseline share exactly these decisions.
+    const test = completed.filter((pair) => pair.priorReturn != null);
+    censoredTotal += censored.length;
     oosPairs.push(...test);
+
+    const cost = (options.costBpsPerSide * 2) / 10_000;
+    const foldMomentum = test.map((pair) => Math.sign(pair.priorReturn as number) * pair.forwardReturn - cost);
+    const foldAlways = test.map((pair) => pair.forwardReturn - cost);
+    const foldRandom = seedRandom(1_000 + index);
+    const foldRandomized = test.map((pair) => (foldRandom() < 0.5 ? -1 : 1) * pair.forwardReturn - cost);
     folds.push({
       trainStart: times[0], trainEnd,
       testStart, testEnd,
+      outcomeCutoff: testEnd,
       purgedTrain: trainAll.length - train.length,
       trainSamples: train.length,
       testSamples: test.length,
+      censored: censored.length,
+      excludedNoMomentum: excludedNoMomentum.length,
       selectedLagMs: selection.lagMs,
       ...stats(netReturns(test, options.costBpsPerSide)),
+      baselines: {
+        momentum: stats(foldMomentum).hitRate,
+        alwaysLong: stats(foldAlways).hitRate,
+        randomized: stats(foldRandomized).hitRate,
+      },
     });
   }
-  return { folds, oosPairs, selectedLagMs, lagsTested: options.maxLags + 1 };
+  return { folds, oosPairs, selectedLagMs, lagsTested: options.maxLags + 1, censored: censoredTotal };
 }
 
 function baseline(name: string, returns: number[]): Baseline { return { name, ...stats(returns) }; }
@@ -201,7 +239,7 @@ export function analyzeLeadLag(input: LeadLagInput, overrides: Partial<LeadLagOp
   const delayedB = b.filter((sample) => sample.availableAt - sample.time > options.maxDelayMs).length;
   const delays = (rows: PriceSample[]) => rows.filter((sample) => sample.availableAt - sample.time <= options.maxDelayMs).map((sample) => sample.availableAt - sample.time);
 
-  const { folds, oosPairs, selectedLagMs, lagsTested } = walkForward(a, b, options);
+  const { folds, oosPairs, selectedLagMs, lagsTested, censored } = walkForward(a, b, options);
   const oosReturns = netReturns(oosPairs, options.costBpsPerSide);
   const oos = stats(oosReturns);
   const uncertainty = blockBootstrap(oosReturns, options.bootstrapRounds);
@@ -264,6 +302,7 @@ export function analyzeLeadLag(input: LeadLagInput, overrides: Partial<LeadLagOp
       excludedNoFuture: base.noFuture,
       excludedNoPrior: base.noPrior,
       excludedDelayed: base.delayed,
+      censored,
       effectiveSamples: effective,
     },
     lags: selectLag(a, b, options, splitRef).scores,

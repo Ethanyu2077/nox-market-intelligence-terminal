@@ -48,7 +48,7 @@ import { capabilityRegistry } from './capability-registry.ts';
 import { acquireL2 } from './l2/feed.ts';
 import { analyzeLeadLag } from './leadlag.ts';
 import { L2Collector } from './l2/collector.ts';
-import { buildFactorEvidence, factorSamplesFromSnapshots } from './crossfactor.ts';
+import { buildFactorEvidence, factorSamplesFromL2, factorSamplesFromSnapshots, resampleFactorSamples, FACTOR_TIMEFRAMES } from './crossfactor.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
@@ -187,8 +187,15 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
   const factor = z.enum(['oi_level', 'oi_delta', 'spot_volume_delta', 'perp_volume_delta', 'cvd_divergence', 'funding_basis', 'depth_change']).parse(req.query.factor);
-  const page = await history.page(project.id, { kind: 'snapshot', limit: 1_000 });
-  res.json(buildFactorEvidence(factor, factorSamplesFromSnapshots(page.items)));
+  const timeframe = z.enum(['1m', '5m', '15m', '1h']).default('5m').parse(req.query.timeframe);
+  const [snapshots, l2] = await Promise.all([
+    history.page(project.id, { kind: 'snapshot', limit: 2_000 }),
+    history.page(project.id, { kind: 'l2', limit: 2_000 }),
+  ]);
+  const raw = [...factorSamplesFromSnapshots(snapshots.items), ...factorSamplesFromL2(l2.items)].filter((sample) => sample.factor === factor);
+  // Factors that need per-venue spot/perp/cvd series not present in the journal stay empty
+  // and therefore return `unavailable` rather than an inferred value.
+  res.json(buildFactorEvidence(factor, resampleFactorSamples(raw, FACTOR_TIMEFRAMES[timeframe])));
 }));
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));

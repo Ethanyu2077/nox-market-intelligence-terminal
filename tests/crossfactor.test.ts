@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildFactorEvidence, factorSamplesFromSnapshots } from '../server/crossfactor.ts';
+import { buildFactorEvidence, factorSamplesFromL2, factorSamplesFromSnapshots, resampleFactorSamples } from '../server/crossfactor.ts';
 import type { FactorSample } from '../shared/crossfactor.ts';
 
 const T0 = 1_700_000_000_000;
@@ -112,4 +112,28 @@ test('OI level and OI delta stay distinct factors with distinct units', () => {
   assert.equal(level[0].unit, 'base');
   assert.equal(delta[0].unit, 'pct');
   assert.equal(delta[0].value, 10);
+});
+
+test('timeframe resampling aggregates buckets and reports density coverage', () => {
+  const aligned = Math.floor(T0 / 300_000) * 300_000;
+  const rows: FactorSample[] = Array.from({ length: 10 }, (_, index) => ({
+    venue: 'binance', factor: 'oi_level', time: aligned + index * 60_000, availableAt: aligned + index * 60_000 + 500,
+    value: 100 + index, unit: 'base', coveragePct: 100,
+  }));
+  const resampled = resampleFactorSamples(rows, 300_000);
+  assert.equal(resampled.length, 2);
+  assert.equal(resampled[0].value, 104, 'levels keep the last observation in the bucket');
+  assert.ok(resampled[0].coveragePct > 0 && resampled[0].coveragePct <= 100);
+});
+
+test('depth change only uses research-usable L2 buckets and is never called a cancellation', () => {
+  const entries = [
+    { ingestTime: T0 + 1_000, payload: { venue: 'binance', bucketStart: T0, bucketMs: 60_000, liquidityWithdrawalPct: 12, researchUsable: true } },
+    { ingestTime: T0 + 2_000, payload: { venue: 'binance', bucketStart: T0 + 60_000, bucketMs: 60_000, liquidityWithdrawalPct: 40, researchUsable: false, exclusionReasons: ['epoch-change'] } },
+  ];
+  const samples = factorSamplesFromL2(entries);
+  assert.equal(samples.length, 1);
+  assert.equal(samples[0].factor, 'depth_change');
+  assert.equal(samples[0].value, 12);
+  assert.equal(samples[0].unit, 'pct');
 });

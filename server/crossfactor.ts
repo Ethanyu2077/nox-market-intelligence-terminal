@@ -229,6 +229,50 @@ export function buildFactorEvidence(factor: CrossFactorId, samples: FactorSample
   };
 }
 
+export const FACTOR_TIMEFRAMES: Record<string, number> = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000 };
+
+/** Resample per-venue factor samples into fixed buckets (coverage = data density). */
+export function resampleFactorSamples(samples: FactorSample[], bucketMs: number): FactorSample[] {
+  const groups = new Map<string, FactorSample[]>();
+  for (const sample of samples) {
+    const bucket = Math.floor(sample.time / bucketMs) * bucketMs;
+    const key = `${sample.venue}:${sample.factor}:${bucket}`;
+    groups.set(key, [...(groups.get(key) ?? []), sample]);
+  }
+  const resampled: FactorSample[] = [];
+  for (const rows of groups.values()) {
+    const sorted = [...rows].sort((a, b) => a.time - b.time);
+    const last = sorted[sorted.length - 1];
+    const bucketStart = Math.floor(last.time / bucketMs) * bucketMs;
+    const intervals: number[] = [];
+    for (let index = 1; index < sorted.length; index += 1) intervals.push(sorted[index].time - sorted[index - 1].time);
+    const medianInterval = intervals.length ? [...intervals].sort((a, b) => a - b)[Math.floor(intervals.length / 2)] : bucketMs;
+    const expected = Math.max(1, Math.round(bucketMs / Math.max(1, medianInterval)));
+    // Levels: last observation. Change factors: mean of the bucket's changes.
+    const value = last.factor === 'oi_level' ? (last.value as number) : sorted.reduce((sum, row) => sum + (row.value as number), 0) / sorted.length;
+    resampled.push({
+      venue: last.venue, factor: last.factor, time: bucketStart, availableAt: Math.max(...sorted.map((row) => row.availableAt)),
+      value, unit: last.unit,
+      coveragePct: Math.min(100, Math.round(sorted.length / expected * 100)),
+    });
+  }
+  return resampled.sort((a, b) => a.time - b.time || a.venue.localeCompare(b.venue));
+}
+
+/**
+ * Depth-change factor from research-usable L2 buckets. Net depth change is attributed to
+ * net flow, never to cancellations. Buckets flagged audit-only are excluded.
+ */
+export function factorSamplesFromL2(entries: Array<{ ingestTime: number; payload: unknown }>): FactorSample[] {
+  const samples: FactorSample[] = [];
+  for (const entry of entries) {
+    const row = entry.payload as { venue?: string; bucketStart?: number; bucketMs?: number; liquidityWithdrawalPct?: number | null; researchUsable?: boolean };
+    if (row.researchUsable !== true || row.liquidityWithdrawalPct == null || !row.venue || row.bucketStart == null) continue;
+    samples.push({ venue: row.venue, factor: 'depth_change', time: row.bucketStart, availableAt: entry.ingestTime, value: row.liquidityWithdrawalPct, unit: 'pct', coveragePct: 100 });
+  }
+  return samples;
+}
+
 /** Extract comparable factor samples from the local snapshot journal. */
 export function factorSamplesFromSnapshots(entries: Array<{ ingestTime: number; payload: unknown }>): FactorSample[] {
   const byVenue = new Map<string, Array<{ time: number; availableAt: number; oiBase: number; price: number | null; markPrice: number | null }>>();

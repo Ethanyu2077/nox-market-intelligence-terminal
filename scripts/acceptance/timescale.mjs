@@ -11,7 +11,7 @@ import { execSync } from 'node:child_process';
 
 const url = process.env.DATABASE_URL;
 const allowWrites = process.env.ACCEPTANCE_ALLOW_WRITES === '1' && /(test|acceptance|tmp|ci)/i.test(url ?? '');
-const status = { read: 'NOT VERIFIED', write: 'NOT VERIFIED', recovery: 'NOT VERIFIED' };
+const status = { read: 'NOT VERIFIED', write: 'NOT VERIFIED', connectionRecovery: 'NOT VERIFIED', processRestartRecovery: 'NOT VERIFIED' };
 const details = {};
 const finish = (overall) => {
   console.log(JSON.stringify({ generatedAt: new Date().toISOString(), overall, status, details }, null, 2));
@@ -40,7 +40,8 @@ try {
 
   if (!allowWrites) {
     details.write = 'requires ACCEPTANCE_ALLOW_WRITES=1 and a disposable (test) DATABASE_URL';
-    details.recovery = details.write;
+    details.connectionRecovery = details.write;
+    details.processRestartRecovery = details.write;
     finish('NOT VERIFIED');
   }
 
@@ -62,23 +63,40 @@ try {
   status.write = intact ? 'PASS' : 'FAIL';
   details.write = { inserted: events.length, readBack: readBack.rows.length, duplicateSuppressed: readBack.rows.length === 2, payloadIntact: intact };
 
-  // Recovery: close the pool (fresh connections) and optionally restart the service.
+  // Connection recovery: a new pool in the same process. This is NOT a service restart.
   await pool.end();
-  if (process.env.ACCEPTANCE_RESTART_CMD) {
-    try { execSync(process.env.ACCEPTANCE_RESTART_CMD, { stdio: 'inherit', timeout: 60_000 }); details.restart = 'command executed'; }
-    catch (error) { details.restart = `command failed: ${error instanceof Error ? error.message : error}`; }
-  } else details.restart = 'not executed (ACCEPTANCE_RESTART_CMD unset); recovery checks a fresh connection only';
   const fresh = new Pool({ connectionString: url, connectionTimeoutMillis: 5_000 });
   try {
     const after = await fresh.query('SELECT id, event_time, payload FROM nox_history_events WHERE source=$1 ORDER BY event_time', [source]);
     const recovered = after.rows.length === 2 && after.rows.every((row, index) => row.id === events[index].id && Number(row.payload.price) === events[index].payload.price);
-    status.recovery = recovered ? 'PASS' : 'FAIL';
-    details.recovery = { rows: after.rows.length, idsIntact: recovered, via: details.restart };
+    status.connectionRecovery = recovered ? 'PASS' : 'FAIL';
+    details.connectionRecovery = { rows: after.rows.length, idsIntact: recovered, via: 'new connection pool' };
   } finally { await fresh.end(); }
+
+  // Process restart recovery: only with an explicit, opt-in restart command.
+  const restart = process.env.ACCEPTANCE_RESTART_CMD;
+  if (!restart) {
+    status.processRestartRecovery = 'NOT VERIFIED';
+    details.processRestartRecovery = 'ACCEPTANCE_RESTART_CMD is not set; a new pool is connection recovery, not a process restart';
+  } else {
+    try { execSync(restart, { stdio: 'inherit', timeout: 60_000 }); details.restart = 'command executed'; }
+    catch (error) { details.restart = `command failed: ${error instanceof Error ? error.message : error}`; }
+    const restarted = new Pool({ connectionString: url, connectionTimeoutMillis: 5_000 });
+    try {
+      const after = await restarted.query('SELECT id, event_time, payload FROM nox_history_events WHERE source=$1 ORDER BY event_time', [source]);
+      const recovered = after.rows.length === 2 && after.rows.every((row, index) => row.id === events[index].id && Number(row.payload.price) === events[index].payload.price);
+      status.processRestartRecovery = recovered && details.restart === 'command executed' ? 'PASS' : 'FAIL';
+      details.processRestartRecovery = { rows: after.rows.length, idsIntact: recovered, restart: details.restart };
+    } catch (error) {
+      status.processRestartRecovery = 'FAIL';
+      details.processRestartRecovery = { error: error instanceof Error ? error.message : 'query failed' };
+    } finally { await restarted.end(); }
+  }
 } catch (error) {
   details.error = error instanceof Error ? error.message : 'query failed';
 } finally {
   try { const cleanup = new Pool({ connectionString: url, connectionTimeoutMillis: 5_000 }); await cleanup.query('DELETE FROM nox_history_events WHERE source=$1', [source]); await cleanup.end(); } catch { /* best effort */ }
   await pool.end().catch(() => undefined);
 }
-finish(status.read === 'PASS' && status.write === 'PASS' && status.recovery === 'PASS' ? 'PASS' : 'NOT VERIFIED');
+const allPass = status.read === 'PASS' && status.write === 'PASS' && status.connectionRecovery === 'PASS' && status.processRestartRecovery === 'PASS';
+finish(allPass ? 'PASS' : 'NOT VERIFIED');

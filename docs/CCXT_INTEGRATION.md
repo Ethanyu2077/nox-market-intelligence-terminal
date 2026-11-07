@@ -24,6 +24,9 @@ project market ──► marketSnapshot()
                                              └─ failure + NOX_CCXT_FALLBACK ──► ccxtSnapshot()
 ```
 
+![CCXT 报价与 ccxt-source 标记](screenshots/ccxt-coverage.jpg)
+*BingX 永续报价：成交量矩阵中的 `ccxt-source` 标记说明该行来自 CCXT 适配器。*
+
 ## 2. 启用 / Enabling
 
 ```bash
@@ -59,6 +62,9 @@ NOX_CCXT_SPOT=true             # 现货快照（原生未覆盖）
 - `GET /api/exchanges`：返回全部场所，新增 `transport: 'native' | 'ccxt'` 与 `enabled`。
 - 顶部状态：`LIVE`（WebSocket）/`60S POLL`（仅轮询）/`STALE`/`DEGRADED`，CCXT 场所默认显示轮询。
 - 错误不会静默：目录加载失败会写入健康面板的 `error` 列，并在发现结果里生成 warning。
+
+![CCXT 健康面板](screenshots/ccxt-health.jpg)
+*设置页：启用场所、目录加载状态、市场数、延迟与错误。*
 
 ## 5. 已知限制 / Limits
 

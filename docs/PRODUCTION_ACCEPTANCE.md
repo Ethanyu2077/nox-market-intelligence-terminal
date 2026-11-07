@@ -47,3 +47,41 @@ Without these, cross-exchange results stay `NOT VERIFIED`.
 `npm run e2e` covers the shell only; the dedicated Evidence Panel interactions
 require a Chromium run against the research page. Until that suite exists, the
 panel stays `NOT VERIFIED` even though it renders real API data.
+
+## Updates (2026-11 final round)
+
+### L2 probe V2
+
+`node scripts/acceptance/l2-live.mjs <apiBase> <seconds>`
+
+- Timeouts: overall (seconds + 10s), per-read 3s, no-data 8s; AbortController always released.
+- PASS requires ≥2 valid updates, ≥1 strict sequence advance, one book epoch, positive
+  spread/bid/ask depth, `gapsDelta = 0`, and max message delay ≤15s. A final `live`
+  frame alone is a FAIL, not a PASS.
+- Each venue reports duration, frames, valid updates, advances, epochs, gaps/resyncs,
+  max delay, integrity, final state and PASS/FAIL/NOT VERIFIED.
+
+### Timescale acceptance
+
+```bash
+DATABASE_URL=postgres://.../nox_test \
+ACCEPTANCE_ALLOW_WRITES=1 \
+ACCEPTANCE_RESTART_CMD='npm run start:test' \
+node scripts/acceptance/timescale.mjs
+```
+
+- WRITE requires `ACCEPTANCE_ALLOW_WRITES=1` **and** a URL containing test/acceptance/tmp/ci;
+  otherwise it refuses and reports NOT VERIFIED (no production writes).
+- Rows use `source=acceptance:<ns>` and are deleted afterwards.
+- RECOVERY closes the pool, optionally runs the restart command, then re-reads and compares
+  ids/payload. Without the restart command it is a fresh-connection check, and the output
+  says so; process restart is not claimed.
+- READ / WRITE / RECOVERY are reported separately; overall PASS requires all three.
+
+### Still NOT VERIFIED
+
+- Panel dedicated E2E (no suite this round).
+- Frozen real historical dataset + SHA256.
+- Binance live L2 (REST intermittently unreachable here).
+- Network interruption/reconnect execution.
+- Timescale with a real disposable instance (script not executed).

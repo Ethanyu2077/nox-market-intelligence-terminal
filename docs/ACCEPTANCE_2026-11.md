@@ -99,3 +99,14 @@
 | 真实历史冻结样本/SHA256 | **NOT VERIFIED** | 无授权真实导出 |
 | Binance L2 实机、断网重连、Timescale 写入查询、重启恢复、抽样核对 | **NOT VERIFIED** | 缺相应环境 |
 | Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | Journal 无逐所历史序列 |
+
+## 2026-11 增补（验收工具轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| L2 探针 V2（超时/连续性/逐所报告） | IMPLEMENTED | 需要 ≥2 次有效更新、序列前进、单 epoch、spread/depth>0、无新增缺口、延迟≤15s |
+| L2 探针真实执行 | **NOT VERIFIED** | 本轮未在可控网络上运行；Binance REST 仍不可达 |
+| Timescale READ/WRITE/RECOVERY 脚本 | IMPLEMENTED | 仅允许可丢弃测试库写入；三态独立；重启命令可选 |
+| Timescale 真实执行 | **NOT VERIFIED** | 无测试实例，未执行 |
+| Evidence Panel 专项 E2E | **NOT IMPLEMENTED** | 本轮未新增浏览器交互套件 |
+| 冻结历史样本/SHA256、断网重连、重启恢复、抽样核对 | **NOT VERIFIED** | 缺环境/授权 |

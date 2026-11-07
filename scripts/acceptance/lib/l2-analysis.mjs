@@ -176,3 +176,21 @@ export function evaluateL2(metrics, thresholds = {}) {
   if (!metrics.recoveryCompleted) reasons.push('no continuous recovery after interruption');
   return { status: reasons.length ? 'FAIL' : 'PASS', reasons };
 }
+
+/** Single report builder so JSON fields and PASS/FAIL cannot diverge. */
+export function buildL2Report(venue, symbol, metrics, decision, extra = {}) {
+  return {
+    venue, symbol, status: decision.status,
+    state: metrics.finalState, integrity: metrics.finalIntegrity,
+    bookEpoch: metrics.finalEpoch, sequence: metrics.finalSequence,
+    sequenceAdvances: metrics.sequenceAdvanceCount,
+    gaps: metrics.gapsDelta, resyncs: metrics.resyncsDelta,
+    gapDetected: metrics.gapDetected, gapRecovered: metrics.gapRecovered,
+    resyncStarted: metrics.resyncStarted, resyncCompleted: metrics.resyncCompleted,
+    recoveryCompleted: metrics.recoveryCompleted,
+    longestContinuousLiveMs: metrics.longestContinuousLiveMs,
+    validWindowPct: metrics.validWindowPct, maxUpdateGapMs: metrics.maxUpdateGapMs,
+    ...extra,
+    reasons: decision.reasons,
+  };
+}

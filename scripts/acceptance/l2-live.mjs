@@ -11,7 +11,7 @@
 const base = process.argv[2] ?? 'http://127.0.0.1:8787';
 const seconds = Math.max(5, Number(process.argv[3] ?? 20));
 const venues = [['binance', 'BTCUSDT'], ['bybit', 'BTCUSDT'], ['okx', 'BTC-USDT-SWAP']];
-const { analyzeL2Frames, evaluateL2 } = await import('./lib/l2-analysis.mjs');
+const { analyzeL2Frames, evaluateL2, buildL2Report } = await import('./lib/l2-analysis.mjs');
 
 function withTimeout(promise, ms, label) {
   return Promise.race([
@@ -49,31 +49,26 @@ async function probe(venue, symbol) {
     const metrics = analyzeL2Frames(frames, { requestedMs: seconds * 1000, windowStart: started, windowEnd });
     const delays = frames.map((frame) => frame.snapshot?.lastMessageAt ? frame.at - frame.snapshot.lastMessageAt : null).filter((value) => value != null && value >= 0);
     const maxDelay = delays.length ? Math.max(...delays) : null;
-    const recoveryCompleted = metrics.finalState === 'live' && metrics.finalVerified === true;
     const decision = evaluateL2(metrics, { requestedMs: seconds * 1000 });
-    const healthy = decision.status === 'PASS' && maxDelay != null && maxDelay <= 15_000 && !endedEarly;
-    const status = healthy ? 'PASS' : metrics.updatedFrames < 2 ? 'NOT VERIFIED' : 'FAIL';
-    return {
-      venue, symbol, status,
+    const delayOk = maxDelay != null && maxDelay <= 15_000;
+    // A PASS in the report is exactly what the analyzer decided; recovery is never
+    // re-derived from the final frame.
+    const status = decision.status === 'PASS' && delayOk && !endedEarly ? 'PASS'
+      : metrics.updatedFrames < 2 ? 'NOT VERIFIED'
+      : 'FAIL';
+    return buildL2Report(venue, symbol, metrics, {
+      status,
+      reasons: [
+        ...decision.reasons,
+        ...(delayOk ? [] : ['message delay above limit']),
+        ...(endedEarly ? ['SSE ended before the requested window'] : []),
+      ],
+    }, {
       requestedDurationMs: seconds * 1000, observedDurationMs: metrics.observedDurationMs,
-      longestContinuousLiveMs: metrics.longestContinuousLiveMs, totalValidLiveMs: metrics.totalValidLiveMs,
-      validWindowPct: metrics.validWindowPct, maxUpdateGapMs: metrics.maxUpdateGapMs,
-      invalidStateDurationMs: metrics.invalidStateDurationMs,
-      sequenceAdvanceCount: metrics.sequenceAdvanceCount, epochChanges: metrics.epochChanges,
-      recoveryCompleted,
       framesReceived: frames.length, validUpdates: metrics.updatedFrames, duplicates: metrics.duplicates,
-      gaps: metrics.finalSequence == null ? null : undefined, gapsDelta: metrics.gapsDelta,
-      resyncsDelta: metrics.resyncsDelta,
-      maxDelayMs: maxDelay, integrity: metrics.finalIntegrity, state: metrics.finalState, finalState: metrics.finalState,
-      gapDetected: metrics.gapDetected, gapRecovered: metrics.gapRecovered,
-      resyncStarted: metrics.resyncStarted, resyncCompleted: metrics.resyncCompleted,
-      spreadBps: metrics.spreadBps, bidDepthUsd: metrics.bidDepthUsd, askDepthUsd: metrics.askDepthUsd,
-      endedEarly,
-      reason: healthy ? null : metrics.updatedFrames < 2 ? 'fewer than two valid live updates in the window'
-        : endedEarly ? 'SSE ended before the requested window'
-        : maxDelay == null || maxDelay > 15_000 ? 'message delay above limit'
-        : decision.reasons.join('; '),
-    };
+      maxDelayMs: maxDelay, endedEarly,
+      reason: status === 'PASS' ? null : status === 'NOT VERIFIED' ? 'fewer than two valid live updates in the window' : [...decision.reasons, ...(delayOk ? [] : ['message delay above limit']), ...(endedEarly ? ['SSE ended early'] : [])].join('; '),
+    });
   } catch (error) {
     return { venue, symbol, status: 'NOT VERIFIED', reason: error instanceof Error ? error.message : 'probe failed', frames: frames.length };
   } finally {

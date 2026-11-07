@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // @ts-expect-error plain ESM module used by the acceptance scripts
-import { analyzeL2Frames, evaluateL2 } from '../scripts/acceptance/lib/l2-analysis.mjs';
+import { analyzeL2Frames, evaluateL2, buildL2Report } from '../scripts/acceptance/lib/l2-analysis.mjs';
 
 const snap = (over: Record<string, unknown> = {}) => ({
   state: 'live', verified: true, integrity: 'ok', epoch: 1, sequence: { last: 10 }, gaps: 0, resyncs: 0,
@@ -116,4 +116,17 @@ test('checksum failure recovered by a new epoch is recorded', () => {
   assert.equal(metrics.stateCounts.checksumFailed, 1);
   assert.equal(metrics.epochChanges, 1);
   assert.equal(metrics.finalIntegrity, 'ok');
+});
+
+test('report recovery fields and PASS/FAIL come from one decision', () => {
+  const frames = [frame(0, { gaps: 0 }, 10), frame(1000, { gaps: 1 }, 11), frame(2000, { gaps: 1 }, 12)];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 2000, requestedMs: 2000 });
+  const decision = evaluateL2(metrics, { requestedMs: 2000 });
+  const report = buildL2Report('bybit', 'BTCUSDT', metrics, decision);
+  assert.equal(report.recoveryCompleted, metrics.recoveryCompleted);
+  assert.equal(report.recoveryCompleted, false);
+  assert.equal(report.gapDetected, true);
+  assert.equal(report.gapRecovered, false);
+  assert.equal(report.status, 'FAIL');
+  assert.ok(report.reasons.some((reason: string) => /gap/.test(reason)));
 });

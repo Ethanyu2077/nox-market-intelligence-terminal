@@ -37,7 +37,10 @@ export interface L2Snapshot {
   lastMessageAt: number | null;
   gaps: number;
   resyncs: number;
-  integrity: 'ok' | 'gap' | 'checksum-unchecked' | 'unknown';
+  integrity: 'ok' | 'gap' | 'checksum-failed' | 'checksum-unchecked' | 'unknown';
+  /** True only when completeness is confirmed (sequence valid and, for OKX, checksum matched). */
+  verified: boolean;
+  lastValidUpdate: number | null;
   limitations: string[];
 }
 

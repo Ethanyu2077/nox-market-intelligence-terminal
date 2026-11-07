@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { L2Book } from '../server/l2/engine.ts';
+import { L2Book, okxChecksum } from '../server/l2/engine.ts';
 
 const snap = (last: number) => ({
   bids: [['100', '2'], ['99', '1']] as Array<[string, string]>,
@@ -70,4 +70,48 @@ test('metrics: spread, 25bps depth, imbalance and withdrawal', () => {
   assert.equal(second.bidDepthUsd, 0);
   assert.equal(second.bidWithdrawalPct, 100);
   assert.equal(book.metricHistory().length, 2);
+});
+
+test('Binance: first delta must straddle lastUpdateId; pu must stay continuous', () => {
+  const book = new L2Book('binance', 'BTCUSDT', () => 2_000);
+  book.applySnapshot({ ...snap(100), eventTime: 2_000 });
+  assert.equal(book.applyDelta({ bids: [], asks: [], first: 90, last: 100, previous: null, eventTime: 2_000 }).reason, 'stale', 'u <= lastUpdateId is a duplicate');
+  assert.equal(book.applyDelta({ bids: [], asks: [], first: 101, last: 103, previous: null, previousLast: 100, eventTime: 2_000 }).reason, 'ok');
+  assert.equal(book.applyDelta({ bids: [], asks: [], first: 104, last: 106, previous: null, previousLast: 103, eventTime: 2_000 }).reason, 'ok');
+  assert.equal(book.applyDelta({ bids: [], asks: [], first: 107, last: 109, previous: null, previousLast: 105, eventTime: 2_000 }).reason, 'gap', 'pu mismatch reveals a missed update');
+  assert.equal(book.snapshot(2_000).state, 'resyncing');
+});
+
+test('Binance: a live book is verified, and lastValidUpdate tracks the sequence', () => {
+  const book = new L2Book('binance', 'BTCUSDT', () => 2_000);
+  book.applySnapshot({ ...snap(100), eventTime: 2_000 });
+  assert.equal(book.snapshot(2_000).verified, true);
+  book.applyDelta({ bids: [], asks: [], first: 101, last: 102, previous: null, previousLast: 100, eventTime: 2_000 });
+  assert.equal(book.snapshot(2_000).lastValidUpdate, 102);
+});
+
+test('OKX: checksum failure forces resync and unverifies the book', () => {
+  const book = new L2Book('okx', 'BTC-USDT-SWAP', () => 2_000);
+  book.applySnapshot({ bids: [['100', '1']], asks: [['101', '1']], sequence: { first: null, last: 50 }, eventTime: 2_000 });
+  assert.equal(book.snapshot(2_000).verified, false, 'without a checksum OKX is not verified');
+  const good = okxChecksum(book['bidText'], book['askText']);
+  const first = book.applyDelta({ bids: [['100', '2']], asks: [], first: null, last: 51, previous: 50, checksum: null, eventTime: 2_000 });
+  assert.equal(first.reason, 'ok');
+  const expected = okxChecksum(book['bidText'], book['askText']);
+  const bad = book.applyDelta({ bids: [['100', '3']], asks: [], first: null, last: 52, previous: 51, checksum: expected + 1, eventTime: 2_000 });
+  assert.equal(bad.reason, 'checksum');
+  assert.equal(book.snapshot(2_000).integrity, 'checksum-failed');
+  assert.equal(book.snapshot(2_000).verified, false);
+  void good;
+});
+
+test('Bybit: a fresh snapshot rebuilds the book and resets the sequence', () => {
+  const book = new L2Book('bybit', 'BTCUSDT', () => 2_000);
+  book.applySnapshot({ ...snap(10), eventTime: 2_000 });
+  book.applyDelta({ bids: [['100', '5']], asks: [], first: 11, last: 11, previous: null, eventTime: 2_000 });
+  book.applySnapshot({ bids: [['200', '1']], asks: [['201', '1']], sequence: { first: null, last: 20 }, eventTime: 2_000 });
+  const s = book.snapshot(2_000);
+  assert.equal(s.bestBid, 200);
+  assert.equal(s.sequence.last, 20);
+  assert.equal(s.state, 'live');
 });

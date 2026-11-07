@@ -96,7 +96,8 @@ export function OrderBookPanel({ project, exchange, language }: {
 
           {l2 && (
             <div className="ob-l2">
-              <span className={`l2-state ${l2.snapshot.state}`}>{l2.snapshot.state}</span>
+              <span className={`l2-state ${l2.snapshot.state}`}>{l2.snapshot.state}{l2.snapshot.state === 'live' && !l2.snapshot.verified ? '*' : ''}</span>
+              <span className={l2.snapshot.verified ? 'l2-verified' : 'l2-unverified'}>{l2.snapshot.verified ? (zh ? '已验证' : 'verified') : (zh ? '未验证' : 'unverified')}</span>
               <span>seq {l2.snapshot.sequence.last ?? '—'}</span>
               <span>gaps {l2.snapshot.gaps}</span>
               <span>resyncs {l2.snapshot.resyncs}</span>

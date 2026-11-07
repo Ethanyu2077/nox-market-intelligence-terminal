@@ -3,44 +3,73 @@ import type { L2Level, L2Metrics, L2RestSnapshot, L2Sequence, L2Snapshot, L2Stat
 /**
  * Sequence-validated L2 book.
  *
- * Venue rules differ:
- *  - Binance: first `U` and final `u`. Drop `u < lastUpdateId`; a delta whose `U` is beyond
- *    `last+1` means updates were missed and the book must be rebuilt from a snapshot.
- *  - Bybit: update ids are monotonic but not contiguous, so only ordering is validated.
- *  - OKX: `prevSeqId` must equal the last applied `seqId`.
+ * Venue rules (verified against public venue docs and live frames):
+ *  - Binance USDⓈ-M: snapshot `lastUpdateId`; deltas carry `U` (first), `u` (final) and
+ *    `pu` (previous final). The first delta must straddle `lastUpdateId`
+ *    (`U <= last+1 <= u`); afterwards `pu` must equal the previous `u`.
+ *  - Bybit v5: `u` is monotonic but not contiguous (`seq` is a cross-stream counter), so
+ *    only ordering is validated; a `type:"snapshot"` message rebuilds the book.
+ *  - OKX books: `prevSeqId` must equal the last `seqId`; frames with a `checksum` are
+ *    validated with CRC32 over the top 25 levels after applying the change.
  *
- * Any gap moves the book to `resyncing` and refuses further deltas until a new snapshot
- * arrives. A book is never "patched" across a gap.
+ * `state: 'live'` only means "streaming"; `verified` is true only when integrity is
+ * actually confirmed. A book is never patched across a gap.
  */
 
 const DEPTH_WINDOW_BPS = 25;
 const LEVEL_LIMIT = 50;
 const LIMITATIONS = [
   'Continuous book is rebuilt from a REST snapshot plus deltas; a detected gap forces a full resync.',
-  'OKX checksum is not recomputed in this version; integrity relies on sequence ids.',
+  'Bybit publishes monotonic but non-contiguous update ids, so gaps are not inferable from them; reconnect/resync is the integrity mechanism.',
   'Hidden/iceberg liquidity is never observable, and depth is not executable size for a large order.',
 ];
 
-export type DeltaResult = { applied: boolean; reason: 'ok' | 'stale' | 'gap' | 'duplicate' | 'not-synced'; expected?: number | null; received?: number | null };
+export type DeltaResult = {
+  applied: boolean;
+  reason: 'ok' | 'stale' | 'gap' | 'duplicate' | 'not-synced' | 'checksum';
+  expected?: number | null;
+  received?: number | null;
+};
+
+export interface L2Delta {
+  bids: Array<[string, string]>;
+  asks: Array<[string, string]>;
+  first: number | null;
+  last: number;
+  previous: number | null;
+  /** Binance previous final update id. */
+  previousLast?: number | null;
+  /** OKX checksum for the book after this update. */
+  checksum?: number | null;
+  eventTime: number;
+}
 
 export class L2Book {
   state: L2State = 'connecting';
   private bids = new Map<number, number>();
   private asks = new Map<number, number>();
+  /** Raw strings are required for the OKX checksum (formatting is part of the payload). */
+  private bidText = new Map<number, [string, string]>();
+  private askText = new Map<number, [string, string]>();
   private sequence: L2Sequence = { first: null, last: null, previous: null };
   private gaps = 0;
   private resyncs = 0;
   private syncedAt: number | null = null;
   private lastMessageAt: number | null = null;
+  private lastValidUpdate: number | null = null;
   private eventTime = 0;
+  private needStraddle = false;
+  private lastPu: number | null = null;
+  private checksumState: 'ok' | 'failed' | 'unchecked' | 'not-applicable' = 'not-applicable';
   private history: L2Metrics[] = [];
   private lastMetric: L2Metrics | null = null;
 
-  constructor(readonly venue: L2Venue, readonly symbol: string, private now: () => number = Date.now) {}
+  constructor(readonly venue: L2Venue, readonly symbol: string, private now: () => number = Date.now) {
+    if (venue === 'okx') this.checksumState = 'unchecked';
+  }
 
   markConnecting(): void { if (this.state !== 'live') this.state = 'connecting'; }
 
-  /** A gap or disconnect invalidates the book until a fresh snapshot is applied. */
   markResyncing(): void {
     this.state = 'resyncing';
     this.resyncs += 1;
@@ -53,31 +82,50 @@ export class L2Book {
   applySnapshot(snapshot: L2RestSnapshot, now = this.now()): void {
     this.bids = toMap(snapshot.bids);
     this.asks = toMap(snapshot.asks);
+    this.bidText = toTextMap(snapshot.bids);
+    this.askText = toTextMap(snapshot.asks);
     this.sequence = { first: snapshot.sequence.first ?? null, last: snapshot.sequence.last, previous: null };
     this.eventTime = snapshot.eventTime;
     this.syncedAt = now;
     this.lastMessageAt = now;
+    this.lastValidUpdate = snapshot.sequence.last;
+    this.needStraddle = this.venue === 'binance';
+    this.lastPu = null;
+    if (this.venue === 'okx') this.checksumState = 'unchecked';
     this.state = 'live';
   }
 
-  applyDelta(delta: { bids: Array<[string, string]>; asks: Array<[string, string]>; first: number | null; last: number; previous: number | null; eventTime: number }, now = this.now()): DeltaResult {
-    if (this.state !== 'live' && this.state !== 'stale') return { applied: false, reason: 'not-synced' };
+  applyDelta(delta: L2Delta, now = this.now()): DeltaResult {
     const last = this.sequence.last;
-    if (last == null) return { applied: false, reason: 'not-synced' };
+    if (last == null || !Number.isFinite(delta.last)) return { applied: false, reason: 'not-synced' };
+    // While resyncing, deltas must not be applied at all: the feed buffers them and replays
+    // after a fresh snapshot.
+    if (this.state !== 'live' && this.state !== 'stale') return { applied: false, reason: 'not-synced' };
 
     if (this.venue === 'binance') {
-      if (delta.last < last) return { applied: false, reason: 'stale' };
-      if (delta.first != null && delta.first > last + 1) {
+      // Drop anything that cannot advance the snapshot.
+      if (delta.last <= last) return { applied: false, reason: 'stale' };
+      if (this.needStraddle) {
+        const straddles = delta.first != null && delta.first <= last + 1 && delta.last >= last + 1;
+        if (!straddles) {
+          if (delta.last < last + 1) return { applied: false, reason: 'stale' };
+          this.gaps += 1; this.markResyncing();
+          return { applied: false, reason: 'gap', expected: last + 1, received: delta.first };
+        }
+        this.needStraddle = false;
+      } else if (delta.previousLast != null && this.lastPu != null && delta.previousLast !== this.lastPu) {
+        this.gaps += 1; this.markResyncing();
+        return { applied: false, reason: 'gap', expected: this.lastPu, received: delta.previousLast };
+      } else if (delta.first != null && delta.first > last + 1) {
         this.gaps += 1; this.markResyncing();
         return { applied: false, reason: 'gap', expected: last + 1, received: delta.first };
       }
     } else if (this.venue === 'bybit') {
-      // Bybit publishes monotonic update ids (`u`) but no contiguous sequence: a larger
-      // `u` is a valid newer book, not a gap. Integrity relies on reconnect + snapshot.
       if (delta.last === last) return { applied: false, reason: 'duplicate' };
       if (delta.last < last) return { applied: false, reason: 'stale' };
     } else {
-      // OKX: prevSeqId must match the last applied seqId.
+      // OKX: -1 marks a snapshot frame; it must be handled as a rebuild, never as a delta.
+      if (delta.previous === -1) return { applied: false, reason: 'not-synced' };
       if (delta.last === last) return { applied: false, reason: 'duplicate' };
       if (delta.previous != null && delta.previous !== last) {
         this.gaps += 1; this.markResyncing();
@@ -85,27 +133,51 @@ export class L2Book {
       }
     }
 
-    const bidPrices = new Set(delta.bids.map(([price]) => Number(price)));
-    for (const [price, quantity] of [...delta.bids, ...delta.asks]) {
-      const key = Number(price);
-      const value = Number(quantity);
-      if (!Number.isFinite(key) || !Number.isFinite(value)) continue;
-      if (value === 0) {
-        this.bids.delete(key);
-        this.asks.delete(key);
-      } else if (bidPrices.has(key)) {
-        this.bids.set(key, value);
-        this.asks.delete(key);
-      } else {
-        this.asks.set(key, value);
-        this.bids.delete(key);
-      }
-    }
+    this.applyLevels(delta.bids, delta.asks);
     this.sequence = { first: delta.first, last: delta.last, previous: delta.previous };
     this.eventTime = delta.eventTime;
     this.lastMessageAt = now;
+    this.lastValidUpdate = delta.last;
+    if (this.venue === 'binance') this.lastPu = delta.last;
     if (this.state === 'stale') this.state = 'live';
+
+    if (this.venue === 'okx' && delta.checksum != null) {
+      const expected = okxChecksum(this.bidText, this.askText);
+      if (expected !== delta.checksum) {
+        this.checksumState = 'failed';
+        this.gaps += 1;
+        this.markResyncing();
+        return { applied: false, reason: 'checksum', expected, received: delta.checksum };
+      }
+      this.checksumState = 'ok';
+    }
     return { applied: true, reason: 'ok' };
+  }
+
+  private applyLevels(bids: Array<[string, string]>, asks: Array<[string, string]>): void {
+    const bidPrices = new Set(bids.map(([price]) => Number(price)));
+    const update = (raw: Array<[string, string]>, side: 'bid' | 'ask') => {
+      for (const [price, quantity] of raw) {
+        const key = Number(price);
+        const value = Number(quantity);
+        if (!Number.isFinite(key) || !Number.isFinite(value)) continue;
+        const numeric = side === 'bid' ? this.bids : this.asks;
+        const text = side === 'bid' ? this.bidText : this.askText;
+        if (value === 0) { numeric.delete(key); text.delete(key); continue; }
+        numeric.set(key, value);
+        text.set(key, [price, quantity]);
+        (side === 'bid' ? this.asks : this.bids).delete(key);
+        (side === 'bid' ? this.askText : this.bidText).delete(key);
+      }
+    };
+    for (const [price] of bids) {
+      const key = Number(price);
+      // A price can switch sides only if the venue sends it as a bid and it was an ask;
+      // delete the stale side entry first.
+      if (!bidPrices.has(key)) continue;
+    }
+    update(bids, 'bid');
+    update(asks, 'ask');
   }
 
   metrics(now = this.now(), record = true): L2Metrics {
@@ -139,6 +211,7 @@ export class L2Book {
     const bids = sortedLevels(this.bids, 'desc').slice(0, LEVEL_LIMIT);
     const asks = sortedLevels(this.asks, 'asc').slice(0, LEVEL_LIMIT);
     const metric = this.metrics(now, false);
+    const integrity = this.integrity();
     return {
       venue: this.venue,
       symbol: this.symbol,
@@ -156,14 +229,68 @@ export class L2Book {
       eventTime: this.eventTime,
       syncedAt: this.syncedAt,
       lastMessageAt: this.lastMessageAt,
+      lastValidUpdate: this.lastValidUpdate,
       gaps: this.gaps,
       resyncs: this.resyncs,
-      integrity: this.state === 'resyncing' ? 'gap' : this.venue === 'okx' ? 'checksum-unchecked' : 'ok',
+      integrity,
+      verified: this.verified(),
       limitations: [...LIMITATIONS],
     };
   }
 
   metricHistory(): L2Metrics[] { return [...this.history]; }
+
+  private integrity(): L2Snapshot['integrity'] {
+    if (this.venue === 'okx' && this.checksumState === 'failed') return 'checksum-failed';
+    if (this.state === 'resyncing') return 'gap';
+    if (this.venue === 'okx') return this.checksumState === 'ok' ? 'ok' : 'checksum-unchecked';
+    return this.state === 'live' || this.state === 'stale' ? 'ok' : 'unknown';
+  }
+
+  private verified(): boolean {
+    if (this.state !== 'live' || this.sequence.last == null) return false;
+    if (this.venue === 'okx') return this.checksumState === 'ok';
+    return true;
+  }
+}
+
+/** OKX checksum: CRC32 over `bidPx:bidSz:askPx:askSz` for the top 25 levels, raw strings. */
+export function okxChecksum(bids: Map<number, [string, string]>, asks: Map<number, [string, string]>): number {
+  const sortedBids = [...bids.entries()].sort((a, b) => b[0] - a[0]).slice(0, 25).map(([, raw]) => raw);
+  const sortedAsks = [...asks.entries()].sort((a, b) => a[0] - b[0]).slice(0, 25).map(([, raw]) => raw);
+  const parts: string[] = [];
+  for (let i = 0; i < Math.max(sortedBids.length, sortedAsks.length); i += 1) {
+    const bid = sortedBids[i];
+    const ask = sortedAsks[i];
+    if (bid) parts.push(bid[0], bid[1]);
+    if (ask) parts.push(ask[0], ask[1]);
+  }
+  return crc32(parts.join(':'));
+}
+
+let crcTable: number[] | null = null;
+function crc32(text: string): number {
+  if (!crcTable) {
+    crcTable = new Array<number>(256).fill(0).map((_, index) => {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xEDB88320 ^ (value >>> 1) : value >>> 1;
+      return value >>> 0;
+    });
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < text.length; i += 1) {
+    crc = (crcTable[(crc ^ text.charCodeAt(i)) & 0xFF] ^ (crc >>> 8)) >>> 0;
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function toTextMap(levels: Array<[string, string]>): Map<number, [string, string]> {
+  const map = new Map<number, [string, string]>();
+  for (const [price, quantity] of levels) {
+    const key = Number(price);
+    if (Number.isFinite(key) && Number(price) > 0 && Number(quantity) > 0) map.set(key, [price, quantity]);
+  }
+  return map;
 }
 
 function toMap(levels: Array<[string, string]>): Map<number, number> {

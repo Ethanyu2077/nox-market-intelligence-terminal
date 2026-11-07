@@ -10,7 +10,7 @@ import { L2Book } from './engine.ts';
  * endpoint keeps its own 2s TTL and is not backed by this continuous state.
  */
 
-interface Delta { bids: Array<[string, string]>; asks: Array<[string, string]>; first: number | null; last: number; previous: number | null; eventTime: number }
+interface Delta { bids: Array<[string, string]>; asks: Array<[string, string]>; first: number | null; last: number; previous: number | null; previousLast?: number | null; checksum?: number | null; eventTime: number }
 
 const REST = {
   binance: process.env.BINANCE_REST_BASE ?? 'https://fapi.binance.com',
@@ -76,17 +76,21 @@ export class L2Feed {
       let message: Record<string, unknown>;
       try { message = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
       if (message.op === 'pong' || message.event === 'subscribe') return;
-      // OKX can push a fresh snapshot on the same socket (e.g. after a checksum failure).
-      if (this.venue === 'okx' && message.action === 'snapshot') {
+      // A venue may push a fresh snapshot on the same socket (OKX after a checksum failure,
+      // Bybit on subscribe/reconnect). Snapshots rebuild the book; they are never deltas.
+      if ((this.venue === 'okx' && message.action === 'snapshot') || (this.venue === 'bybit' && message.type === 'snapshot')) {
         const row = ((message.data as Array<Record<string, unknown>>) ?? [])[0];
-        if (row) this.book.applySnapshot(this.parseRest({ data: [row] }), this.now());
+        if (row) {
+          this.book.applySnapshot(this.venue === 'bybit' ? this.parseRest({ result: row }) : this.parseRest({ data: [row] }), this.now());
+          if (this.syncing) { this.syncing = false; this.buffer = []; }
+        }
         return;
       }
       const delta = this.parseDelta(message);
       if (!delta) return;
       if (this.syncing) { this.buffer = [...this.buffer, delta].slice(-2_000); return; }
       const result = this.book.applyDelta(delta, this.now());
-      if (result.reason === 'gap') void this.resync();
+      if (result.reason === 'gap' || result.reason === 'checksum' || (result.reason === 'not-synced' && !this.syncing)) void this.resync();
     });
     socket.on('close', () => this.scheduleReconnect());
     socket.on('error', () => { socket.terminate(); this.scheduleReconnect(); });
@@ -149,7 +153,7 @@ export class L2Feed {
     }
     if (this.venue === 'bybit') {
       const result = (body.result ?? {}) as Record<string, unknown>;
-      return { bids: (result.b as Array<[string, string]>) ?? [], asks: (result.a as Array<[string, string]>) ?? [], sequence: { first: null, last: Number(result.seq ?? result.u) }, eventTime: Number(result.ts ?? Date.now()) };
+      return { bids: (result.b as Array<[string, string]>) ?? [], asks: (result.a as Array<[string, string]>) ?? [], sequence: { first: null, last: Number(result.u ?? result.seq) }, eventTime: Number(result.cts ?? result.ts ?? Date.now()) };
     }
     const row = ((body.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
     return { bids: (row.bids as Array<[string, string]>) ?? [], asks: (row.asks as Array<[string, string]>) ?? [], sequence: { first: null, last: Number(row.seqId) }, eventTime: Number(row.ts ?? Date.now()) };
@@ -158,18 +162,20 @@ export class L2Feed {
   private parseDelta(message: Record<string, unknown>): Delta | null {
     if (this.venue === 'binance') {
       if (message.e !== 'depthUpdate') return null;
-      return { bids: (message.b as Array<[string, string]>) ?? [], asks: (message.a as Array<[string, string]>) ?? [], first: num(message.U), last: Number(message.u), previous: null, eventTime: Number(message.E ?? Date.now()) };
+      return { bids: (message.b as Array<[string, string]>) ?? [], asks: (message.a as Array<[string, string]>) ?? [], first: num(message.U), last: Number(message.u), previous: null, previousLast: num(message.pu), eventTime: Number(message.E ?? Date.now()) };
     }
     if (this.venue === 'bybit') {
       const data = (message.data ?? {}) as Record<string, unknown>;
       if (!String(message.topic ?? '').startsWith('orderbook.')) return null;
-      return { bids: (data.b as Array<[string, string]>) ?? [], asks: (data.a as Array<[string, string]>) ?? [], first: num(data.u), last: Number(data.seq), previous: null, eventTime: Number(data.ts ?? Date.now()) };
+      // `u` is the monotonic update id; `seq` is a cross-stream counter and must not be used
+      // as an update sequence. `cts` is the venue create time when present.
+      return { bids: (data.b as Array<[string, string]>) ?? [], asks: (data.a as Array<[string, string]>) ?? [], first: num(data.u), last: Number(data.u), previous: null, eventTime: Number(data.cts ?? data.ts ?? Date.now()) };
     }
     const arg = (message.arg ?? {}) as Record<string, unknown>;
     if (arg.channel !== 'books') return null;
     const row = ((message.data as Array<Record<string, unknown>>) ?? [])[0];
     if (!row) return null;
-    return { bids: (row.bids as Array<[string, string]>) ?? [], asks: (row.asks as Array<[string, string]>) ?? [], first: null, last: Number(row.seqId), previous: num(row.prevSeqId), eventTime: Number(row.ts ?? Date.now()) };
+    return { bids: (row.bids as Array<[string, string]>) ?? [], asks: (row.asks as Array<[string, string]>) ?? [], first: null, last: Number(row.seqId), previous: num(row.prevSeqId), checksum: num(row.checksum), eventTime: Number(row.ts ?? Date.now()) };
   }
 }
 

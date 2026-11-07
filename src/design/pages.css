@@ -151,6 +151,8 @@
 .l2-state.syncing, .l2-state.connecting, .l2-state.stale { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
 .l2-state.resyncing { color: var(--down); border-color: color-mix(in srgb, var(--down) 35%, transparent); }
 .l2-integrity { margin-left: auto; color: var(--faint); }
+.l2-verified { color: var(--up); }
+.l2-unverified { color: var(--warn); }
 
 /* Order book snapshot */
 .structure-depth { margin-top: 14px; }

@@ -133,6 +133,17 @@
 .chart-zoom button:disabled { opacity: .35; cursor: not-allowed; }
 .chart-zoom em { margin-left: 4px; color: var(--faint); font: 10px var(--mono); }
 
+/* Capability matrix */
+.capability-table td { text-align: center; }
+.capability-table td:first-child { text-align: left; }
+.capability-table td small { display: block; color: var(--faint); font: 9.5px var(--mono); margin-top: 2px; }
+.cap-state { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); font: 9.5px var(--mono); color: var(--muted); }
+.cap-state::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.cap-state.live { color: var(--up); border-color: color-mix(in srgb, var(--up) 30%, transparent); }
+.cap-state.degraded, .cap-state.stale { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.cap-state.unavailable { color: var(--down); border-color: color-mix(in srgb, var(--down) 30%, transparent); }
+.cap-none { color: var(--faint); }
+
 /* Order book snapshot */
 .structure-depth { margin-top: 14px; }
 .orderbook-panel { margin-bottom: 14px; }
@@ -174,6 +185,10 @@
 .alerts-form label { display: flex; flex-direction: column; gap: 5px; color: var(--faint); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
 .alerts-form input, .alerts-form select { height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); color: var(--text); font: 11.5px var(--mono); }
 .alerts-form button { height: 30px; }
+.alerts-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 14px 8px; }
+.alerts-scope > span { color: var(--faint); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+.alerts-scope select { height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); color: var(--text-2); font-size: 11px; }
+.alert-scope-text { color: var(--muted) !important; }
 .alerts-hint { margin: -4px 14px 8px; color: var(--faint); font: 10px var(--mono); }
 .alerts-error { margin: 0 14px 8px; color: var(--down); font-size: 11.5px; }
 .alerts-table td { vertical-align: top; }

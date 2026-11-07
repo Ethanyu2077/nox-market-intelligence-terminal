@@ -63,3 +63,15 @@ test('a success resets the failure counter and snapshot exposes state', () => {
   assert.equal(row.successes, 1);
   assert.equal(row.lastError, 'timeout');
 });
+
+test('breaker families are independent', () => {
+  const time = clock();
+  const breakers = new VenueBreakers(time.now);
+  for (let i = 0; i < 3; i += 1) breakers.failure('binance', 'depth down', 'depth');
+  assert.equal(breakers.allow('binance', 'depth'), false);
+  assert.equal(breakers.allow('binance', 'snapshot'), true, 'a depth outage must not stop snapshots');
+  breakers.success('binance', 'snapshot');
+  const rows = breakers.snapshot();
+  assert.equal(rows.find((row) => row.exchange === 'binance' && row.family === 'depth')?.state, 'open');
+  assert.equal(rows.find((row) => row.exchange === 'binance' && row.family === 'snapshot')?.state, 'closed');
+});

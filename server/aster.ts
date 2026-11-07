@@ -1,4 +1,4 @@
-import { aggregateCvd, backtestPositionSignals, computeOiDeltas, computeVolumeFlow, detectPositionFlowSignals, openInterestUsd, type RawAggTrade } from './calculations.ts';
+import { aggregateCvd, backtestPositionSignals, computeOiDeltas, computeVolumeFlow, detectPositionFlowSignals, isSeriesStale, openInterestUsd, type RawAggTrade } from './calculations.ts';
 import type { Instrument, MarketSeries, Overview } from '../shared/types.ts';
 
 /**
@@ -111,7 +111,9 @@ export async function marketSeries(symbol: string, interval = '5m', limit = 120,
   const cvd = aggregateCvd(trades, intervalToMs(interval));
   const oiDelta = computeOiDeltas([], []);
   const volumeFlow = computeVolumeFlow(cvd);
-  const signals = detectPositionFlowSignals(candles, oiDelta, volumeFlow);
+  // Stale windows must not generate fresh-looking structure claims.
+  const stale = isSeriesStale(candles.at(-1)?.time, interval);
+  const signals = stale ? [] : detectPositionFlowSignals(candles, oiDelta, volumeFlow);
   return {
     symbol: encoded,
     interval,
@@ -129,7 +131,7 @@ export async function marketSeries(symbol: string, interval = '5m', limit = 120,
       methodology: {
         oiSpikeRule: 'Unavailable on Aster: the venue does not expose a historical open-interest endpoint.',
         volumeDeltaRule: 'Aggressor buy notional minus aggressor sell notional from the Aster buyer-maker flag.',
-        classificationRule: 'Price direction and synchronised aggressive flow; any label that needs an OI window is withheld rather than estimated.',
+        classificationRule: `Price direction and synchronised aggressive flow; any label that needs an OI window is withheld rather than estimated.${stale ? ' Signals withheld: the returned window is stale.' : ''}`,
         evidenceGateRule: 'A label is asserted only when every required window exists. OI-dependent labels cannot pass on Aster.',
         reliabilityRule: 'Descriptive only; no calibrated win rate. No historical OI means no OI-based reliability claim.',
         oneMinuteOiNotice: null,

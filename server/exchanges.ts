@@ -179,7 +179,18 @@ const catalogs: Record<ExchangeId, CatalogLoader> = {
   upbit: () => koreanSpot.instruments('upbit'), bithumb: () => koreanSpot.instruments('bithumb'),
   htx: () => ccxtInstruments('htx'), bingx: () => ccxtInstruments('bingx'), phemex: () => ccxtInstruments('phemex'), bitfinex: () => ccxtInstruments('bitfinex'),
 };
-export async function getExchangeInstruments(exchange: ExchangeId) { return cached(exchange, catalogs[exchange]); }
+export async function getExchangeInstruments(exchange: ExchangeId) {
+  // Discovery is its own endpoint family: a broken catalogue must not block snapshots.
+  if (!venueBreakers.allow(exchange, 'discovery')) throw new Error(`${exchange} catalogue is in an open-circuit cooldown`);
+  try {
+    const rows = await cached(exchange, catalogs[exchange]);
+    venueBreakers.success(exchange, 'discovery');
+    return rows;
+  } catch (error) {
+    venueBreakers.failure(exchange, error instanceof Error ? error.message : 'catalogue failed', 'discovery');
+    throw error;
+  }
+}
 
 function isContractAddress(query: string) { return /^0x[a-fA-F0-9]{40}$/.test(query) || /^[1-9A-HJ-NP-Za-km-z]{32,50}$/.test(query); }
 async function resolveIdentity(raw: string) {

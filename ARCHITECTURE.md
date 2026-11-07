@@ -2,6 +2,14 @@
 
 For the current V2.2 incremental data/auth/regime architecture and its explicitly unverified production boundaries, see [V2_2_IMPLEMENTATION.md](V2_2_IMPLEMENTATION.md). This note retains the initial-stage architecture audit below.
 
+## Reliability boundary (2026-11)
+
+Alert evaluation is scoped (project/venue/market type/timeframe) and persists its runtime state, so an
+armed crossing survives a restart without re-firing; events carry a deterministic idempotency key and a
+local delivery record. `/api/capabilities` is the single venue × endpoint-family registry (discovery,
+snapshot, series, depth, flow, liquidation) with live breaker coverage. Breakers are independent per
+family, and stale series withhold signals instead of computing on an old window.
+
 ## Venue layer: native adapters + CCXT (2026-11)
 
 Ten native venues (Binance, Bitget, Bybit, OKX, Gate, KuCoin, MEXC, Aster, Upbit, Bithumb) stay on their own

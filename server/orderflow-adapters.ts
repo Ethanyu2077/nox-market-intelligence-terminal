@@ -3,6 +3,7 @@ import { CCXT_EXCHANGE_IDS, type Instrument, type ProjectMarket } from '../share
 import type { FlowTrade, LiquidationEvent } from '../shared/orderflow.ts';
 import { getExchangeInstruments } from './exchanges.ts';
 import { openExchangeStream } from './exchange-streams.ts';
+import { venueBreakers } from './venue-health.ts';
 
 type Row = Record<string, unknown>;
 const rows = (value: unknown): Row[] => Array.isArray(value) ? value as Row[] : [];
@@ -66,7 +67,16 @@ export async function recentFlowTrades(market: ProjectMarket, instrument: Instru
   const url = urls[market.exchange];
   // CCXT-only venues expose snapshots but no normalised trade tape; fail explicitly.
   if (!url) throw new Error(`${market.exchange} has no native trade-tape adapter`);
-  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  if (!venueBreakers.allow(market.exchange, 'flow')) throw new Error(`${market.exchange} trade tape is in an open-circuit cooldown`);
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`${market.exchange} recent trades HTTP ${response.status}`);
+    venueBreakers.success(market.exchange, 'flow');
+  } catch (error) {
+    venueBreakers.failure(market.exchange, error instanceof Error ? error.message : 'flow failed', 'flow');
+    throw error;
+  }
   if (!response.ok) throw new Error(`${market.exchange} recent trades HTTP ${response.status}`);
   const raw = await response.json();
   if (market.exchange === 'bybit' && raw.retCode !== 0) throw new Error(`Bybit ${raw.retCode}`);

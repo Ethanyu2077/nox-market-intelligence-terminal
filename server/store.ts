@@ -18,6 +18,15 @@ export class FileStore {
     try {
       const saved = JSON.parse(await readFile(this.file, 'utf8')) as Partial<StoreData>;
       this.data = { ...structuredClone(initial), ...saved, projects: saved.projects ?? [], selectedProjectId: saved.selectedProjectId ?? null };
+      // Rules written before scoping existed have no scope fields; normalise them to
+      // explicit nulls so evaluation and the API always see the same shape.
+      this.data.alerts = (this.data.alerts ?? []).map((rule) => ({
+        ...rule,
+        projectId: rule.projectId ?? null,
+        venue: rule.venue ?? null,
+        marketType: rule.marketType ?? null,
+        timeframe: rule.timeframe ?? null,
+      }));
     }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; await this.persist(); }
   }
@@ -45,7 +54,15 @@ export class FileStore {
     return removed;
   }
   async addAlert(rule: Omit<AlertRule, 'id' | 'createdAt'>) {
-    const alert = { ...rule, id: crypto.randomUUID(), createdAt: Date.now() };
+    const alert: AlertRule = {
+      ...rule,
+      projectId: rule.projectId ?? null,
+      venue: rule.venue ?? null,
+      marketType: rule.marketType ?? null,
+      timeframe: rule.timeframe ?? null,
+      id: crypto.randomUUID(),
+      createdAt: Date.now(),
+    };
     this.data.alerts.push(alert);
     await this.persist();
     return alert;

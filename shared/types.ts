@@ -454,4 +454,12 @@ export interface AlertRule {
   threshold: number;
   enabled: boolean;
   createdAt: number;
+  /** Restrict evaluation to one project; omitted/null = first project covering the symbol. */
+  projectId?: string | null;
+  /** Restrict to one venue; omitted/null = the project aggregate. */
+  venue?: ExchangeId | null;
+  /** Market type used with `venue`; omitted/null = the project's primary perpetual. */
+  marketType?: ProjectMarketType | null;
+  /** Evaluation cadence/granularity; cooldown is at least this window. */
+  timeframe?: '1m' | '5m' | '15m' | '1h' | '4h' | null;
 }

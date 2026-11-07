@@ -431,3 +431,15 @@ export function backtestPositionSignals(signals: PositionFlowSignal[], candles: 
     };
   });
 }
+
+
+/**
+ * A series whose last candle is older than three intervals (and at least 15 minutes) is
+ * stale: signals must be withheld rather than computed on an old window.
+ */
+export function isSeriesStale(lastCandleTime: number | null | undefined, interval: string, now = Date.now()): boolean {
+  if (!lastCandleTime) return true;
+  const value = Number(interval.slice(0, -1));
+  const step = value * (interval.endsWith('m') ? 60_000 : 3_600_000);
+  return now - lastCandleTime > Math.max(3 * step, 15 * 60_000);
+}

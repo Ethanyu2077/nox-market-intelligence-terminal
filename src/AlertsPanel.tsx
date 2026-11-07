@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Bell, BellOff, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import type { AlertRule } from '../shared/types';
+import type { AlertRule, MarketProject } from '../shared/types';
+import type { VenueOption } from './shell/MarketBar';
 import type { AlertMetric, AlertsStatus } from '../shared/alerts';
 import { ALERT_METRICS } from '../shared/alerts';
 import { api } from './api';
@@ -17,7 +18,7 @@ function formatValue(metric: AlertMetric, value: number): string {
   return Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(value);
 }
 
-export function AlertsPanel({ language }: { language: 'en' | 'zh' }) {
+export function AlertsPanel({ language, projects, venues }: { language: 'en' | 'zh'; projects: MarketProject[]; venues: VenueOption[] }) {
   const zh = language === 'zh';
   const [status, setStatus] = useState<AlertsStatus | null>(null);
   const [error, setError] = useState('');
@@ -26,6 +27,7 @@ export function AlertsPanel({ language }: { language: 'en' | 'zh' }) {
   const [metric, setMetric] = useState<AlertMetric>('price_change_24h');
   const [operator, setOperator] = useState<'gt' | 'lt'>('gt');
   const [threshold, setThreshold] = useState('');
+  const [scope, setScope] = useState<{ projectId: string; venue: string; marketType: string; timeframe: string }>({ projectId: '', venue: '', marketType: '', timeframe: '' });
 
   const load = useCallback(async () => {
     try {
@@ -55,7 +57,16 @@ export function AlertsPanel({ language }: { language: 'en' | 'zh' }) {
     const value = Number(threshold);
     if (!symbol.trim() || !Number.isFinite(value)) { setError(zh ? '请填写交易对和阈值' : 'Symbol and threshold are required'); return; }
     void mutate(async () => {
-      await api('/alerts/rules', { method: 'POST', body: JSON.stringify({ symbol: symbol.trim(), metric, operator, threshold: value, enabled: true }) });
+      await api('/alerts/rules', {
+        method: 'POST',
+        body: JSON.stringify({
+          symbol: symbol.trim(), metric, operator, threshold: value, enabled: true,
+          projectId: scope.projectId || null,
+          venue: scope.venue || null,
+          marketType: scope.marketType || null,
+          timeframe: scope.timeframe || null,
+        }),
+      });
       setSymbol(''); setThreshold('');
     });
   };
@@ -66,6 +77,14 @@ export function AlertsPanel({ language }: { language: 'en' | 'zh' }) {
   const clear = () => void mutate(() => api('/alerts/events/clear', { method: 'POST', body: '{}' }));
 
   const metricLabel = (id: AlertMetric) => ALERT_METRICS.find((item) => item.id === id)?.[zh ? 'label' : 'label'] ?? id;
+  const scopeText = (rule: AlertRule) => {
+    const parts: string[] = [];
+    if (rule.projectId) parts.push(projects.find((project) => project.id === rule.projectId)?.name ?? rule.projectId);
+    if (rule.venue) parts.push(rule.venue.toUpperCase());
+    if (rule.marketType) parts.push(rule.marketType);
+    if (rule.timeframe) parts.push(rule.timeframe.toUpperCase());
+    return parts.length ? parts.join(' · ') : (zh ? '全局聚合' : 'global aggregate');
+  };
   const lastEvaluated = status?.lastEvaluatedAt;
 
   return (
@@ -108,7 +127,27 @@ export function AlertsPanel({ language }: { language: 'en' | 'zh' }) {
         </label>
         <button className="primary-button" onClick={add} disabled={busy}><Plus size={13} />{zh ? '添加' : 'Add'}</button>
       </div>
-      <p className="alerts-hint">{METRIC_UNITS[metric][zh ? 'zh' : 'en']}</p>
+      <div className="alerts-scope">
+        <span>{zh ? '作用域（可选）' : 'Scope (optional)'}</span>
+        <select aria-label={zh ? '项目' : 'Project'} value={scope.projectId} onChange={(event) => setScope((current) => ({ ...current, projectId: event.target.value }))}>
+          <option value="">{zh ? '任意项目' : 'Any project'}</option>
+          {projects.filter((project) => !project.archived).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <select aria-label={zh ? '交易所' : 'Venue'} value={scope.venue} onChange={(event) => setScope((current) => ({ ...current, venue: event.target.value }))}>
+          <option value="">{zh ? '聚合' : 'Aggregate'}</option>
+          {venues.filter((venue) => venue.id !== 'aggregated').map((venue) => <option key={venue.id} value={venue.id}>{venue.label}</option>)}
+        </select>
+        <select aria-label={zh ? '市场类型' : 'Market type'} value={scope.marketType} onChange={(event) => setScope((current) => ({ ...current, marketType: event.target.value }))}>
+          <option value="">{zh ? '默认永续' : 'Default perp'}</option>
+          <option value="perpetual">{zh ? '永续' : 'Perpetual'}</option>
+          <option value="spot">{zh ? '现货' : 'Spot'}</option>
+        </select>
+        <select aria-label={zh ? '周期' : 'Timeframe'} value={scope.timeframe} onChange={(event) => setScope((current) => ({ ...current, timeframe: event.target.value }))}>
+          <option value="">{zh ? '无周期限制' : 'No timeframe'}</option>
+          {['1m', '5m', '15m', '1h', '4h'].map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+        </select>
+      </div>
+      <p className="alerts-hint">{METRIC_UNITS[metric][zh ? 'zh' : 'en']}{scope.timeframe ? (zh ? ' · 冷却不短于该周期' : ' · cooldown is at least this timeframe') : ''}</p>
       {error && <p role="alert" className="alerts-error">{error}</p>}
 
       <div className="table-wrap">
@@ -129,7 +168,7 @@ export function AlertsPanel({ language }: { language: 'en' | 'zh' }) {
               const fired = status?.events.find((event) => event.ruleId === rule.id);
               return (
                 <tr key={rule.id} className={rule.enabled ? '' : 'disabled'}>
-                  <td><strong>{rule.symbol}</strong><small>{metricLabel(rule.metric)}</small></td>
+                  <td><strong>{rule.symbol}</strong><small>{metricLabel(rule.metric)}</small><small className="alert-scope-text">{scopeText(rule)}</small></td>
                   <td><span className="mono">{rule.operator === 'gt' ? '>' : '<'} {rule.metric === 'funding_rate' ? `${(rule.threshold * 100).toFixed(4)}%` : rule.threshold}</span></td>
                   <td>{evaluation?.value == null ? '—' : formatValue(rule.metric, evaluation.value)}</td>
                   <td>

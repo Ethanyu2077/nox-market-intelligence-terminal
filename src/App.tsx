@@ -26,6 +26,7 @@ import { useAuth } from './shell/useAuth';
 import { useWatchlistQuotes } from './shell/useWatchlistQuotes';
 import { useVenues } from './shell/useVenues';
 import { CcxtPanel } from './CcxtPanel';
+import { CapabilityPanel } from './CapabilityPanel';
 import { AlertsPanel } from './AlertsPanel';
 import { OrderBookPanel } from './OrderBookPanel';
 import { ErrorBoundary } from './shell/ErrorBoundary';
@@ -416,10 +417,10 @@ export default function App() {
             {page === 'positionFlow' && selectedProject && <PositionFlowPage overview={overview} series={localizedSeries} interval={interval}/>}
             {page === 'derivatives' && selectedProject && <DerivativesPage overview={overview} series={localizedSeries}/>}
             {page === 'liquidity' && selectedProject && <OnchainLiquidityPage project={selectedProject} interval={interval}/>}
-            {page === 'settings' && <><AiSettingsCard language={language} /><CcxtPanel language={language} /><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
+            {page === 'settings' && <><AiSettingsCard language={language} /><CapabilityPanel language={language} /><CcxtPanel language={language} /><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
             {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}
             {page === 'orderflow' && selectedProject && <OrderFlowPage key={selectedProject.id} project={selectedProject} series={localizedSeries} venues={venueData} interval={interval} onInterval={setIntervalValue} language={language} selection={exchange}/>}
-            {page === 'signals' && selectedProject && <><AlertsPanel language={language}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></>}
+            {page === 'signals' && selectedProject && <><AlertsPanel language={language} projects={projects} venues={venues}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></>}
             {page === 'history' && selectedProject && <EventStudyPage key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval}/>}
             </ErrorBoundary>
           </main>

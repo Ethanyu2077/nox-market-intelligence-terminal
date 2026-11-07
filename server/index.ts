@@ -44,6 +44,7 @@ import { watchlistQuotes } from './watchlist.ts';
 import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
 import { venueBreakers } from './venue-health.ts';
 import { isDepthVenue, orderBookSnapshot } from './orderbook.ts';
+import { capabilityRegistry } from './capability-registry.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
 
@@ -158,6 +159,9 @@ app.get('/api/health', (_req, res) => res.json({ service: 'nox-market-intelligen
 // generic upstream error, and lets an operator see which venue is being cooled down.
 app.get('/api/venues/health', (_req, res) => res.json({ items: venueBreakers.snapshot(), timestamp: Date.now() }));
 app.get('/api/exchanges', (_req, res) => res.json({ items: exchangeCapabilities(), timestamp: Date.now() }));
+// Unified capability + live coverage registry; every page should read this rather than
+// hard-coding per-venue support.
+app.get('/api/capabilities', (_req, res) => res.json(capabilityRegistry()));
 // CCXT diagnostics. `probe=1` loads the enabled venue catalogues so the settings panel can
 // show real market counts and latency; without it the response is cache-only.
 app.get('/api/ccxt/health', safe(async (req, res) => {
@@ -255,8 +259,18 @@ app.get('/api/market/:exchange/:symbol/series', safe(async (req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange);
   if (!exchange.success) { res.status(400).json({ error: { message: 'Unsupported exchange' } }); return; }
   const interval = z.enum(['1m', '5m', '15m', '1h', '4h']).catch('5m').parse(req.query.interval);
-  if (exchange.data === 'binance') { res.json(await marketSeries(String(req.params.symbol), interval)); return; }
-  if (exchange.data === 'aster') { res.json(await asterMarketSeries(String(req.params.symbol), interval)); return; }
+  if (exchange.data !== 'binance' && exchange.data !== 'aster') { res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } }); return; }
+  if (!venueBreakers.allow(exchange.data, 'series')) { res.status(503).json({ error: { message: `${exchange.data} series is in an open-circuit cooldown` } }); return; }
+  try {
+    const series = exchange.data === 'binance'
+      ? await marketSeries(String(req.params.symbol), interval)
+      : await asterMarketSeries(String(req.params.symbol), interval);
+    venueBreakers.success(exchange.data, 'series');
+    res.json(series);
+  } catch (error) {
+    venueBreakers.failure(exchange.data, error instanceof Error ? error.message : 'series failed', 'series');
+    throw error;
+  }
   res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } });
 }));
 app.get('/api/market/:exchange/:symbol/depth', safe(async (req, res) => {
@@ -284,13 +298,19 @@ app.get('/api/market/:symbol/stream', (req, res) => {
 });
 app.get('/api/watchlists', (_req, res) => res.json({ symbols: store.getWatchlist() }));
 app.post('/api/watchlists', safe(async (req, res) => { const body = z.object({ symbols: z.array(z.string().regex(/^[A-Z0-9]{5,20}$/)).max(100) }).parse(req.body); res.json({ symbols: await store.setWatchlist(body.symbols) }); }));
+const alertScopeSchema = z.object({
+  projectId: z.string().min(1).max(120).nullable().optional(),
+  venue: exchangeSchema.nullable().optional(),
+  marketType: z.enum(['spot', 'perpetual']).nullable().optional(),
+  timeframe: z.enum(['1m', '5m', '15m', '1h', '4h']).nullable().optional(),
+});
 const alertRuleBody = z.object({
   symbol: z.string().trim().min(2).max(30).transform((value) => value.toUpperCase()),
   metric: z.enum(['price_change_24h', 'funding_rate', 'volume_24h_usd']),
   operator: z.enum(['gt', 'lt']),
   threshold: z.number().finite(),
   enabled: z.boolean().default(true),
-});
+}).merge(alertScopeSchema);
 app.get('/api/alerts/rules', (_req, res) => res.json({ items: store.getAlerts() }));
 app.get('/api/alerts/status', (_req, res) => res.json(alerts.status()));
 app.post('/api/alerts/rules', safe(async (req, res) => {
@@ -300,7 +320,7 @@ app.post('/api/alerts/rules', safe(async (req, res) => {
   res.status(201).json(rule);
 }));
 app.patch('/api/alerts/rules/:id', safe(async (req, res) => {
-  const body = z.object({ enabled: z.boolean().optional(), threshold: z.number().finite().optional() }).strict().parse(req.body);
+  const body = z.object({ enabled: z.boolean().optional(), threshold: z.number().finite().optional() }).merge(alertScopeSchema).strict().parse(req.body);
   res.json(await store.updateAlert(String(req.params.id), body));
 }));
 app.delete('/api/alerts/rules/:id', safe(async (req, res) => { await store.removeAlert(String(req.params.id)); res.status(204).end(); }));

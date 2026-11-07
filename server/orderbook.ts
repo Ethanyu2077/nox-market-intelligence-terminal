@@ -7,6 +7,7 @@
  */
 
 import type { DepthVenue, OrderBookLevel, OrderBookSnapshot } from '../shared/orderbook.ts';
+import { venueBreakers } from './venue-health.ts';
 
 export type { DepthVenue, OrderBookLevel, OrderBookSnapshot } from '../shared/orderbook.ts';
 
@@ -83,10 +84,18 @@ export async function orderBookSnapshot(exchange: string, symbol: string, limit 
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL) return hit.value;
   const value = (async () => {
-    const url = `${ENDPOINTS[exchange]}/fapi/v1/depth?symbol=${encodeURIComponent(symbol.toUpperCase())}&limit=${depthLimit}`;
-    const response = await transport(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
-    if (!response.ok) throw new Error(`${exchange} depth HTTP ${response.status}`);
-    return parseDepth(exchange, symbol, await response.json(), Date.now());
+    if (!venueBreakers.allow(exchange, 'depth')) throw new Error(`${exchange} depth is in an open-circuit cooldown`);
+    try {
+      const url = `${ENDPOINTS[exchange]}/fapi/v1/depth?symbol=${encodeURIComponent(symbol.toUpperCase())}&limit=${depthLimit}`;
+      const response = await transport(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
+      if (!response.ok) throw new Error(`${exchange} depth HTTP ${response.status}`);
+      const parsed = parseDepth(exchange, symbol, await response.json(), Date.now());
+      venueBreakers.success(exchange, 'depth');
+      return parsed;
+    } catch (error) {
+      venueBreakers.failure(exchange, error instanceof Error ? error.message : 'depth failed', 'depth');
+      throw error;
+    }
   })();
   cache.set(key, { at: Date.now(), value });
   if (cache.size > 200) { for (const [id, row] of cache) if (Date.now() - row.at > CACHE_TTL * 4) cache.delete(id); }

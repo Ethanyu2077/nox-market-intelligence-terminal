@@ -144,17 +144,18 @@ app.get('/api/projects/:id/regimes-v2',safe(async(req,res)=>{
   const reports=records.filter(e=>e.source==='nox.regime.v2'&&(e.payload as RegimeReport).interval===interval.data).slice(-100).map(e=>e.payload as RegimeReport);
   res.json({items:eventId.data?reports:reports.map(r=>({...r,venues:r.venues.map(v=>({...v,inputSnapshotCount:v.input.snapshots?.length??v.inputSnapshotCount??0,input:{...v.input,snapshots:[],perpBuckets:[],spotBuckets:[]}}))})),historicalEdge:null,inputsIncluded:!!eventId.data});
 }));
-app.post('/api/projects/:id/research/leadlag', safe(async (req, res) => {
+// Read-only analysis, like /research/analysis: anonymous GET, no mutation.
+app.get('/api/projects/:id/research/leadlag', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
   const body = z.object({
     venueA: exchangeSchema,
     venueB: exchangeSchema,
-    windowMs: z.number().int().min(60_000).max(3_600_000).optional(),
-    horizonMs: z.number().int().min(60_000).max(3_600_000).optional(),
-    maxDelayMs: z.number().int().min(0).max(300_000).optional(),
-    costBpsPerSide: z.number().min(0).max(100).optional(),
-  }).parse(req.body);
+    windowMs: z.coerce.number().int().min(60_000).max(3_600_000).optional(),
+    horizonMs: z.coerce.number().int().min(60_000).max(3_600_000).optional(),
+    maxDelayMs: z.coerce.number().int().min(0).max(300_000).optional(),
+    costBpsPerSide: z.coerce.number().min(0).max(100).optional(),
+  }).parse(req.query);
   // Samples come from the locally collected snapshot journal: event time, ingest time and
   // price are recorded separately, so feed delay is measured rather than assumed.
   const page = await history.page(project.id, { kind: 'snapshot', limit: 2000 });

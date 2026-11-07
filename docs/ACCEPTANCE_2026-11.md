@@ -84,3 +84,18 @@
 | 真实历史冻结样本/SHA256 | **NOT VERIFIED** | 无授权真实导出 |
 | Binance L2 实机、断网重连、Timescale、重启恢复、抽样核对 | **NOT VERIFIED** | 缺相应环境 |
 | Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | Journal 无逐所历史序列 |
+
+## 2026-11 增补（最终可靠性轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| Cursor 恢复不丢页内记录 | TESTED | maxRecords 命中后先消费整页；快照/L2 独立 cursor；同时间戳稳定顺序 |
+| 分批扫描 == 一次性扫描 | TESTED | 多轮 cursor 恢复后事件 ID 集合与顺序一致 |
+| 执行报价可用性 | TESTED | 入场必须在决策后、非同一报价、未超时；出场需在 horizon+delay 内 |
+| 执行成本账本 | TESTED | fees 记录；spread/slippage/funding/latency 为 null 且标 assumption |
+| 可执行验收脚本 | IMPLEMENTED | `scripts/acceptance/l2-live.mjs`、`timescale.mjs`、`docs/PRODUCTION_ACCEPTANCE.md` |
+| 脚本真实执行结果 | **NOT VERIFIED** | 本轮未在可控网络/Timescale 实例上执行，脚本输出不作为通过 |
+| Evidence Panel 专项 E2E | **NOT IMPLEMENTED** | 未扩展 `scripts/e2e.mjs` 的面板交互断言 |
+| 真实历史冻结样本/SHA256 | **NOT VERIFIED** | 无授权真实导出 |
+| Binance L2 实机、断网重连、Timescale 写入查询、重启恢复、抽样核对 | **NOT VERIFIED** | 缺相应环境 |
+| Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | Journal 无逐所历史序列 |

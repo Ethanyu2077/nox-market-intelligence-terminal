@@ -1,47 +1,85 @@
 #!/usr/bin/env node
 /**
- * Repeatable live L2 acceptance probe. Reads the public API only; it does not claim
- * success when the venue is unreachable and never fabricates a state.
+ * L2 live acceptance probe V2.
+ *
+ * PASS requires continuity, not just a final `live` frame: at least two valid updates,
+ * a strictly advancing sequence inside one book epoch, positive spread/depth, no new gap,
+ * and a bounded message delay for the whole window.
  *
  *   node scripts/acceptance/l2-live.mjs [apiBase] [seconds]
  */
 const base = process.argv[2] ?? 'http://127.0.0.1:8787';
-const seconds = Number(process.argv[3] ?? 20);
+const seconds = Math.max(5, Number(process.argv[3] ?? 20));
 const venues = [['binance', 'BTCUSDT'], ['bybit', 'BTCUSDT'], ['okx', 'BTC-USDT-SWAP']];
 
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timeout`)), ms)),
+  ]);
+}
+
 async function probe(venue, symbol) {
-  const controller = new AbortController();
-  const response = await fetch(`${base}/api/market/${venue}/${symbol}/book/stream`, { signal: controller.signal });
-  if (!response.ok) return { venue, symbol, status: 'NOT VERIFIED', reason: `HTTP ${response.status}` };
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '', last = null;
-  const end = Date.now() + seconds * 1000;
-  while (Date.now() < end) {
-    const { done, value } = await reader.read().catch(() => ({ done: true }));
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split('\n\n'); buffer = blocks.pop();
-    for (const block of blocks) {
-      const line = block.split('\n').find((row) => row.startsWith('data: '));
-      if (line) { try { last = JSON.parse(line.slice(6)).snapshot; } catch { /* malformed frame */ } }
+  const overall = new AbortController();
+  const timer = setTimeout(() => overall.abort(), (seconds + 10) * 1000);
+  const started = Date.now();
+  const frames = [];
+  try {
+    const response = await withTimeout(fetch(`${base}/api/market/${venue}/${symbol}/book/stream`, { signal: overall.signal }), 8_000, 'connect');
+    if (!response.ok) return { venue, symbol, status: 'NOT VERIFIED', reason: `HTTP ${response.status}` };
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let lastData = Date.now();
+    while (Date.now() - started < seconds * 1000) {
+      if (Date.now() - lastData > 8_000) return { venue, symbol, status: 'NOT VERIFIED', reason: 'no data within 8s', frames: frames.length };
+      const read = await withTimeout(reader.read(), 3_000, 'read').catch(() => ({ done: true }));
+      if (read.done) break;
+      buffer += decoder.decode(read.value, { stream: true });
+      const blocks = buffer.split('\n\n'); buffer = blocks.pop();
+      for (const block of blocks) {
+        const line = block.split('\n').find((row) => row.startsWith('data: '));
+        if (!line) continue;
+        try { frames.push({ at: Date.now(), snapshot: JSON.parse(line.slice(6)).snapshot }); lastData = Date.now(); } catch { /* malformed */ }
+      }
     }
+    const valid = frames.filter((frame) => frame.snapshot?.state === 'live' && frame.snapshot?.verified === true && frame.snapshot?.sequence.last != null);
+    const epochs = [...new Set(valid.map((frame) => frame.snapshot.epoch))];
+    const sequences = valid.map((frame) => frame.snapshot.sequence.last);
+    let advances = 0;
+    for (let index = 1; index < sequences.length; index += 1) if (sequences[index] > sequences[index - 1]) advances += 1;
+    const first = valid[0]?.snapshot, last = valid.at(-1)?.snapshot;
+    const gapsDelta = first && last ? last.gaps - first.gaps : 0;
+    const resyncsDelta = first && last ? last.resyncs - first.resyncs : 0;
+    const delays = frames.map((frame) => frame.snapshot?.lastMessageAt ? frame.at - frame.snapshot.lastMessageAt : null).filter((value) => value != null && value >= 0);
+    const maxDelay = delays.length ? Math.max(...delays) : null;
+    const healthy = valid.length >= 2
+      && advances >= 1
+      && epochs.length === 1
+      && gapsDelta === 0
+      && (last?.spreadBps ?? 0) > 0
+      && (last?.bidDepthUsd ?? 0) > 0
+      && (last?.askDepthUsd ?? 0) > 0
+      && maxDelay != null && maxDelay <= 15_000;
+    return {
+      venue, symbol, status: healthy ? 'PASS' : 'FAIL', durationMs: Date.now() - started,
+      framesReceived: frames.length, validUpdates: valid.length, sequenceAdvances: advances,
+      epochs, gaps: last?.gaps ?? null, gapsDelta, resyncs: last?.resyncs ?? null, resyncsDelta,
+      maxDelayMs: maxDelay, integrity: last?.integrity ?? null, finalState: last?.state ?? null,
+      spreadBps: last?.spreadBps ?? null, bidDepthUsd: last?.bidDepthUsd ?? null, askDepthUsd: last?.askDepthUsd ?? null,
+      reason: healthy ? null : 'continuity criteria not met',
+    };
+  } catch (error) {
+    return { venue, symbol, status: 'NOT VERIFIED', reason: error instanceof Error ? error.message : 'probe failed', frames: frames.length };
+  } finally {
+    clearTimeout(timer);
+    overall.abort();
   }
-  controller.abort();
-  if (!last) return { venue, symbol, status: 'NOT VERIFIED', reason: 'no snapshot frame' };
-  const ok = last.state === 'live' && last.verified === true && last.sequence.last != null;
-  return {
-    venue, symbol, status: ok ? 'PASS' : 'NOT VERIFIED',
-    state: last.state, verified: last.verified, integrity: last.integrity,
-    sequence: last.sequence.last, gaps: last.gaps, resyncs: last.resyncs,
-    spreadBps: last.spreadBps, bidDepthUsd: last.bidDepthUsd,
-    reason: ok ? null : 'book did not reach a verified live state in the probe window',
-  };
 }
 
 const results = [];
-for (const [venue, symbol] of venues) {
-  try { results.push(await probe(venue, symbol)); }
-  catch (error) { results.push({ venue, symbol, status: 'NOT VERIFIED', reason: error instanceof Error ? error.message : 'probe failed' }); }
-}
-console.log(JSON.stringify({ generatedAt: new Date().toISOString(), base, seconds, results }, null, 2));
+for (const [venue, symbol] of venues) results.push(await probe(venue, symbol));
+const report = { generatedAt: new Date().toISOString(), base, seconds, results };
+console.log(JSON.stringify(report, null, 2));
+const failed = results.some((row) => row.status === 'FAIL');
+process.exitCode = failed ? 1 : 0;

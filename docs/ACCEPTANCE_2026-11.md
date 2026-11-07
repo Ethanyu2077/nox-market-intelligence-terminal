@@ -137,3 +137,15 @@
 | 验收证据字段（时间/commit/环境/参数/证据路径） | IMPLEMENTED | runbook 记录要求 |
 | 冻结真实历史样本/SHA256、断网重连、抽样核对 | **NOT VERIFIED** | 缺授权/环境 |
 | Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | 无逐所历史序列 |
+
+## 2026-11 增补（安全与时间线轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| 验收接口环境隔离 | TESTED | 仅 `NOX_ACCEPTANCE_MODE=1` 且非 production 注册；否则 404 |
+| 验收接口访问控制 | TESTED | 复用 AuthStore，仅 admin；严格 `acceptance:<ns>`，100 行上限，只读 |
+| L2 完整状态时间线 | TESTED | stale/resyncing/checksum/gap/epoch 均打断连续区间；心跳与重复序列不计更新 |
+| 覆盖率分母 | TESTED | 使用完整请求窗口，而非有效帧首尾 |
+| Timescale 实库验收 | **NOT VERIFIED** | 无测试实例；验收接口还需 admin 会话 |
+| L2 实机连续性 | **NOT VERIFIED** | 未取得连续有效数据 |
+| 断网重连、冻结样本/SHA256、抽样核对、Spot/Perp VD/CVD | **NOT VERIFIED** | 缺环境/授权 |

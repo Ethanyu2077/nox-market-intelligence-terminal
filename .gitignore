@@ -19,3 +19,6 @@ coverage/
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+
+# E2E artifacts
+artifacts/

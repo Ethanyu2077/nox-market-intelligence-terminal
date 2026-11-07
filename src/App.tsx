@@ -26,6 +26,8 @@ import { useAuth } from './shell/useAuth';
 import { useWatchlistQuotes } from './shell/useWatchlistQuotes';
 import { useVenues } from './shell/useVenues';
 import { CcxtPanel } from './CcxtPanel';
+import { AlertsPanel } from './AlertsPanel';
+import { ErrorBoundary } from './shell/ErrorBoundary';
 import { Sparkline } from './shell/Sparkline';
 import { AiDrawer } from './ai/AiDrawer';
 import { AiSettingsCard } from './ai/AiSettingsCard';
@@ -403,6 +405,7 @@ export default function App() {
           )}
           {error && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
           <main className="page-content">
+            <ErrorBoundary level="page" language={language} resetKey={`${page}:${selectedProjectId ?? ''}`}>
             {page === 'terminal' && selectedProject && <ResearchTerminal key={`${selectedProject.id}:${interval}`} project={selectedProject} series={localizedSeries} venues={venueData} language={language} interval={interval} kpis={<KpiStrip overview={overview}/>} exchange={exchange} onExchange={setExchange} onDetail={() => setPage('positionFlow')}/>}
             {page === 'projects' && <ProjectsPage projects={projects} selectedProjectId={selectedProjectId} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>}
             {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
@@ -415,8 +418,9 @@ export default function App() {
             {page === 'settings' && <><AiSettingsCard language={language} /><CcxtPanel language={language} /><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
             {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}
             {page === 'orderflow' && selectedProject && <OrderFlowPage key={selectedProject.id} project={selectedProject} series={localizedSeries} venues={venueData} interval={interval} onInterval={setIntervalValue} language={language} selection={exchange}/>}
-            {page === 'signals' && selectedProject && <RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/>}
+            {page === 'signals' && selectedProject && <><AlertsPanel language={language}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></>}
             {page === 'history' && selectedProject && <EventStudyPage key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval}/>}
+            </ErrorBoundary>
           </main>
           <footer className="statusbar">
             <span className={auth.user ? 'sb-ok' : ''}><i className="sb-dot" />{auth.user ? `${auth.user.name} · ${auth.user.role}` : (language === 'zh' ? '只读访客' : 'READ-ONLY GUEST')}</span>

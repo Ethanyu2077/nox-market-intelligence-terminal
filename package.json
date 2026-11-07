@@ -13,7 +13,8 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings 0",
-    "auth:setup-token": "node --import tsx server/auth-setup.ts"
+    "auth:setup-token": "node --import tsx server/auth-setup.ts",
+    "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
     "ccxt": "^4.5.92",
@@ -46,7 +47,8 @@
     "tsx": "^4.19.2",
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.18.2",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "puppeteer-core": "^25.16.0"
   },
   "engines": {
     "node": ">=22.13.0"

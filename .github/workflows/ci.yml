@@ -19,3 +19,17 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      # Production build is served by the API itself, so the smoke test exercises the same
+      # origin the app uses in deployment. Chrome is preinstalled on GitHub-hosted runners;
+      # the script skips (exit 0) on images without a browser.
+      - name: E2E smoke
+        run: |
+          npm start > /tmp/nox-api.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8787/api/health > /dev/null && break
+            sleep 2
+          done
+          CHROME_PATH=/usr/bin/google-chrome npm run e2e -- --base=http://127.0.0.1:8787
+        env:
+          NODE_ENV: production
+          PORT: '8787'

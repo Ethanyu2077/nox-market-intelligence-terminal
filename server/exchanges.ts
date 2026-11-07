@@ -9,6 +9,7 @@ import {koreanSpot,koreanBaseSymbol} from './korean-spot.ts';
 import { ccxtInstruments, ccxtSnapshot } from './ccxt/adapter.ts';
 import { CCXT_LABELS, enabledCcxtVenues, isCcxtVenue, resolveCcxtConfig } from './ccxt/config.ts';
 import { CCXT_EXCHANGE_IDS } from '../shared/types.ts';
+import { venueBreakers } from './venue-health.ts';
 
 const TIMEOUT = 10_000;
 const CACHE_MS = 30 * 60_000;
@@ -295,9 +296,15 @@ async function snapshotUncached(market: ProjectMarket): Promise<VenueMarketSnaps
     if (!ccxtConfig.spot) throw new Error('Spot snapshots require CCXT (NOX_CCXT_SPOT)');
     return ccxtSnapshot(market, ccxtConfig);
   }
+  if (!venueBreakers.allow(market.exchange)) {
+    throw new Error(`${market.exchange} is in an open-circuit cooldown after repeated failures; native request skipped`);
+  }
   try {
-    return await nativeSnapshot(market);
+    const snapshot = await nativeSnapshot(market);
+    venueBreakers.success(market.exchange);
+    return snapshot;
   } catch (error) {
+    venueBreakers.failure(market.exchange, error instanceof Error ? error.message : 'native snapshot failed');
     if (!ccxtConfig.fallback) throw error;
     const reason = error instanceof Error ? error.message : 'native request failed';
     const fallback = await ccxtSnapshot(market, ccxtConfig).catch(() => null);

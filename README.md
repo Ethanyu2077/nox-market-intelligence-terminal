@@ -64,6 +64,19 @@ Independent, project-based crypto market monitoring for user-selected external t
 - DeepSeek research analyst: read-only, evidence-grounded, streaming chat plus a structured brief (observed / inferred / hypotheses with invalidation / risks / missing data), citation ids validated against the evidence packet, server-key mode for signed-in users and browser-local key mode for everyone else. See [DEEPSEEK_INTEGRATION.md](docs/DEEPSEEK_INTEGRATION.md).
 - UI hardening: locale-aware relative timestamps (no English leakage in zh), heartbeat events keep an idle-but-open stream from flipping to STALE, and cross-venue cards show coverage unavailable instead of fabricated 0/0 values.
 
+## Verification
+
+```bash
+npm run typecheck   # tsc -b
+npm run lint
+npm test            # node:test unit suites
+npm run build
+npm run e2e -- --base=http://127.0.0.1:4173   # needs the app + API running; Chrome auto-detected
+```
+
+`npm run e2e` drives the real UI (shell, every page, ⌘K palette, ⌘J AI drawer) and fails on
+any React error or 5xx response. CI runs it against the production build served by the API.
+
 ## Run locally
 
 Requires Node.js 22.13+.

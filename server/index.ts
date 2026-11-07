@@ -42,6 +42,8 @@ import {venueCoverage} from './venue-coverage.ts';
 import {signalReadiness,weightedConsensus} from './research-readiness.ts';
 import { watchlistQuotes } from './watchlist.ts';
 import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
+import { venueBreakers } from './venue-health.ts';
+import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -75,6 +77,9 @@ app.use((req, res, next) => {
 });
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
 app.use(express.json({ limit: '160kb' }));
+const alerts = new AlertService(dataDirectory, () => store.getAlerts(), () => store.getProjects(true));
+await alerts.init();
+alerts.start();
 const auth = new AuthStore(defaultAuthDirectory(), dataDirectory); await auth.init(); auth.install(app);
 installProviderSettings(app,auth,providerCredentials,key=>{coinglass=new CoinGlassService(new CoinGlassClient(key));});
 installAiRoutes(app, {
@@ -148,6 +153,9 @@ app.get('/api/projects/:id/orderflow/stream', (req, res) => {
 });
 
 app.get('/api/health', (_req, res) => res.json({ service: 'nox-market-intelligence-api', status: 'ok', mode: 'live-public', venues: EXCHANGE_IDS, timestamp: Date.now() }));
+// Per-venue breaker state: lets the UI explain a fast-failing venue instead of showing a
+// generic upstream error, and lets an operator see which venue is being cooled down.
+app.get('/api/venues/health', (_req, res) => res.json({ items: venueBreakers.snapshot(), timestamp: Date.now() }));
 app.get('/api/exchanges', (_req, res) => res.json({ items: exchangeCapabilities(), timestamp: Date.now() }));
 // CCXT diagnostics. `probe=1` loads the enabled venue catalogues so the settings panel can
 // show real market counts and latency; without it the response is cache-only.
@@ -258,8 +266,28 @@ app.get('/api/market/:symbol/stream', (req, res) => {
 });
 app.get('/api/watchlists', (_req, res) => res.json({ symbols: store.getWatchlist() }));
 app.post('/api/watchlists', safe(async (req, res) => { const body = z.object({ symbols: z.array(z.string().regex(/^[A-Z0-9]{5,20}$/)).max(100) }).parse(req.body); res.json({ symbols: await store.setWatchlist(body.symbols) }); }));
+const alertRuleBody = z.object({
+  symbol: z.string().trim().min(2).max(30).transform((value) => value.toUpperCase()),
+  metric: z.enum(['price_change_24h', 'funding_rate', 'volume_24h_usd']),
+  operator: z.enum(['gt', 'lt']),
+  threshold: z.number().finite(),
+  enabled: z.boolean().default(true),
+});
 app.get('/api/alerts/rules', (_req, res) => res.json({ items: store.getAlerts() }));
-app.post('/api/alerts/rules', safe(async (req, res) => { const body = z.object({ symbol: z.string(), metric: z.enum(['price_change_24h', 'funding_rate', 'volume_24h_usd']), operator: z.enum(['gt', 'lt']), threshold: z.number().finite(), enabled: z.boolean().default(true) }).parse(req.body); res.status(201).json(await store.addAlert(body)); }));
+app.get('/api/alerts/status', (_req, res) => res.json(alerts.status()));
+app.post('/api/alerts/rules', safe(async (req, res) => {
+  if (store.getAlerts().length >= 100) { res.status(409).json({ error: { message: 'Alert rule limit reached (100)' } }); return; }
+  const body = alertRuleBody.parse(req.body);
+  const rule = await store.addAlert(body);
+  res.status(201).json(rule);
+}));
+app.patch('/api/alerts/rules/:id', safe(async (req, res) => {
+  const body = z.object({ enabled: z.boolean().optional(), threshold: z.number().finite().optional() }).strict().parse(req.body);
+  res.json(await store.updateAlert(String(req.params.id), body));
+}));
+app.delete('/api/alerts/rules/:id', safe(async (req, res) => { await store.removeAlert(String(req.params.id)); res.status(204).end(); }));
+app.post('/api/alerts/evaluate', safe(async (_req, res) => { res.json(await alerts.evaluate()); }));
+app.post('/api/alerts/events/clear', safe(async (_req, res) => { await alerts.clearEvents(); res.json(alerts.status()); }));
 
 if (process.env.NODE_ENV === 'production') {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
@@ -280,6 +308,6 @@ const server = app.listen(port, '127.0.0.1', () => console.log(`NOX API listenin
   }
 }
 let shuttingDown = false;
-const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
+const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

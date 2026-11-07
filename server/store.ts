@@ -29,6 +29,21 @@ export class FileStore {
     return this.getWatchlist();
   }
   getAlerts() { return [...this.data.alerts]; }
+  async updateAlert(id: string, update: { enabled?: boolean; threshold?: number }) {
+    const rule = this.data.alerts.find((item) => item.id === id);
+    if (!rule) throw new Error('Alert rule not found');
+    if (update.enabled != null) rule.enabled = update.enabled;
+    if (update.threshold != null) rule.threshold = update.threshold;
+    await this.persist();
+    return { ...rule };
+  }
+  async removeAlert(id: string) {
+    const index = this.data.alerts.findIndex((item) => item.id === id);
+    if (index === -1) throw new Error('Alert rule not found');
+    const [removed] = this.data.alerts.splice(index, 1);
+    await this.persist();
+    return removed;
+  }
   async addAlert(rule: Omit<AlertRule, 'id' | 'createdAt'>) {
     const alert = { ...rule, id: crypto.randomUUID(), createdAt: Date.now() };
     this.data.alerts.push(alert);

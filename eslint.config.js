@@ -8,7 +8,8 @@ export default tseslint.config(
   { ignores: ['dist', 'node_modules', '.npm-cache'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
-  { files: ['research/**/*.mjs'], languageOptions: { globals: globals.node } },
+  // Scripts run in Node; page.evaluate callbacks execute in the browser context.
+  { files: ['research/**/*.mjs', 'scripts/**/*.mjs'], languageOptions: { globals: { ...globals.node, ...globals.browser } } },
   {
     files: ['**/*.{ts,tsx}'],
     languageOptions: { ecmaVersion: 2022, globals: { ...globals.browser, ...globals.node } },

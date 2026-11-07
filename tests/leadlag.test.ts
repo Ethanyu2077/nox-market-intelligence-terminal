@@ -109,3 +109,27 @@ test('a delayed venue is not usable before its values arrive', () => {
   const delayed = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: lateA, samplesB: b }, { minSamples: 10, bootstrapRounds: 10, folds: 2 });
   assert.ok(delayed.coverage.paired <= clean.coverage.paired, 'delayed lead data cannot increase usable decisions');
 });
+
+test('execution scenario enters at the first post-decision quote, not the signal price', () => {
+  const a: PriceSample[] = [], b: PriceSample[] = [];
+  let priceA = 100, priceB = 100;
+  for (let i = 0; i < 240; i += 1) {
+    const time = 1_700_000_000_000 + i * 60_000;
+    a.push({ venue: 'a', time, availableAt: time, price: priceA });
+    b.push({ venue: 'b', time, availableAt: time, price: priceB });
+    priceA *= 1.003; priceB *= 1.002;
+  }
+  const report = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: a, samplesB: b }, { minSamples: 10, horizonMs: 180_000, windowMs: 60_000, bootstrapRounds: 20, folds: 2 });
+  assert.equal(report.executionScenario.available, true);
+  assert.ok(report.executionScenario.samples > 0);
+  assert.ok(report.executionScenario.assumptions.some((item) => /pre-signal/.test(item)));
+  assert.ok((report.executionScenario.meanNetPct as number) < (report.outOfSample.meanNetPct as number), 'a later entry captures less of the move');
+});
+
+test('execution is unavailable when there is no distinct quote after the decision', () => {
+  const { a, b } = synthetic(240);
+  const report = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: a, samplesB: b }, { minSamples: 10, horizonMs: 60_000, bootstrapRounds: 20, folds: 2 });
+  assert.equal(report.executionScenario.available, false);
+  assert.equal(report.executionScenario.samples, 0);
+  assert.match(report.executionScenario.reason ?? '', /No distinct entry quote/);
+});

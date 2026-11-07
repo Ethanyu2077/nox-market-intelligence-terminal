@@ -92,6 +92,15 @@ export interface LeadLagReport {
   baselines: Baseline[];
   sensitivity: Array<{ windowMs: number; selectedLagMs: number | null; oosHitRate: number | null }>;
   multipleTesting: { lagsTested: number; bonferroniAlpha: number; note: string };
+  /** Separate hypothetical execution view. Never mixed into the descriptive result. */
+  executionScenario: {
+    available: boolean;
+    samples: number;
+    hitRate: number | null;
+    meanNetPct: number | null;
+    reason: string | null;
+    assumptions: string[];
+  };
   verdict: 'insufficient' | 'descriptive' | 'promising-not-tradable';
   notes: string[];
 }

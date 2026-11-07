@@ -32,6 +32,12 @@ interface Pair {
   decisionTime: number;
   outcomeTime: number;
   outcomeAvailableAt: number;
+  /** First quote strictly after the decision that could actually be entered. */
+  entryTime: number | null;
+  entryAvailableAt: number | null;
+  entryPrice: number | null;
+  /** Return from the first executable quote to the outcome (not from the decision price). */
+  entryReturn: number | null;
   leadReturn: number;
   forwardReturn: number;
   priorReturn: number | null;
@@ -59,6 +65,16 @@ function lastKnown(samples: PriceSample[], at: number, cutoff: number): PriceSam
   return best;
 }
 
+function firstBetween(samples: PriceSample[], from: number, to: number, decisionAt: number): PriceSample | null {
+  for (const sample of samples) {
+    if (sample.time <= from) continue;
+    if (sample.time > to) break;
+    if (sample.availableAt <= decisionAt) continue;
+    return sample;
+  }
+  return null;
+}
+
 function lastBetween(samples: PriceSample[], from: number, to: number, decisionAt: number): PriceSample | null {
   let best: PriceSample | null = null;
   for (const sample of samples) {
@@ -83,12 +99,17 @@ function buildPairs(a: PriceSample[], b: PriceSample[], options: LeadLagOptions,
     const future = lastBetween(b, decision, decision + options.horizonMs, decision);
     if (!future) { noFuture += 1; continue; }
     const priorB = lastKnown(b, decision - options.windowMs, decision);
+    const entry = firstBetween(b, decision, decision + options.horizonMs, decision);
     pairs.push({
       eventTime: sample.time,
       availableAt: sample.availableAt,
       decisionTime: decision,
       outcomeTime: future.time,
       outcomeAvailableAt: future.availableAt,
+      entryTime: entry?.time ?? null,
+      entryAvailableAt: entry?.availableAt ?? null,
+      entryPrice: entry?.price ?? null,
+      entryReturn: entry && entry.time < future.time ? future.price / entry.price - 1 : null,
       leadReturn: aEnd.price / aStart.price - 1,
       forwardReturn: future.price / sample.price - 1,
       priorReturn: priorB && priorB.time < sample.time ? (sample.price - priorB.price) / priorB.price : null,
@@ -291,6 +312,21 @@ export function analyzeLeadLag(input: LeadLagInput, overrides: Partial<LeadLagOp
     return { windowMs, selectedLagMs: variant.selectedLagMs, oosHitRate: stats(netReturns(variant.oosPairs, options.costBpsPerSide)).hitRate };
   });
 
+  // Hypothetical execution: enter at the first quote after the decision, exit at the
+  // observed forward price. If entry and outcome are the same observation the scenario is
+  // degenerate and excluded (no tradeable quote after the signal).
+  const executionCost = (options.costBpsPerSide * 2) / 10_000;
+  const executable = oosPairs.filter((pair) => pair.entryReturn != null && pair.entryTime != null && pair.entryTime < pair.outcomeTime);
+  const executionReturns = executable.map((pair) => Math.sign(pair.leadReturn) * (pair.entryReturn as number) - executionCost);
+  const executionStats = stats(executionReturns);
+  const executionScenario: LeadLagReport['executionScenario'] = {
+    available: executable.length > 0,
+    samples: executable.length,
+    hitRate: executionStats.hitRate,
+    meanNetPct: executionStats.meanNetPct,
+    reason: executable.length ? null : 'No distinct entry quote after the decision; execution return is unavailable',
+    assumptions: ['Fees applied per side from costBpsPerSide; spread, slippage, funding and latency are NOT modelled.', 'Entry uses the first quote observed after the decision time, never a pre-signal price.'],
+  };
   const notes: string[] = [];
   if (!enough) notes.push(`Insufficient out-of-sample evidence: ${oos.samples} OOS samples (minimum ${options.minSamples}) across ${folds.filter((fold) => fold.testSamples > 0).length} folds. No edge is claimed.`);
   notes.push(`Multiple testing: ${lagsTested} lags were compared; a naive 5% threshold is not appropriate (Bonferroni alpha ${(0.05 / lagsTested).toFixed(4)}).`);
@@ -325,6 +361,7 @@ export function analyzeLeadLag(input: LeadLagInput, overrides: Partial<LeadLagOp
     lags: selectLag(a, b, options, splitRef).scores,
     folds,
     outOfSample: { ...oos, uncertainty },
+    executionScenario,
     baselines,
     sensitivity,
     multipleTesting: { lagsTested, bonferroniAlpha: 0.05 / Math.max(1, lagsTested), note: 'Lag selection and thresholds are chosen on training folds only; the reported interval is out-of-sample.' },

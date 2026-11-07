@@ -39,11 +39,25 @@ export function analyzeL2Frames(frames, options = {}) {
   // Leading window before the first frame is invalid, not live.
   let previous = null;
   let previousIsUpdate = false;
+  let gapDetected = false, gapRecovered = false, resyncStarted = false, resyncCompleted = false;
+  let gapEpoch = null;
   for (const frame of ordered) {
     const s = frame.snapshot ?? {};
     const gapSinceUpdate = lastUpdateAt == null ? null : frame.at - lastUpdateAt;
 
     let isUpdate = false;
+    const gapIncrease = s.gaps != null && previousGaps != null && s.gaps > previousGaps;
+    const enteringResync = s.state === 'resyncing' && previous?.snapshot?.state === 'live';
+    const enteringChecksumFailure = s.integrity === 'checksum-failed' && previous?.snapshot?.integrity === 'ok';
+    if (gapIncrease || enteringResync || enteringChecksumFailure) {
+      // A gap breaks continuity immediately, even if the next frame reports live.
+      gapDetected = true; gapRecovered = false; gapEpoch = s.epoch ?? 0; currentRun = 0;
+      if (previous != null) { invalidIntervals += 1; lastInvalidAt = frame.at; }
+    }
+    if (s.state === 'resyncing') resyncStarted = true;
+    if (gapDetected && !gapRecovered && (s.epoch ?? 0) !== (gapEpoch ?? 0) && isLive(frame)) {
+      gapRecovered = true; resyncCompleted = true;
+    }
     if (isLive(frame)) {
       const key = `${s.epoch ?? 0}:${s.sequence.last}`;
       if (seen.has(key)) { duplicates += 1; }
@@ -70,7 +84,8 @@ export function analyzeL2Frames(frames, options = {}) {
 
     if (previous != null) {
       const interval = frame.at - previous.at;
-      const continuous = previousIsUpdate && isUpdate && (previous.snapshot.epoch ?? 0) === (s.epoch ?? 0) && interval <= MAX_UPDATE_GAP_MS;
+      const sameEpoch = (previous.snapshot.epoch ?? 0) === (s.epoch ?? 0);
+      const continuous = previousIsUpdate && isUpdate && sameEpoch && interval <= MAX_UPDATE_GAP_MS && !(gapDetected && !gapRecovered);
       if (continuous) {
         totalValidLiveMs += interval;
         currentRun += interval;
@@ -101,7 +116,8 @@ export function analyzeL2Frames(frames, options = {}) {
   // Recovery = after the last invalid interval there is a new live run of >=2 updates.
   const recoveryStart = lastInvalidAt ?? windowStart;
   const afterRecovery = updates.filter((frame) => frame.at >= recoveryStart);
-  const recoveryCompleted = lastInvalidAt == null ? isLive({ snapshot: last }) : afterRecovery.length >= 2 && isLive({ snapshot: last });
+  const baseRecovery = lastInvalidAt == null ? isLive({ snapshot: last }) : afterRecovery.length >= 2 && isLive({ snapshot: last });
+  const recoveryCompleted = gapDetected ? gapRecovered && baseRecovery : baseRecovery;
 
   return {
     frames: ordered.length,
@@ -124,8 +140,10 @@ export function analyzeL2Frames(frames, options = {}) {
     resyncsDelta,
     stateCounts: { stale: counts.stale, resyncing: counts.resyncing, checksumFailed: counts.checksumFailed, gap: counts.gap, unavailable: counts.unavailable, unknown: counts.unknown },
     invalidIntervals,
+    gapDetected, gapRecovered, resyncStarted, resyncCompleted,
     recoveryCompleted,
     finalState: last?.state ?? null,
+    finalIntegrity: last?.integrity ?? null,
     finalVerified: last?.verified ?? null,
     finalEpoch: last?.epoch ?? null,
     finalSequence: last?.sequence?.last ?? null,
@@ -150,6 +168,8 @@ export function evaluateL2(metrics, thresholds = {}) {
   if (metrics.sequenceAdvanceCount < 1) reasons.push('sequence did not advance');
   if (metrics.gapsDelta > 0) reasons.push('unrecovered sequence gap');
   if ((metrics.stateCounts?.checksumFailed ?? 0) > 0 && !metrics.recoveryCompleted) reasons.push('unrecovered checksum failure');
+  if (metrics.gapDetected && !metrics.gapRecovered) reasons.push('sequence gap was not recovered by a new epoch');
+  if (metrics.resyncStarted && !metrics.resyncCompleted) reasons.push('resync did not complete');
   if (!((metrics.spreadBps ?? 0) > 0)) reasons.push('invalid spread');
   if (!((metrics.bidDepthUsd ?? 0) > 0) || !((metrics.askDepthUsd ?? 0) > 0)) reasons.push('invalid depth');
   if (metrics.finalState !== 'live' || metrics.finalVerified !== true) reasons.push('final book not verified live');

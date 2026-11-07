@@ -45,12 +45,15 @@ test('live -> stale -> live breaks continuity', () => {
   assert.equal(metrics.recoveryCompleted, true);
 });
 
-test('live -> resyncing -> live breaks continuity and records recovery', () => {
+test('resyncing back to live without a new epoch is not a verified recovery', () => {
   const frames = [frame(0), frame(1000, { state: 'resyncing' }), frame(2000, {}, 12), frame(3000, {}, 13)];
   const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 3000, requestedMs: 3000 });
   assert.equal(metrics.stateCounts.resyncing, 1);
-  assert.equal(metrics.longestContinuousLiveMs, 1000);
-  assert.equal(metrics.recoveryCompleted, true);
+  assert.equal(metrics.longestContinuousLiveMs, 0);
+  assert.equal(metrics.gapDetected, true);
+  assert.equal(metrics.gapRecovered, false, 'same-epoch live is not auditably recovered');
+  assert.equal(metrics.recoveryCompleted, false);
+  assert.equal(evaluateL2(metrics, { requestedMs: 3000 }).status, 'FAIL');
 });
 
 test('checksum failure without recovery fails the evaluation', () => {
@@ -74,4 +77,43 @@ test('coverage uses the requested window, not the valid span', () => {
   const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 10_000, requestedMs: 10_000 });
   assert.equal(metrics.validWindowPct, 40);
   assert.equal(evaluateL2(metrics, { requestedMs: 10_000 }).status, 'FAIL');
+});
+
+test('a sequence gap breaks live continuity even when the next frame is live', () => {
+  const frames = [frame(0, { gaps: 0 }, 10), frame(1000, { gaps: 1 }, 11), frame(2000, { gaps: 1 }, 12), frame(3000, { gaps: 1 }, 13)];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 3000, requestedMs: 3000 });
+  assert.equal(metrics.gapDetected, true);
+  assert.equal(metrics.gapRecovered, false, 'a live frame in the same epoch is not recovery');
+  assert.equal(metrics.longestContinuousLiveMs, 0);
+  assert.equal(evaluateL2(metrics, { requestedMs: 3000 }).status, 'FAIL');
+});
+
+test('gap recovery requires a new epoch and continuous updates after it', () => {
+  const frames = [
+    frame(0, { epoch: 1, gaps: 0 }, 10),
+    frame(1000, { epoch: 1, gaps: 1, state: 'resyncing', verified: false }, 11),
+    frame(2000, { epoch: 2, gaps: 0 }, 1),
+    frame(3000, { epoch: 2, gaps: 0 }, 2),
+    frame(4000, { epoch: 2, gaps: 0 }, 3),
+  ];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 4000, requestedMs: 4000 });
+  assert.equal(metrics.gapDetected, true);
+  assert.equal(metrics.resyncStarted, true);
+  assert.equal(metrics.gapRecovered, true);
+  assert.equal(metrics.resyncCompleted, true);
+  assert.equal(metrics.epochChanges, 1);
+  assert.ok(metrics.longestContinuousLiveMs >= 2000);
+});
+
+test('checksum failure recovered by a new epoch is recorded', () => {
+  const frames = [
+    frame(0, { epoch: 1 }, 10),
+    frame(1000, { epoch: 1, integrity: 'checksum-failed', verified: false }, 11),
+    frame(2000, { epoch: 2 }, 1),
+    frame(3000, { epoch: 2 }, 2),
+  ];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 3000, requestedMs: 3000 });
+  assert.equal(metrics.stateCounts.checksumFailed, 1);
+  assert.equal(metrics.epochChanges, 1);
+  assert.equal(metrics.finalIntegrity, 'ok');
 });

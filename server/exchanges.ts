@@ -269,7 +269,26 @@ async function nativeSnapshot(market: ProjectMarket): Promise<VenueMarketSnapsho
  * 3. Spot markets have no native snapshot adapter; CCXT fills them when enabled.
  * 4. A native venue is always tried first; CCXT is a labelled fallback, never a silent swap.
  */
+/**
+ * Short-lived in-flight/TTL cache. The watchlist, the project page, the AI evidence
+ * builder and the volume matrix can all request the same venue within the same second;
+ * without this they multiply upstream weight and trip exchange rate limits.
+ */
+const snapshotCache = new Map<string, { at: number; value: Promise<VenueMarketSnapshot> }>();
+const SNAPSHOT_TTL_MS = 4_000;
+
 export async function marketSnapshot(market: ProjectMarket): Promise<VenueMarketSnapshot> {
+  const key = market.id;
+  const cached = snapshotCache.get(key);
+  if (cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) return cached.value;
+  const value = snapshotUncached(market);
+  snapshotCache.set(key, { at: Date.now(), value });
+  if (snapshotCache.size > 500) { for (const [id, row] of snapshotCache) if (Date.now() - row.at > SNAPSHOT_TTL_MS * 4) snapshotCache.delete(id); }
+  value.catch(() => { if (snapshotCache.get(key)?.value === value) snapshotCache.delete(key); });
+  return value;
+}
+
+async function snapshotUncached(market: ProjectMarket): Promise<VenueMarketSnapshot> {
   if (market.exchange === 'upbit' || market.exchange === 'bithumb') throw new Error('KRW spot uses the independent korean-spot endpoint');
   if (isCcxtVenue(market.exchange, ccxtConfig)) return ccxtSnapshot(market, ccxtConfig);
   if (market.marketType === 'spot') {
@@ -361,7 +380,21 @@ function volumeLabel(value: number | null) {
   return `$${Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(value)}`;
 }
 
+const venueBundleCache = new Map<string, { at: number; value: Promise<ProjectVenueResponse> }>();
+const VENUE_BUNDLE_TTL_MS = 5_000;
+
 export async function projectVenueSnapshots(markets: ProjectMarket[]): Promise<ProjectVenueResponse> {
+  const key = markets.map((market) => market.id).sort().join('|');
+  const cached = venueBundleCache.get(key);
+  if (cached && Date.now() - cached.at < VENUE_BUNDLE_TTL_MS) return cached.value;
+  const value = venueBundleUncached(markets);
+  venueBundleCache.set(key, { at: Date.now(), value });
+  if (venueBundleCache.size > 200) { for (const [id, row] of venueBundleCache) if (Date.now() - row.at > VENUE_BUNDLE_TTL_MS * 4) venueBundleCache.delete(id); }
+  value.catch(() => { if (venueBundleCache.get(key)?.value === value) venueBundleCache.delete(key); });
+  return value;
+}
+
+async function venueBundleUncached(markets: ProjectMarket[]): Promise<ProjectVenueResponse> {
   const selected = markets.filter((m) => m.marketType === 'perpetual');
   const settled = await Promise.allSettled(selected.map(marketSnapshot)); const snapshots: VenueMarketSnapshot[] = []; const failures: ProjectVenueResponse['failures'] = [];
   settled.forEach((result, index) => result.status === 'fulfilled' ? snapshots.push(result.value) : failures.push({ exchange: selected[index].exchange, symbol: selected[index].symbol, message: result.reason instanceof Error ? result.reason.message : 'Snapshot unavailable' }));

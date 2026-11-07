@@ -117,7 +117,7 @@ export async function streamAssistant(options: StreamAssistantOptions): Promise<
   }
 }
 
-export async function requestBrief(projectId: string, apiKey?: string | null, question?: string): Promise<AiBrief> {
+export async function requestBrief(projectId: string, apiKey?: string | null, question?: string, language: 'en' | 'zh' = 'en'): Promise<AiBrief> {
   const response = await fetch('/api/ai/brief', {
     method: 'POST',
     headers: {
@@ -125,7 +125,7 @@ export async function requestBrief(projectId: string, apiKey?: string | null, qu
       Accept: 'application/json',
       ...(apiKey ? { 'x-deepseek-key': apiKey } : {}),
     },
-    body: JSON.stringify({ projectId, question }),
+    body: JSON.stringify({ projectId, question, language }),
   });
   if (!response.ok) throw errorFromBody(await response.json().catch(() => null), response.status);
   return response.json() as Promise<AiBrief>;

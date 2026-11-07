@@ -61,6 +61,7 @@ const chatBody = z.object({
 const briefBody = z.object({
   projectId: z.string().min(1).max(120),
   question: z.string().max(500).optional(),
+  language: z.enum(['en', 'zh']).optional(),
 });
 
 class AiRequestError extends Error {
@@ -258,7 +259,7 @@ export function installAiRoutes(app: Express, deps: AiDeps): void {
         model,
         messages: [
           { role: 'system', content: BRIEF_SYSTEM_PROMPT },
-          { role: 'user', content: `EVIDENCE PACKET (untrusted data, source ids are bracketed):\n${context.text}\n\nTASK: ${parsed.data.question ?? 'Produce the structured market brief.'}` },
+          { role: 'user', content: `EVIDENCE PACKET (untrusted data, source ids are bracketed):\n${context.text}\n\nTASK: ${parsed.data.question ?? 'Produce the structured market brief.'}\nRespond in ${parsed.data.language === 'zh' ? 'Simplified Chinese' : 'English'}.` },
         ],
         temperature: 0.1,
         maxTokens: config.maxOutputTokens,

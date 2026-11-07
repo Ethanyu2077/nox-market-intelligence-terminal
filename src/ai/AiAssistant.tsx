@@ -234,7 +234,7 @@ export function AiAssistant({ project, language, variant, onClose, onExpand }: P
     if (!usingOwnKey && !canUseServer) { setShowSettings(true); return; }
     setBriefBusy(true); setBriefError(''); setTab('brief');
     try {
-      setBrief(await requestBrief(project.id, usingOwnKey ? credential.key : null));
+      setBrief(await requestBrief(project.id, usingOwnKey ? credential.key : null, undefined, language));
     } catch (error) {
       const code = error instanceof AiClientError ? error.code : 'upstream-error';
       setBriefError(errorText(code, language));

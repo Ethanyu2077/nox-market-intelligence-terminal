@@ -15,7 +15,9 @@
     "lint": "eslint . --max-warnings 0",
     "auth:setup-token": "node --import tsx server/auth-setup.ts",
     "e2e": "node scripts/e2e.mjs",
-    "e2e:evidence": "node scripts/e2e-evidence.mjs --base=http://127.0.0.1:4173"
+    "e2e:evidence": "node scripts/e2e-evidence.mjs --base=http://127.0.0.1:4173",
+    "acceptance:soak": "node scripts/acceptance/l2-soak.mjs",
+    "acceptance:l2": "node scripts/acceptance/l2-live.mjs"
   },
   "dependencies": {
     "ccxt": "^4.5.92",

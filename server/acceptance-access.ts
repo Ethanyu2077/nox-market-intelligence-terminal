@@ -5,7 +5,9 @@ export interface AcceptanceEnv { NOX_ACCEPTANCE_MODE?: string; NODE_ENV?: string
 
 /** Enabled only by an explicit flag AND a non-production environment. */
 export function acceptanceRouteEnabled(env: AcceptanceEnv = process.env as AcceptanceEnv): boolean {
-  return env.NOX_ACCEPTANCE_MODE === '1' && env.NODE_ENV !== 'production';
+  // Explicit opt-in AND an explicit test environment. Missing NODE_ENV, development and
+  // production all keep the route unregistered.
+  return env.NOX_ACCEPTANCE_MODE === '1' && env.NODE_ENV === 'test';
 }
 
 export type AcceptanceDecision = { ok: boolean; status?: 400 | 401 | 403; reason?: string };

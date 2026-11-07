@@ -50,7 +50,8 @@ import { analyzeLeadLag } from './leadlag.ts';
 import { L2Collector } from './l2/collector.ts';
 import { buildFactorEvidence, factorSamplesFromL2, factorSamplesFromSnapshots, resampleFactorSamples, FACTOR_TIMEFRAMES } from './crossfactor.ts';
 import { scanHistory } from './history-scan.ts';
-import { acceptanceRouteEnabled, authorizeAcceptance } from './acceptance-access.ts';
+import { acceptanceRouteEnabled } from './acceptance-access.ts';
+import { registerAcceptanceRoute } from './acceptance-route.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
@@ -234,18 +235,13 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
     dataWindow: { ...report.dataWindow, bucketMs: FACTOR_TIMEFRAMES[timeframe] },
   });
 }));
-// Read-only acceptance hook, registered only in explicit non-production acceptance mode.
-// Production builds never expose this route (not even a 403), and it requires an admin
-// session plus a strict acceptance namespace.
-if (acceptanceRouteEnabled()) {
-  app.get('/api/acceptance/records', safe(async (req, res) => {
-    const decision = authorizeAcceptance(auth.user(req), req.query.source);
-    if (!decision.ok) { res.status(decision.status ?? 400).json({ error: { message: decision.reason ?? 'Forbidden' } }); return; }
-    const source = z.string().regex(/^acceptance:[a-zA-Z0-9_-]{1,64}$/).parse(req.query.source);
-    const page = await history.page('acceptance', { kind: 'snapshot', source, limit: 100, asOf: Date.now() });
-    res.json({ items: page.items.slice(0, 100).map((event) => ({ id: event.id, eventTime: event.eventTime, ingestTime: event.ingestTime, payload: event.payload })) });
-  }));
-}
+// Read-only acceptance hook, registered only in an explicit test environment with the
+// acceptance flag. Production/development/missing NODE_ENV never expose it.
+registerAcceptanceRoute(app, {
+  enabled: acceptanceRouteEnabled(),
+  user: (req) => auth.user(req as never),
+  page: (projectId, query) => history.page(projectId, query),
+});
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }

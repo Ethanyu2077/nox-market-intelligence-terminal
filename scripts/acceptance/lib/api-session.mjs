@@ -43,3 +43,32 @@ export async function authorizedGet(base, path, credentials, fetchImpl = fetch) 
   if (result.status === 401) return { ok: false, status: 401, reason: 'admin session rejected after one retry' };
   return { ok: false, status: result.status ?? 0, reason: result.reason ?? `HTTP ${result.status}` };
 }
+
+/** Reuses one admin cookie for a whole acceptance run; 401 re-auths once, 403 stops. */
+export function createSessionClient(base, credentials, fetchImpl = fetch) {
+  let cookie = null;
+  const reset = () => { cookie = null; };
+  const ensure = async () => {
+    if (cookie) return { ok: true, cookie };
+    if (!credentials?.ok) return { ok: false, status: 0, reason: credentials?.reason ?? 'missing admin credentials' };
+    const session = await login(base, credentials, fetchImpl);
+    if (session.ok) { cookie = session.cookie; return session; }
+    return session;
+  };
+  const get = async (path) => {
+    let session = await ensure();
+    if (!session.ok) return { ok: false, status: session.status ?? 0, reason: session.reason };
+    let response = await fetchImpl(`${base}${path}`, { headers: { cookie: session.cookie } });
+    if (response.status === 401) {
+      reset();
+      session = await ensure();
+      if (!session.ok) return { ok: false, status: 401, reason: 're-authentication failed after 401' };
+      response = await fetchImpl(`${base}${path}`, { headers: { cookie: session.cookie } });
+      if (response.status === 401) return { ok: false, status: 401, reason: 'admin session rejected after one retry' };
+    }
+    if (response.status === 403) return { ok: false, status: 403, reason: 'admin role required' };
+    if (!response.ok) return { ok: false, status: response.status, reason: `HTTP ${response.status}` };
+    return { ok: true, status: response.status, data: await response.json() };
+  };
+  return { get, reset };
+}

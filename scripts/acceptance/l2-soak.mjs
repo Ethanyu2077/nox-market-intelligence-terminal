@@ -19,6 +19,7 @@ async function probe(venue, symbol) {
   const requestedMs = minutes * 60_000;
   const frames = [];
   let endedEarly = false;
+  let noData = false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), requestedMs + 30_000);
   try {
@@ -27,15 +28,25 @@ async function probe(venue, symbol) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let lastDataAt = Date.now();
     while (Date.now() - started < requestedMs) {
-      const read = await Promise.race([reader.read(), new Promise((resolve) => setTimeout(() => resolve({ done: true, timeout: true }), 10_000))]);
-      if (read.done) { endedEarly = Date.now() - started < requestedMs; break; }
+      const remaining = requestedMs - (Date.now() - started);
+      const read = await Promise.race([
+        reader.read(),
+        new Promise((resolve) => setTimeout(() => resolve({ done: true, timeout: true }), Math.min(10_000, Math.max(1_000, remaining)))),
+      ]);
+      if (read.done) {
+        // A read timeout without data is not a successful completion.
+        if (Date.now() - lastDataAt > 15_000) { noData = true; endedEarly = true; }
+        else endedEarly = Date.now() - started < requestedMs;
+        break;
+      }
       buffer += decoder.decode(read.value, { stream: true });
       const blocks = buffer.split('\n\n'); buffer = blocks.pop();
       for (const block of blocks) {
         const line = block.split('\n').find((row) => row.startsWith('data: '));
         if (!line) continue;
-        try { frames.push({ at: Date.now(), snapshot: JSON.parse(line.slice(6)).snapshot }); } catch { /* malformed */ }
+        try { frames.push({ at: Date.now(), snapshot: JSON.parse(line.slice(6)).snapshot }); lastDataAt = Date.now(); } catch { /* malformed */ }
       }
     }
   } catch (error) {
@@ -45,8 +56,13 @@ async function probe(venue, symbol) {
   const windowEnd = Date.now();
   const metrics = analyzeL2Frames(frames, { requestedMs, windowStart: started, windowEnd });
   const decision = evaluateL2(metrics, { requestedMs });
-  const status = decision.status === 'PASS' && frames.length > 0 ? 'PASS' : metrics.updatedFrames < 2 ? 'NOT VERIFIED' : 'FAIL';
-  return buildL2Report(venue, symbol, metrics, { status, reasons: decision.reasons }, { endedEarly, framesReceived: frames.length });
+  const status = endedEarly ? 'FAIL'
+    : decision.status === 'PASS' && frames.length > 0 ? 'PASS'
+    : metrics.updatedFrames < 2 ? 'NOT VERIFIED' : 'FAIL';
+  return buildL2Report(venue, symbol, metrics, {
+    status,
+    reasons: [...decision.reasons, ...(endedEarly ? [noData ? 'no data within the timeout' : 'SSE ended before the requested window'] : [])],
+  }, { endedEarly, noData, framesReceived: frames.length });
 }
 
 const results = await Promise.all(venues.map(([venue, symbol]) => probe(venue, symbol).catch((error) => ({ venue, symbol, status: 'NOT VERIFIED', reason: String(error) }))));

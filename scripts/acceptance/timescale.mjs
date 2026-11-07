@@ -10,7 +10,7 @@
 import { execSync } from 'node:child_process';
 import { evaluateRestart } from './lib/restart.mjs';
 import { isWritableDatabase } from './lib/db-safety.mjs';
-import { authorizedGet, credentialsFromEnv } from './lib/api-session.mjs';
+import { createSessionClient, credentialsFromEnv } from './lib/api-session.mjs';
 
 const url = process.env.DATABASE_URL;
 let allowWrites = false;
@@ -89,9 +89,10 @@ try {
     details.processRestartRecovery = 'requires NOX_API_URL and ACCEPTANCE_RESTART_CMD; connection recovery is not a process restart';
   } else {
     const credentials = credentialsFromEnv();
+    const client = createSessionClient(apiBase, credentials);
     const apiJson = async (path) => {
-      // One 401 re-authentication is handled inside authorizedGet; 403 is never retried.
-      const result = await authorizedGet(apiBase, path, credentials);
+      // One session cookie is reused for the whole run; 401 re-auths once, 403 stops.
+      const result = await client.get(path);
       if (!result.ok) throw new Error(result.reason ?? `HTTP ${result.status}`);
       return result.data;
     };
@@ -110,6 +111,7 @@ try {
     }
     if (readyAfter) {
       try {
+        client.reset(); // a restart invalidates the session; next call re-authenticates
         identityAfter = (await apiJson('/api/operations')).process?.startedAt ?? null;
         idsAfter = ((await apiJson(`/api/acceptance/records?source=${encodeURIComponent(source)}`)).items ?? []).map((item) => item.id);
         apiReadAvailable = true;

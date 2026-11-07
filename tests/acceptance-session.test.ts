@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // @ts-expect-error plain ESM helper used by the acceptance script
-import { authorizedGet, credentialsFromEnv, login } from '../scripts/acceptance/lib/api-session.mjs';
+import { authorizedGet, createSessionClient, credentialsFromEnv, login } from '../scripts/acceptance/lib/api-session.mjs';
 
 const respond = (status: number, body: unknown = {}, cookie?: string) => ({
   ok: status >= 200 && status < 300,
@@ -93,4 +93,41 @@ test('missing credentials never reach the network', async () => {
   const result = await authorizedGet('http://api', '/x', { ok: false, reason: 'ACCEPTANCE_ADMIN_USER is required' }, (async () => { calls += 1; return respond(200); }) as never);
   assert.equal(result.ok, false);
   assert.equal(calls, 0);
+});
+
+test('one session cookie is reused across requests', async () => {
+  let logins = 0, gets = 0;
+  const fake = async (url: string) => {
+    if (String(url).endsWith('/api/auth/login')) { logins += 1; return respond(200, { user: { role: 'admin' } }, 'nox_session=s; Path=/'); }
+    gets += 1; return respond(200, { items: [] });
+  };
+  const client = createSessionClient('http://api', { ok: true, user: 'ops', password: 'x' }, fake as never);
+  await client.get('/a'); await client.get('/b');
+  assert.equal(logins, 1);
+  assert.equal(gets, 2);
+});
+
+test('session client re-authenticates once on 401 and stops on 403', async () => {
+  let logins = 0, unauthorized = true;
+  const fake = async (url: string) => {
+    if (String(url).endsWith('/api/auth/login')) { logins += 1; return respond(200, { user: { role: 'admin' } }, 'nox_session=s; Path=/'); }
+    if (unauthorized) { unauthorized = false; return respond(401); } return respond(200, { items: [] });
+  };
+  const client = createSessionClient('http://api', { ok: true, user: 'ops', password: 'x' }, fake as never);
+  assert.equal((await client.get('/a')).ok, true);
+  assert.equal(logins, 2);
+  const forbidden = async () => respond(403);
+  const blocked = createSessionClient('http://api', { ok: true, user: 'ops', password: 'x' }, forbidden as never);
+  const result = await blocked.get('/a');
+  assert.equal(result.status, 403);
+});
+
+test('reset forces a fresh login (restart case)', async () => {
+  let logins = 0;
+  const fake = async (url: string) => String(url).endsWith('/api/auth/login')
+    ? (logins += 1, respond(200, { user: { role: 'admin' } }, `nox_session=s${logins}; Path=/`))
+    : respond(200, {});
+  const client = createSessionClient('http://api', { ok: true, user: 'ops', password: 'x' }, fake as never);
+  await client.get('/a'); client.reset(); await client.get('/a');
+  assert.equal(logins, 2);
 });

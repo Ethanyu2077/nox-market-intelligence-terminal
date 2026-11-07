@@ -31,10 +31,11 @@ async function probe(venue, symbol) {
     const decoder = new TextDecoder();
     let buffer = '';
     let lastData = Date.now();
+    let endedEarly = false;
     while (Date.now() - started < seconds * 1000) {
       if (Date.now() - lastData > 8_000) return { venue, symbol, status: 'NOT VERIFIED', reason: 'no data within 8s', frames: frames.length };
       const read = await withTimeout(reader.read(), 3_000, 'read').catch(() => ({ done: true }));
-      if (read.done) break;
+      if (read.done) { endedEarly = Date.now() - started < seconds * 1000; break; }
       buffer += decoder.decode(read.value, { stream: true });
       const blocks = buffer.split('\n\n'); buffer = blocks.pop();
       for (const block of blocks) {
@@ -53,6 +54,24 @@ async function probe(venue, symbol) {
     const resyncsDelta = first && last ? last.resyncs - first.resyncs : 0;
     const delays = frames.map((frame) => frame.snapshot?.lastMessageAt ? frame.at - frame.snapshot.lastMessageAt : null).filter((value) => value != null && value >= 0);
     const maxDelay = delays.length ? Math.max(...delays) : null;
+    const observedDurationMs = Date.now() - started;
+    const times = valid.map((frame) => frame.at);
+    let maxUpdateGapMs = 0;
+    let continuous = times.length ? 0 : 0;
+    let runStart = times[0] ?? 0;
+    for (let index = 1; index < times.length; index += 1) {
+      const gap = times[index] - times[index - 1];
+      maxUpdateGapMs = Math.max(maxUpdateGapMs, gap);
+      if (gap <= 5_000) continuous += gap; else runStart = times[index];
+    }
+    if (times.length > 1) continuous = Math.min(continuous, times.at(-1) - times[0]);
+    void runStart;
+    const continuousLiveDurationMs = times.length > 1 ? continuous : 0;
+    const invalidStateDurationMs = Math.max(0, observedDurationMs - continuousLiveDurationMs);
+    const validWindowPct = observedDurationMs > 0 ? Math.min(100, continuousLiveDurationMs / observedDurationMs * 100) : 0;
+    const epochChanges = Math.max(0, epochs.length - 1);
+    const recoveryCompleted = resyncsDelta > 0 ? (last?.state === 'live' && last?.verified === true) : true;
+    const enoughCoverage = observedDurationMs >= seconds * 1000 * 0.8 && validWindowPct >= 80 && maxUpdateGapMs <= 5_000;
     const healthy = valid.length >= 2
       && advances >= 1
       && epochs.length === 1
@@ -60,14 +79,24 @@ async function probe(venue, symbol) {
       && (last?.spreadBps ?? 0) > 0
       && (last?.bidDepthUsd ?? 0) > 0
       && (last?.askDepthUsd ?? 0) > 0
-      && maxDelay != null && maxDelay <= 15_000;
+      && maxDelay != null && maxDelay <= 15_000
+      && enoughCoverage
+      && !endedEarly
+      && recoveryCompleted;
+    const status = healthy ? 'PASS' : valid.length < 2 ? 'NOT VERIFIED' : 'FAIL';
     return {
-      venue, symbol, status: healthy ? 'PASS' : 'FAIL', durationMs: Date.now() - started,
-      framesReceived: frames.length, validUpdates: valid.length, sequenceAdvances: advances,
-      epochs, gaps: last?.gaps ?? null, gapsDelta, resyncs: last?.resyncs ?? null, resyncsDelta,
+      venue, symbol, status,
+      requestedDurationMs: seconds * 1000, observedDurationMs,
+      continuousLiveDurationMs, maxUpdateGapMs, invalidStateDurationMs, validWindowPct: Number(validWindowPct.toFixed(2)),
+      framesReceived: frames.length, validUpdates: valid.length,
+      sequenceAdvanceCount: advances, sequenceAdvances: advances,
+      epochChanges, epochs,
+      gaps: last?.gaps ?? null, gapsDelta, resyncs: last?.resyncs ?? null, resyncsDelta,
+      recoveryCompleted,
       maxDelayMs: maxDelay, integrity: last?.integrity ?? null, finalState: last?.state ?? null,
       spreadBps: last?.spreadBps ?? null, bidDepthUsd: last?.bidDepthUsd ?? null, askDepthUsd: last?.askDepthUsd ?? null,
-      reason: healthy ? null : 'continuity criteria not met',
+      endedEarly,
+      reason: healthy ? null : valid.length < 2 ? 'fewer than two valid live updates in the window' : endedEarly ? 'SSE ended before the requested window' : 'continuity criteria not met',
     };
   } catch (error) {
     return { venue, symbol, status: 'NOT VERIFIED', reason: error instanceof Error ? error.message : 'probe failed', frames: frames.length };

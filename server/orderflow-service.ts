@@ -14,6 +14,9 @@ type Feed = {
   instrument?: Instrument; stopped: boolean; loading: boolean; liquidationState: string; liquidations: LiquidationEvent[];
   persisting?: Promise<void>;
 };
+/** Venues whose public liquidation stream is normalised in this version. */
+const LIQUIDATION_FEEDS = new Set(['binance', 'bybit', 'okx']);
+
 export class OrderFlowService {
   private feeds = new Map<string, Feed>();
   constructor(private directory: string, private adapters = { verify: verifiedFlowInstrument, recent: recentFlowTrades, stream: openFlowStream }, private archive?: (kind: 'trade' | 'liquidation', event: FlowTrade | LiquidationEvent) => void) {}
@@ -70,8 +73,8 @@ export class OrderFlowService {
         // REST coverage is authoritative. Socket receipt alone does not certify contiguous history.
       }, (state, detail) => { if (state === 'stale' || state === 'degraded') feed.state = 'stale'; else if (state === 'connecting') feed.state = 'connecting'; feed.detail = detail ?? ''; }, event => {
         if (!feed.liquidations.some(e => e.id === event.id)) { feed.liquidations.push(event); this.archive?.('liquidation', event); }
-        feed.liquidations = feed.liquidations.slice(-1000); feed.liquidationState = 'partial-snapshot-feed';
-      }, state => { feed.liquidationState = `${state} · incomplete snapshot feed`; });
+        feed.liquidations = feed.liquidations.slice(-1000); feed.liquidationState = 'partial feed · events observed';
+      }, state => { feed.liquidationState = `${state} · venue-limited partial feed`; });
       feed.flush = setInterval(() => { void this.persist(feed); }, 15_000);
       const tick = async () => { if (feed.stopped) return; await this.poll(feed); if (!feed.stopped) feed.timer = setTimeout(() => void tick(), 5000); };
       feed.timer = setTimeout(() => void tick(), 5000);
@@ -124,7 +127,14 @@ export class OrderFlowService {
       projectId: project.id, generatedAt: Date.now(), interval, reset, unit: 'USDT', venues, aggregates, trades,
       tradeClusters: clusterFlowTrades(trades), signals: flowDivergences(aggregates.spot.buckets, aggregates.perpetual.buckets, at),
       liquidations: feeds.flatMap(f => f.liquidations).filter(e => e.time <= at).sort((a, b) => b.time - a.time).slice(0, 200),
-      liquidationCoverage: markets.filter(m => m.marketType === 'perpetual').map(m => ({ exchange: m.exchange, symbol: m.symbol, state: m.exchange === 'binance' ? this.feeds.get(flowKey(m))?.liquidationState ?? 'not-subscribed' : 'unavailable', note: m.exchange === 'binance' ? 'Binance snapshot feed: only latest liquidation per symbol per 1000ms; incomplete coverage. Silence does not mean no liquidation.' : 'No liquidation feed verified in this version. Unavailable is not zero.' })),
+      liquidationCoverage: markets.filter(m => m.marketType === 'perpetual').map(m => ({
+        exchange: m.exchange,
+        symbol: m.symbol,
+        state: LIQUIDATION_FEEDS.has(m.exchange) ? this.feeds.get(flowKey(m))?.liquidationState ?? 'not-subscribed' : 'unavailable',
+        note: LIQUIDATION_FEEDS.has(m.exchange)
+          ? `${m.exchange} public liquidation stream: venue-throttled and partial (aggregated/limited events). Silence is not evidence of no liquidation.`
+          : 'No liquidation feed verified for this venue. Unavailable is not zero.',
+      })),
       methodology: [
         'Spot and perpetual trades are separate ledgers. Deduplication key is venue + market type + symbol + native trade ID.',
         'Trade notional = price × base quantity; contract multipliers applied before arithmetic. USDT quoted markets only.',

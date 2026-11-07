@@ -22,7 +22,7 @@ async function kucoinSubscription(symbol: string): Promise<Subscription> {
 
 async function subscription(exchange: Exclude<ExchangeId, 'binance'>, symbol: string): Promise<Subscription> {
   if (exchange === 'bybit') return { url: 'wss://stream.bybit.com/v5/public/linear', messages: [{ op: 'subscribe', args: [`publicTrade.${symbol}`, `tickers.${symbol}`] }], ping: { op: 'ping' } };
-  if (exchange === 'okx') return { url: 'wss://ws.okx.com:8443/ws/v5/public', messages: [{ op: 'subscribe', args: [{ channel: 'trades', instId: symbol }, { channel: 'tickers', instId: symbol }, { channel: 'open-interest', instId: symbol }, { channel: 'funding-rate', instId: symbol }] }], ping: 'ping' };
+  if (exchange === 'okx') return { url: 'wss://ws.okx.com:443/ws/v5/public', messages: [{ op: 'subscribe', args: [{ channel: 'trades', instId: symbol }, { channel: 'tickers', instId: symbol }, { channel: 'open-interest', instId: symbol }, { channel: 'funding-rate', instId: symbol }] }], ping: 'ping' };
   if (exchange === 'bitget') return { url: 'wss://ws.bitget.com/v2/ws/public', messages: [{ op: 'subscribe', args: [{ instType: 'USDT-FUTURES', channel: 'trade', instId: symbol }, { instType: 'USDT-FUTURES', channel: 'ticker', instId: symbol }] }], ping: 'ping' };
   if (exchange === 'gate') return { url: 'wss://fx-ws.gateio.ws/v4/ws/usdt', messages: [{ time: Math.floor(Date.now() / 1000), channel: 'futures.trades', event: 'subscribe', payload: [symbol] }, { time: Math.floor(Date.now() / 1000), channel: 'futures.tickers', event: 'subscribe', payload: [symbol] }] };
   if (exchange === 'mexc') return { url: 'wss://contract.mexc.com/edge', messages: [{ method: 'sub.deal', param: { symbol } }, { method: 'sub.ticker', param: { symbol } }], ping: { method: 'ping' } };

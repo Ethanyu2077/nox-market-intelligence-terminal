@@ -80,12 +80,83 @@ export async function recentFlowTrades(market: ProjectMarket, instrument: Instru
   return result.sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
 }
 
+/** Shared shape builder so every venue uses identical side/quantity conventions. */
+function liquidationEvent(exchange: LiquidationEvent['exchange'], symbol: string, time: number, orderSide: 'buy' | 'sell', price: number, quantity: number): LiquidationEvent | null {
+  const base = Math.abs(quantity);
+  if (!Number.isFinite(time) || time < 1e12 || !Number.isFinite(price) || price <= 0 || !Number.isFinite(base) || base <= 0) return null;
+  return {
+    id: `${exchange}:${symbol}:${time}:${orderSide}:${base}:${price}`,
+    exchange,
+    symbol,
+    time: Math.floor(time),
+    orderSide,
+    // A BUY liquidation order closes a short position; a SELL order closes a long.
+    liquidatedSide: orderSide === 'buy' ? 'short' : 'long',
+    price,
+    quantity: base,
+    notional: price * base,
+  };
+}
+
+/**
+ * Binance forceOrder snapshot: one symbol per message, `S` is the liquidation order side.
+ */
 export function normalizeLiquidation(message: Row, symbol: string): LiquidationEvent | null {
   const order = message.o as Row | undefined;
   if (message.e !== 'forceOrder' || !order || order.s !== symbol || !['BUY', 'SELL'].includes(String(order.S))) return null;
   const price = num(order.ap), quantity = num(order.z), time = num(order.T);
   if (!price || price <= 0 || !quantity || quantity <= 0 || !time) return null;
-  return { id: `binance:${symbol}:${time}:${order.S}:${quantity}:${price}`, exchange: 'binance', symbol, time, orderSide: order.S === 'BUY' ? 'buy' : 'sell', liquidatedSide: order.S === 'BUY' ? 'short' : 'long', price, quantity, notional: price * quantity };
+  return liquidationEvent('binance', symbol, time, order.S === 'BUY' ? 'buy' : 'sell', price, quantity);
+}
+
+/**
+ * Bybit v5 `allLiquidation.<symbol>`: the payload may carry several symbols; `v` is the
+ * position size in base coin for linear contracts.
+ */
+export function normalizeBybitLiquidation(message: Row, symbol: string): LiquidationEvent | null {
+  if (!String(message.topic ?? '').startsWith('allLiquidation.')) return null;
+  const rows = Array.isArray(message.data) ? message.data as Row[] : [];
+  const row = rows.find((entry) => String(entry.s) === symbol);
+  if (!row) return null;
+  const side = String(row.S ?? '').toLowerCase();
+  const price = num(row.p), quantity = num(row.v), time = num(row.T);
+  if (!['buy', 'sell'].includes(side) || price == null || quantity == null || time == null) return null;
+  return liquidationEvent('bybit', symbol, time, side as 'buy' | 'sell', price, quantity);
+}
+
+/**
+ * OKX `liquidation-orders`: per-instId details; `sz` is contracts and is normalised with
+ * the instrument multiplier by the caller. `posSide` is authoritative when present.
+ */
+export function normalizeOkxLiquidation(message: Row, symbol: string, multiplier = 1): LiquidationEvent | null {
+  const arg = message.arg as Row | undefined;
+  if (String(arg?.channel ?? '') !== 'liquidation-orders') return null;
+  const rows = Array.isArray(message.data) ? message.data as Row[] : [];
+  const row = rows.find((entry) => String(entry.instId) === symbol);
+  if (!row) return null;
+  const details = Array.isArray(row.details) ? row.details as Row[] : [];
+  const detail = details[0];
+  if (!detail) return null;
+  const posSide = String(detail.posSide ?? '').toLowerCase();
+  const side = String(detail.side ?? '').toLowerCase();
+  const orderSide: 'buy' | 'sell' | null = posSide === 'long' ? 'sell' : posSide === 'short' ? 'buy' : side === 'buy' ? 'buy' : side === 'sell' ? 'sell' : null;
+  const price = num(detail.bkPx), contracts = num(detail.sz), time = num(detail.ts);
+  if (!orderSide || price == null || contracts == null || time == null) return null;
+  return liquidationEvent('okx', symbol, time, orderSide, price, contracts * multiplier);
+}
+
+/**
+ * Gate `futures.liquidates`: `size` is the liquidated position in contracts and is signed
+ * (positive long, negative short). Gate timestamps are seconds.
+ */
+export function normalizeGateLiquidation(message: Row, symbol: string, multiplier = 1): LiquidationEvent | null {
+  if (message.channel !== 'futures.liquidates' || message.event !== 'update') return null;
+  const row = message.result as Row | undefined;
+  if (!row || String(row.contract) !== symbol) return null;
+  const size = num(row.size), price = num(row.liq_price ?? row.price), rawTime = num(row.time);
+  if (size == null || size === 0 || price == null || rawTime == null) return null;
+  const time = rawTime < 1e11 ? rawTime * 1000 : rawTime;
+  return liquidationEvent('gate', symbol, time, size > 0 ? 'sell' : 'buy', price, Math.abs(size) * multiplier);
 }
 
 // Dedicated spot subscription; perpetuals reuse the existing multiplexed exchange stream.
@@ -100,7 +171,23 @@ export function openFlowStream(market: ProjectMarket, instrument: Instrument, on
         if (data.id != null && p && p > 0 && q && q > 0 && t && ['buy', 'sell'].includes(side)) onTrade({ id: String(data.id), exchange: market.exchange, marketType: 'perpetual', symbol: market.symbol, price: p, quantity: q, notional: p * q, side: side as 'buy' | 'sell', time: Math.floor(t), source: 'websocket' });
       }
     }, onState);
-    const stopLiquidation = market.exchange === 'binance' ? jsonSocket(`wss://fstream.binance.com/ws/${market.symbol.toLowerCase()}@forceOrder`, [], undefined, message => { const event = normalizeLiquidation(message, market.symbol); if (event) onLiquidation(event); }, onLiquidationState) : () => {};
+    const multiplier = instrument.contractMultiplier ?? 1;
+    const emit = (event: LiquidationEvent | null) => { if (event) onLiquidation(event); };
+    const stopLiquidation = (() => {
+      switch (market.exchange) {
+        case 'binance':
+          return jsonSocket(`wss://fstream.binance.com/ws/${market.symbol.toLowerCase()}@forceOrder`, [], undefined, message => emit(normalizeLiquidation(message, market.symbol)), onLiquidationState);
+        case 'bybit':
+          return jsonSocket('wss://stream.bybit.com/v5/public/linear', [{ op: 'subscribe', args: [`allLiquidation.${market.symbol}`] }], { op: 'ping' }, message => emit(normalizeBybitLiquidation(message, market.symbol)), onLiquidationState);
+        case 'okx':
+          // Port 443: OKX announced the retirement of 8443 for public WebSocket traffic.
+          return jsonSocket('wss://ws.okx.com:443/ws/v5/public', [{ op: 'subscribe', args: [{ channel: 'liquidation-orders', instType: 'SWAP' }] }], 'ping', message => emit(normalizeOkxLiquidation(message, market.symbol, multiplier)), onLiquidationState);
+        default:
+          // Gate's futures.liquidates channel requires credentials (verified 2026-11-07:
+          // "authentication required"), so it stays unavailable rather than half-wired.
+          return () => {};
+      }
+    })();
     return () => { stop(); stopLiquidation(); };
   }
   if (market.exchange === 'mexc') { onState('partial', 'REST-only: Protobuf spot WebSocket not implemented'); return () => {}; }

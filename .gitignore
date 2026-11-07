@@ -22,3 +22,6 @@ coverage/
 
 # E2E artifacts
 artifacts/
+
+# Local test environment secrets
+deploy/test/.env

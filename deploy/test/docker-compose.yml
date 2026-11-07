@@ -1,0 +1,20 @@
+# Disposable TimescaleDB for acceptance. Never point this at production.
+services:
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    container_name: nox-timescale-test
+    environment:
+      POSTGRES_DB: ${NOX_TEST_DB_NAME:-nox_test}
+      POSTGRES_USER: ${NOX_TEST_DB_USER:-nox_test}
+      POSTGRES_PASSWORD: ${NOX_TEST_DB_PASSWORD:?set NOX_TEST_DB_PASSWORD in deploy/test/.env}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - nox-timescale-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOX_TEST_DB_USER:-nox_test} -d ${NOX_TEST_DB_NAME:-nox_test}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  nox-timescale-test-data:

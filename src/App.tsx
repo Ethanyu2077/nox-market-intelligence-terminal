@@ -27,6 +27,7 @@ import { useWatchlistQuotes } from './shell/useWatchlistQuotes';
 import { useVenues } from './shell/useVenues';
 import { CcxtPanel } from './CcxtPanel';
 import { AlertsPanel } from './AlertsPanel';
+import { OrderBookPanel } from './OrderBookPanel';
 import { ErrorBoundary } from './shell/ErrorBoundary';
 import { Sparkline } from './shell/Sparkline';
 import { AiDrawer } from './ai/AiDrawer';
@@ -409,7 +410,7 @@ export default function App() {
             {page === 'terminal' && selectedProject && <ResearchTerminal key={`${selectedProject.id}:${interval}`} project={selectedProject} series={localizedSeries} venues={venueData} language={language} interval={interval} kpis={<KpiStrip overview={overview}/>} exchange={exchange} onExchange={setExchange} onDetail={() => setPage('positionFlow')}/>}
             {page === 'projects' && <ProjectsPage projects={projects} selectedProjectId={selectedProjectId} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>}
             {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
-            {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language}/>}
+            {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language} exchange={exchange}/>}
             {page === 'contribution' && selectedProject && <ExchangeContributionPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/>}
             {page === 'crossExchange' && selectedProject && <><CrossExchangeAnalysisPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/><KoreanSpotPanel project={selectedProject} language={language}/><CoinGlassPanel project={selectedProject} language={language} onSettings={()=>setPage('settings')}/></>}
             {page === 'positionFlow' && selectedProject && <PositionFlowPage overview={overview} series={localizedSeries} interval={interval}/>}
@@ -808,7 +809,7 @@ function KpiStrip({ overview }: { overview: Overview | null }) { const timeAgo =
   return <section className="kpi-strip">{kpis.map((k) => <div className="kpi" key={k.label}><span>{k.label}</span><strong className={k.dir}>{k.value}</strong><small>{k.sub}</small></div>)}</section>;
 }
 
-function StructurePage({ overview, series, interval, onInterval, project, theme, language }: { overview: Overview | null; series: MarketSeries | null; interval: Interval; onInterval: (interval: Interval) => void; project: MarketProject; theme: Theme; language: Language }) {
+function StructurePage({ overview, series, interval, onInterval, project, theme, language, exchange }: { overview: Overview | null; series: MarketSeries | null; interval: Interval; onInterval: (interval: Interval) => void; project: MarketProject; theme: Theme; language: Language; exchange: ExchangeSelection }) {
   const storageKey = `nox-chart-mode:${project.id}`;
   const [mode, setMode] = useState<ChartMode>(() => localStorage.getItem(storageKey) === 'tradingview' ? 'tradingview' : 'nox');
   const primary = project.markets.find((market) => market.id === project.primaryMarketId) ?? project.markets.find((market) => market.marketType === 'perpetual');
@@ -818,6 +819,7 @@ function StructurePage({ overview, series, interval, onInterval, project, theme,
   return <><PageHead eyebrow="FLAGSHIP ANALYSIS" title={`${series?.symbol ?? primary?.symbol ?? 'Market'} ${language === 'zh' ? '结构分析' : 'structure'}`} detail={language === 'zh' ? '同步的价格、成交量、持仓量与合约 CVD；在任一图上移动即可检视同一事件时间。' : 'Synchronized price, volume, open interest and futures CVD. Move across any panel to inspect the same event time.'} right={<div className="provenance"><i/><span>{mode === 'nox' ? (series?.source ?? t('Awaiting source')) : 'TradingView public widget'}</span></div>}/>
     <ChartModeSwitcher mode={mode} onChange={changeMode} language={language}/>
     {mode === 'nox' ? <NOXMarketStructureChart overview={overview} series={series} interval={interval}/> : <TradingViewChartPanel market={primary} interval={interval} onInterval={onInterval} theme={theme} language={language}/>} 
+    <div className="structure-depth"><OrderBookPanel project={project} exchange={exchange} language={language}/></div>
     <TimeframeAlignmentPanel project={project}/>
     <StructureEvidence overview={overview} series={series}/>
   </>;
@@ -825,18 +827,46 @@ function StructurePage({ overview, series, interval, onInterval, project, theme,
 
 function NOXMarketStructureChart({ overview, series, interval }: { overview: Overview | null; series: MarketSeries | null; interval: Interval }) { const timeAgo = useTimeAgo();
   const { language } = useUi(); const zh = language === 'zh';
-  const [cursor, setCursor] = useState<number | null>(null); const points = series?.candles ?? [];
+  const [cursor, setCursor] = useState<number | null>(null);
+  const points = series?.candles ?? [];
+  // Window over the returned candles: zoom changes the bar count, pan shifts it back in
+  // time. Every panel is sliced by the same time range so the crosshair stays aligned.
+  const [view, setView] = useState({ count: 120, offset: 0 });
+  useEffect(() => { setView({ count: 120, offset: 0 }); }, [series?.symbol, interval]);
+  const total = points.length;
+  const count = Math.min(Math.max(view.count, Math.min(24, total)), Math.max(total, 1));
+  const offset = Math.min(view.offset, Math.max(0, total - count));
+  const from = points[Math.max(0, total - count - offset)]?.time ?? 0;
+  const to = points[Math.max(0, total - offset - 1)]?.time ?? Number.MAX_SAFE_INTEGER;
+  const cut = <T extends { time: number }>(rows: T[]) => rows.filter((row) => row.time >= from && row.time <= to);
+  const canZoomOut = count < total;
+  const canZoomIn = count > Math.min(24, total);
+  const canPanOlder = offset < total - count;
+  const canPanNewer = offset > 0;
+  const zoom = (factor: number) => setView((current) => ({ ...current, count: Math.min(total, Math.max(Math.min(24, total), Math.round(current.count * factor))) }));
+  const pan = (direction: -1 | 1) => setView((current) => ({ ...current, offset: Math.max(0, Math.min(total - count, current.offset + direction * Math.round(count / 2))) }));
   return <>
-    <div className="chart-toolbar"><div><span>{zh ? '模式' : 'Mode'}</span><button className="active">{zh ? '已观测' : 'Observed'}</button><button disabled>{zh ? '状态叠加 · 二期' : 'Regime overlay · P2'}</button></div><div className="coverage"><span>{zh ? 'CVD 覆盖' : 'CVD coverage'}</span><strong>{series?.coverage.tradeCount ?? 0} {zh ? '笔聚合成交' : 'aggregate trades'}</strong><em>{series?.coverage.cvdFrom ? new Date(series.coverage.cvdFrom).toLocaleTimeString() : (zh ? '不可用' : 'unavailable')}</em></div></div>
+    <div className="chart-toolbar">
+      <div><span>{zh ? '模式' : 'Mode'}</span><button className="active">{zh ? '已观测' : 'Observed'}</button><button disabled>{zh ? '状态叠加 · 二期' : 'Regime overlay · P2'}</button></div>
+      <div className="chart-zoom" role="group" aria-label={zh ? '图表缩放' : 'Chart zoom'}>
+        <button onClick={() => pan(-1)} disabled={!canPanOlder} title={zh ? '向更早平移' : 'Pan older'}>←</button>
+        <button onClick={() => pan(1)} disabled={!canPanNewer} title={zh ? '向更新平移' : 'Pan newer'}>→</button>
+        <button onClick={() => zoom(1.5)} disabled={!canZoomOut} title={zh ? '缩小' : 'Zoom out'}>−</button>
+        <button onClick={() => zoom(1 / 1.5)} disabled={!canZoomIn} title={zh ? '放大' : 'Zoom in'}>+</button>
+        <button onClick={() => setView({ count: 120, offset: 0 })} title={zh ? '重置' : 'Reset'}>{zh ? '重置' : 'Reset'}</button>
+        <em>{points.length ? `${Math.min(count, total)}/${total} ${zh ? '根' : 'bars'}` : '—'}</em>
+      </div>
+      <div className="coverage"><span>{zh ? 'CVD 覆盖' : 'CVD coverage'}</span><strong>{series?.coverage.tradeCount ?? 0} {zh ? '笔聚合成交' : 'aggregate trades'}</strong><em>{series?.coverage.cvdFrom ? new Date(series.coverage.cvdFrom).toLocaleTimeString() : (zh ? '不可用' : 'unavailable')}</em></div>
+    </div>
     <section className="chart-stack panel">
       <PanelHead title={zh ? '价格与成交量' : 'Price & volume'} meta={`${interval.toUpperCase()} ${zh ? 'K 线' : 'candles'} · USDT ${zh ? '每基础币' : 'per base'} · ${series?.source?.replace(/ REST.*$/, '') ?? (zh ? '等待序列' : 'awaiting series')}`} action={overview ? `${zh ? '标记价' : 'Mark'} ${formatPrice(overview.markPrice)}` : undefined}/>
-      <CandleChart points={points} cursor={cursor} onCursor={setCursor}/>
+      <CandleChart points={cut(points)} cursor={cursor} onCursor={setCursor}/>
       <div className="chart-divider"/>
       <ChartLabel title={zh ? '持仓量' : 'Open interest'} meta={series && !series.oiBase.length ? series.coverage.oiSource : (zh ? '基础币数量 — 不是 USD 名义值' : 'Base quantity — not USD notional')} current={formatCompact(series?.oiBase.at(-1)?.value)}/>
-      <LineChart points={series?.oiBase ?? []} cursor={cursor} onCursor={setCursor} color="#b9c3ca" height={145}/>
+      <LineChart points={cut(series?.oiBase ?? [])} cursor={cursor} onCursor={setCursor} color="#b9c3ca" height={145}/>
       <div className="chart-divider"/>
       <ChartLabel title={zh ? '合约 CVD' : 'Futures CVD'} meta={zh ? '主动买入名义 − 主动卖出名义 · 以抓取窗口为基准重置' : 'Aggressor buy notional − aggressor sell notional · baseline reset at fetched window'} current={formatCompact(series?.cvd.at(-1)?.value, true)}/>
-      <LineChart points={series?.cvd ?? []} cursor={cursor} onCursor={setCursor} color="#54c9a8" baseline height={155}/>
+      <LineChart points={cut(series?.cvd ?? [])} cursor={cursor} onCursor={setCursor} color="#54c9a8" baseline height={155}/>
       <div className="chart-foot"><span>{series?.coverage.cvdMethod}</span><span>{zh ? '更新' : 'Updated'} {series ? timeAgo(series.eventTime) : '—'}</span></div>
     </section>
   </>;

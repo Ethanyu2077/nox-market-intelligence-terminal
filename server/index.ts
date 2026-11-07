@@ -43,6 +43,7 @@ import {signalReadiness,weightedConsensus} from './research-readiness.ts';
 import { watchlistQuotes } from './watchlist.ts';
 import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
 import { venueBreakers } from './venue-health.ts';
+import { isDepthVenue, orderBookSnapshot } from './orderbook.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
 
@@ -248,6 +249,14 @@ app.get('/api/market/:exchange/:symbol/series', safe(async (req, res) => {
   if (exchange.data === 'binance') { res.json(await marketSeries(String(req.params.symbol), interval)); return; }
   if (exchange.data === 'aster') { res.json(await asterMarketSeries(String(req.params.symbol), interval)); return; }
   res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } });
+}));
+app.get('/api/market/:exchange/:symbol/depth', safe(async (req, res) => {
+  const exchange = exchangeSchema.safeParse(req.params.exchange);
+  if (!exchange.success) { res.status(400).json({ error: { code: 'INVALID_EXCHANGE', message: 'Unsupported exchange', timestamp: Date.now() } }); return; }
+  if (!isDepthVenue(exchange.data)) { res.status(501).json({ error: { code: 'DEPTH_UNAVAILABLE', message: `${exchange.data} has no verified depth adapter`, timestamp: Date.now() } }); return; }
+  const limit = z.coerce.number().int().min(5).max(50).default(20).safeParse(req.query.limit ?? 20);
+  if (!limit.success) { res.status(400).json({ error: { code: 'INVALID_LIMIT', message: 'Depth limit must be 5-50', timestamp: Date.now() } }); return; }
+  res.json(await orderBookSnapshot(exchange.data, String(req.params.symbol), limit.data));
 }));
 app.get('/api/market/:exchange/:symbol/stream', (req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange); if (!exchange.success) { res.status(400).json({ error: { code: 'INVALID_EXCHANGE', message: 'Unsupported exchange', timestamp: Date.now() } }); return; }

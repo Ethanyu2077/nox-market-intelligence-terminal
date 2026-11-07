@@ -70,3 +70,17 @@
 | 真实历史冻结样本 + SHA256 | **NOT VERIFIED** | 无授权真实导出 |
 | Spot VD / Perp VD / CVD 完整覆盖 | **NOT VERIFIED** | Journal 无逐所历史序列 |
 | Binance L2 实机、断网重连、Timescale、重启恢复、抽样核对 | **NOT VERIFIED** | 缺相应环境 |
+
+## 2026-11 增补（研究数据完整性轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| Snapshot/L2 双 Cursor 分页 | TESTED | `scanHistory` 单测（多页、去重、恢复、max-pages/max-records/timeout） |
+| 查询完整性字段 | IMPLEMENTED | `snapshotCursor/l2Cursor/scannedRecords/excludedRecords/truncated/truncationReason/researchComplete` |
+| 不完整历史降级 | TESTED | `truncated` 时 verdict 强制 `insufficient`，不输出完整区间结论 |
+| 覆盖率核算 | TESTED | expected/observed/valid/excluded/missing/timeCoverage/validCoverage/sourceQuality；验收示例 60/35/30/5/25 → 58.33%/50% |
+| 执行情景分离 | TESTED | 入场必须为决策后首个报价；无独立报价 → unavailable；成本仅含手续费假设 |
+| Evidence Panel 专项 E2E | **NOT VERIFIED** | 本轮未扩展 `e2e.mjs` 的面板交互断言 |
+| 真实历史冻结样本/SHA256 | **NOT VERIFIED** | 无授权真实导出 |
+| Binance L2 实机、断网重连、Timescale、重启恢复、抽样核对 | **NOT VERIFIED** | 缺相应环境 |
+| Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | Journal 无逐所历史序列 |

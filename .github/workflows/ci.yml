@@ -33,3 +33,10 @@ jobs:
         env:
           NODE_ENV: production
           PORT: '8787'
+      - name: Evidence Panel E2E
+        run: |
+          curl -sf http://127.0.0.1:8787/api/health > /dev/null || (npm start > /tmp/nox-api.log 2>&1 & sleep 5)
+          CHROME_PATH=/usr/bin/google-chrome npm run e2e:evidence -- --base=http://127.0.0.1:8787
+        env:
+          NODE_ENV: production
+          PORT: '8787'

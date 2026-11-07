@@ -14,7 +14,8 @@
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings 0",
     "auth:setup-token": "node --import tsx server/auth-setup.ts",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "e2e:evidence": "node scripts/e2e-evidence.mjs --base=http://127.0.0.1:4173"
   },
   "dependencies": {
     "ccxt": "^4.5.92",

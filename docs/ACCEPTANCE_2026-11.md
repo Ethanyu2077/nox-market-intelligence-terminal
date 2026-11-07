@@ -173,3 +173,17 @@
 | Timescale 实库执行 | **NOT VERIFIED** | 无测试实例，未执行；脚本未在真实库上跑过 |
 | Binance / Bybit / OKX 连续 L2 | **NOT VERIFIED** | 未取得连续有效数据 |
 | 断网重连、冻结样本/SHA256、抽样核对、Spot/Perp VD/CVD | **NOT VERIFIED** | 缺环境/授权 |
+
+## 2026-11 增补（真实数据基础设施轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| 401 重新认证一次重试 | TESTED | authorizedGet：401→重登一次→重试；二次 401 NOT VERIFIED；403 不重试；无凭据不出网 |
+| Docker Timescale 测试环境 | IMPLEMENTED | deploy/test compose + .env.example + TEST_ENVIRONMENT.md；未启动实例 |
+| Timescale READ/WRITE/CONNECTION/PROCESS RESTART | **NOT VERIFIED** | 无实例、无管理员会话执行 |
+| 30 分钟 L2 soak 工具 | IMPLEMENTED | 三所并发、共享分析器、输出 JSON；本轮未运行 |
+| 三所真实 L2 采集 | **NOT VERIFIED** | 未执行 30 分钟采集 |
+| 24 小时稳定性 | **NOT IMPLEMENTED** | 需在 30 分钟通过后启动 |
+| 故障恢复（断线/REST 失败/DB 不可写/进程重启） | **NOT VERIFIED** | 未执行 |
+| 真实历史持久化与 Journal/Timescale 一致性 | **NOT VERIFIED** | 无真实采集数据 |
+| 冻结数据集 + SHA256 + 两次复现 | **NOT IMPLEMENTED** | 依赖真实采集与实例 |

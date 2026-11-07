@@ -47,6 +47,7 @@ import { isDepthVenue, orderBookSnapshot } from './orderbook.ts';
 import { capabilityRegistry } from './capability-registry.ts';
 import { acquireL2 } from './l2/feed.ts';
 import { analyzeLeadLag } from './leadlag.ts';
+import { L2Collector } from './l2/collector.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
@@ -82,6 +83,8 @@ app.use((req, res, next) => {
 });
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
 app.use(express.json({ limit: '160kb' }));
+const l2Collector = new L2Collector(() => store.getProjects(true), history);
+l2Collector.start();
 const alerts = new AlertService(dataDirectory, () => store.getAlerts(), () => store.getProjects(true));
 await alerts.init();
 alerts.start();
@@ -176,6 +179,14 @@ app.get('/api/projects/:id/research/leadlag', safe(async (req, res) => {
     samplesB: (samples.get(body.venueB) ?? []).sort((a, b) => a.time - b.time),
   }, { ...(body.windowMs ? { windowMs: body.windowMs } : {}), ...(body.horizonMs ? { horizonMs: body.horizonMs } : {}), ...(body.maxDelayMs != null ? { maxDelayMs: body.maxDelayMs } : {}), ...(body.costBpsPerSide != null ? { costBpsPerSide: body.costBpsPerSide } : {}) });
   res.json(report);
+}));
+app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
+  const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
+  if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
+  const bucketMs = z.coerce.number().int().refine((value) => [1_000, 5_000, 60_000].includes(value), 'bucket must be 1000, 5000 or 60000').parse(req.query.bucket ?? 5_000);
+  const limit = z.coerce.number().int().min(1).max(1_000).parse(req.query.limit ?? 200);
+  const page = await history.page(project.id, { kind: 'l2', limit: 1_000 });
+  res.json({ items: page.items.map((item) => item.payload).filter((payload): payload is { bucketMs: number } => Boolean(payload && typeof payload === 'object' && 'bucketMs' in payload)).filter((payload) => payload.bucketMs === bucketMs).slice(-limit), bucketMs });
 }));
 app.get('/api/projects/:id/signal-lab', safe(async (req, res) => {
   const query = z.object({ horizon: z.coerce.number().int().min(5).max(1440).default(60), costBps: z.coerce.number().min(0).max(1000).default(10), asOf: z.coerce.number().finite().min(1e12).optional() }).parse(req.query);
@@ -416,6 +427,6 @@ const server = app.listen(port, '127.0.0.1', () => console.log(`NOX API listenin
   }
 }
 let shuttingDown = false;
-const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
+const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

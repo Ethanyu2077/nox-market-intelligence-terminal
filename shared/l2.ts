@@ -51,3 +51,32 @@ export interface L2RestSnapshot {
   sequence: { first: number | null; last: number };
   eventTime: number;
 }
+
+/** Aggregated L2 metrics persisted by the project-level collector. */
+export interface L2BucketMetric {
+  projectId: string;
+  venue: L2Venue;
+  symbol: string;
+  bucketMs: number;
+  bucketStart: number;
+  samples: number;
+  expectedSamples: number;
+  coveragePct: number;
+  spreadBps: number | null;
+  bidDepthUsd: number | null;
+  askDepthUsd: number | null;
+  imbalancePct: number | null;
+  /** Net depth change across the bucket; fills are not separated from cancellations. */
+  bidDepthChangePct: number | null;
+  askDepthChangePct: number | null;
+  /** Positive = net depth withdrawn. Attribution is net-of-fills-unknown. */
+  liquidityWithdrawalPct: number | null;
+  attribution: 'net-of-fills-not-separated';
+  integrity: L2Snapshot['integrity'];
+  verified: boolean;
+  sequenceLast: number | null;
+  gapsDelta: number;
+  resyncsDelta: number;
+  eventTime: number;
+  receivedAt: number;
+}

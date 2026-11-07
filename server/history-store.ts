@@ -17,7 +17,7 @@ export type { HistoryEvent } from "../shared/history.ts";
 import type { HistoryEvent } from "../shared/history.ts";
 import type {RegimeReport} from '../shared/regime-v2.ts';
 
-const KINDS = ["trade", "liquidation", "snapshot", "regime", "volume", "alignment"] as const;
+const KINDS = ["trade", "liquidation", "snapshot", "regime", "volume", "alignment", "l2"] as const;
 type Link = {
   projectId: string;
   marketKey: string;

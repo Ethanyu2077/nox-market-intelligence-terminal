@@ -148,3 +148,23 @@ test('journal quality is carried into coverage instead of a forced 100%', () => 
   const report = buildFactorEvidence('oi_level', [...samples, ...samples.map((sample) => ({ ...sample, venue: 'bybit' }))], { minSamples: 1 });
   assert.equal(report.venues.find((venue) => venue.venue === 'binance')?.coveragePct, 50);
 });
+
+test('coverage accounting separates observed, valid, excluded and missing samples', () => {
+  const base = Math.floor(T0 / 60_000) * 60_000;
+  const rows: FactorSample[] = [];
+  for (let minute = 0; minute < 35; minute += 1) {
+    rows.push({
+      venue: 'binance', factor: 'oi_level', time: base + minute * 60_000, availableAt: base + minute * 60_000 + 500,
+      value: 100 + minute, unit: 'base', coveragePct: minute < 30 ? 100 : 0,
+    });
+  }
+  const report = buildFactorEvidence('oi_level', rows, { minSamples: 1, bucketMs: 60_000, maxGapMs: 600_000, minCoveragePct: 40, windowStart: base, windowEnd: base + 59 * 60_000 });
+  const venue = report.venues[0];
+  assert.equal(venue.expectedSamples, 60);
+  assert.equal(venue.observedSamples, 35);
+  assert.equal(venue.validSamples, 30);
+  assert.equal(venue.excludedSamples, 5);
+  assert.equal(venue.missingSamples, 25);
+  assert.equal(venue.timeCoveragePct, 58.33);
+  assert.equal(venue.validCoveragePct, 50);
+});

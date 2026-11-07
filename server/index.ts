@@ -204,7 +204,11 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
   const raw = [...factorSamplesFromSnapshots(snapshots.items), ...factorSamplesFromL2(l2.items)].filter((sample) => sample.factor === factor);
   // Factors that need per-venue spot/perp/cvd series not present in the journal stay empty
   // and therefore return `unavailable` rather than an inferred value.
-  const report = buildFactorEvidence(factor, resampleFactorSamples(raw, FACTOR_TIMEFRAMES[timeframe]));
+  const report = buildFactorEvidence(factor, resampleFactorSamples(raw, FACTOR_TIMEFRAMES[timeframe]), {
+    bucketMs: FACTOR_TIMEFRAMES[timeframe],
+    ...(start ? { windowStart: start } : {}),
+    ...(end ? { windowEnd: end } : {}),
+  });
   const truncated = snapshots.truncated || l2.truncated;
   const truncationReason = snapshots.reason ?? l2.reason;
   const researchComplete = !truncated && snapshots.scanned > 0;

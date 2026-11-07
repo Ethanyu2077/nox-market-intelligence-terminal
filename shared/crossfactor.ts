@@ -41,7 +41,21 @@ export interface FactorEvidence {
   unit: string;
   comparable: boolean;
   reasons: string[];
-  venues: Array<{ venue: string; samples: number; coveragePct: number; gaps: number; latest: number | null }>;
+  venues: Array<{
+    venue: string;
+    samples: number;
+    coveragePct: number;
+    gaps: number;
+    latest: number | null;
+    expectedSamples: number;
+    observedSamples: number;
+    validSamples: number;
+    excludedSamples: number;
+    missingSamples: number;
+    timeCoveragePct: number;
+    validCoveragePct: number;
+    sourceQuality: number;
+  }>;
   /** Both directions are always reported; the leader is never inferred from a sign. */
   directions: DirectionResult[];
   /** Every valid venue combination, each tested in both directions. */

@@ -20,6 +20,11 @@ export interface CrossFactorOptions {
   maxGapMs: number;
   maxGapRatio: number;
   outlierMad: number;
+  /** Expected cadence for coverage accounting (defaults to one minute). */
+  bucketMs: number;
+  /** Requested research window; expected samples are derived from it when provided. */
+  windowStart?: number;
+  windowEnd?: number;
 }
 
 export const DEFAULT_CROSS_FACTOR_OPTIONS: CrossFactorOptions = {
@@ -32,6 +37,7 @@ export const DEFAULT_CROSS_FACTOR_OPTIONS: CrossFactorOptions = {
   maxGapMs: 600_000,
   maxGapRatio: 0.25,
   outlierMad: 8,
+  bucketMs: 60_000,
 };
 
 interface Row { time: number; availableAt: number; value: number }
@@ -158,28 +164,51 @@ export function buildFactorEvidence(factor: CrossFactorId, samples: FactorSample
       intervals.push(delta);
       if (delta > options.maxGapMs) gaps += 1;
     }
-    const medianInterval = intervals.length ? [...intervals].sort((a, b) => a - b)[Math.floor(intervals.length / 2)] : null;
-    const span = sorted.length > 1 ? sorted[sorted.length - 1].time - sorted[0].time : 0;
-    // Coverage is observed density (rows / expected cadence) multiplied by declared quality,
-    // never an unconditional 100.
-    const expected = medianInterval && span > 0 ? span / medianInterval + 1 : sorted.length;
-    const density = Math.min(100, sorted.length / Math.max(1, expected) * 100);
+    const windowStart = options.windowStart ?? sorted[0]?.time ?? 0;
+    const windowEnd = options.windowEnd ?? sorted.at(-1)?.time ?? 0;
+    const span = Math.max(0, windowEnd - windowStart);
+    // Expected = the requested window divided by the research bucket; observed/valid are
+    // counted independently so a window is never marked 100% merely because received rows
+    // passed quality checks.
     const quality = sorted.reduce((sum, row) => sum + row.coveragePct, 0) / sorted.length;
+    const expected = span > 0 ? Math.floor(span / options.bucketMs) + 1 : (sorted.length ? 1 : 0);
+    const observed = sorted.length;
+    const valid = sorted.filter((row) => row.value != null && Number.isFinite(row.value) && row.coveragePct > 0).length;
+    const excluded = observed - valid;
+    const missing = Math.max(0, expected - observed);
+    const timeCoveragePct = expected > 0 ? Math.min(100, observed / expected * 100) : 0;
+    const validCoveragePct = expected > 0 ? Math.min(100, valid / expected * 100) : 0;
+ 
     return {
       venue,
       rows: sorted.map((row) => ({ time: row.time, availableAt: row.availableAt, value: row.value as number })),
-      coveragePct: density * quality / 100,
+      coveragePct: validCoveragePct,
       gaps,
       latest: sorted.at(-1)?.value ?? null,
+      expectedSamples: expected,
+      observedSamples: observed,
+      validSamples: valid,
+      excludedSamples: excluded,
+      missingSamples: missing,
+      timeCoveragePct,
+      validCoveragePct,
+      sourceQuality: quality,
     };
   });
-  const summary = venues.map((venue) => ({ venue: venue.venue, samples: venue.rows.length, coveragePct: Number(venue.coveragePct.toFixed(1)), gaps: venue.gaps, latest: venue.latest }));
+  const summary = venues.map((venue) => ({
+    venue: venue.venue, samples: venue.rows.length, coveragePct: Number(venue.coveragePct.toFixed(2)), gaps: venue.gaps, latest: venue.latest,
+    expectedSamples: venue.expectedSamples, observedSamples: venue.observedSamples, validSamples: venue.validSamples,
+    excludedSamples: venue.excludedSamples, missingSamples: venue.missingSamples,
+    timeCoveragePct: Number(venue.timeCoveragePct.toFixed(2)), validCoveragePct: Number(venue.validCoveragePct.toFixed(2)),
+    sourceQuality: Number(venue.sourceQuality.toFixed(2)),
+  }));
 
   const reasons: string[] = [];
   if (venues.length < 2) reasons.push('At least two venues are required');
   for (const venue of venues) {
     if (venue.rows.length < options.minSamples) reasons.push(`${venue.venue}: ${venue.rows.length} samples < ${options.minSamples}`);
-    if (venue.coveragePct < options.minCoveragePct) reasons.push(`${venue.venue}: coverage ${venue.coveragePct.toFixed(1)}% < ${options.minCoveragePct}%`);
+    if (venue.validCoveragePct < options.minCoveragePct) reasons.push(`${venue.venue}: valid coverage ${venue.validCoveragePct.toFixed(2)}% (${venue.validSamples}/${venue.expectedSamples}) < ${options.minCoveragePct}%`);
+    if (venue.sourceQuality < options.minCoveragePct) reasons.push(`${venue.venue}: source quality ${venue.sourceQuality.toFixed(1)}% < ${options.minCoveragePct}%`);
     const ratio = venue.rows.length > 1 ? venue.gaps / (venue.rows.length - 1) : 0;
     if (ratio > options.maxGapRatio) reasons.push(`${venue.venue}: ${venue.gaps} gaps exceed the allowed ratio`);
   }

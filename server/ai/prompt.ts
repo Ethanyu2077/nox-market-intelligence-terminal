@@ -173,11 +173,13 @@ export function parseBrief(
   const hypothesesRaw = Array.isArray(record.hypotheses) ? record.hypotheses : [];
   const hypotheses = hypothesesRaw.flatMap((item) => {
     const base = normalizeClaim(item);
-    if (!base) return [];
+    if (!base || !base.sources.some((id) => allowed.has(id))) return [];
+    const invalid = base.sources.filter((id) => !allowed.has(id));
+    if (invalid.length) warnings.push(`Dropped unknown citation(s) ${invalid.join(', ')} from a hypothesis claim.`);
     const invalidation = typeof (item as Record<string, unknown>).invalidation === 'string'
       ? ((item as Record<string, unknown>).invalidation as string).trim().slice(0, 500)
       : '';
-    return [{ ...base, invalidation }];
+    return [{ ...base, sources: base.sources.filter((id) => allowed.has(id)), invalidation }];
   }).slice(0, 3);
 
   const summary = typeof record.summary === 'string' ? record.summary.trim().slice(0, 800) : '';

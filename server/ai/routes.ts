@@ -247,6 +247,11 @@ export function installAiRoutes(app: Express, deps: AiDeps): void {
       if (!project) throw new AiRequestError(404, 'invalid-request', 'Project not found');
 
       const { report, venues } = await deps.evidence(project);
+      // A brief asserts a market view. If no venue returned a snapshot there is nothing to
+      // ground it in, and a model asked to fill the gap would invent one.
+      if (!venues?.snapshots?.length) {
+        throw new AiRequestError(409, 'evidence-unavailable', 'No venue snapshot is available for this project right now. Refresh the terminal and retry; no AI brief was generated.');
+      }
       const context = buildMarketContext(project, report, venues, Date.now(), Math.min(config.maxInputChars, 48_000));
       const model = config.defaultModel;
       const completion = await completeChat(config, key, {

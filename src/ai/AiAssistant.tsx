@@ -95,6 +95,7 @@ const ERRORS: Record<string, [string, string]> = {
   'network-error': ['无法连接 DeepSeek，请检查网络或代理。', 'Cannot reach DeepSeek. Check network or proxy.'],
   'upstream-error': ['DeepSeek 服务异常，请稍后重试。', 'DeepSeek service error. Retry shortly.'],
   'bad-response': ['返回数据格式异常。', 'The upstream response was malformed.'],
+  'evidence-unavailable': ['当前没有可用的交易所快照，未生成研判；请先刷新行情。', 'No venue snapshot is available, so no brief was generated. Refresh and retry.'],
   aborted: ['已停止。', 'Stopped.'],
 };
 const errorText = (code: AiErrorCode, language: Language) => (ERRORS[code] ?? ['请求失败。', 'Request failed.'])[language === 'zh' ? 0 : 1];

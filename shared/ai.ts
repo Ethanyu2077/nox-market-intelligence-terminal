@@ -101,7 +101,9 @@ export type AiErrorCode =
   | 'network-error'
   | 'upstream-error'
   | 'aborted'
-  | 'bad-response';
+  | 'bad-response'
+  /** No venue snapshot was available, so a structured brief would be speculation. */
+  | 'evidence-unavailable';
 
 /** JSON-mode answer contract for the "market brief" action. */
 export interface AiBriefClaim {

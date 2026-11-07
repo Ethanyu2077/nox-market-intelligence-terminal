@@ -105,7 +105,10 @@ export function completionsUrl(baseUrl: string): string {
  */
 export function resolveConfig(env: NodeJS.ProcessEnv = process.env): DeepSeekConfig {
   const apiKey = (env.DEEPSEEK_API_KEY ?? env.NOX_RESEARCH_AI_KEY ?? '').trim() || null;
-  const model = isModelId(env.DEEPSEEK_MODEL) ? env.DEEPSEEK_MODEL : isModelId(env.NOX_RESEARCH_AI_MODEL) ? env.NOX_RESEARCH_AI_MODEL : DEFAULT_MODEL;
+  // The legacy research route is opt-in; its model id must not leak into the DeepSeek
+  // default (a leftover NOX_RESEARCH_AI_MODEL=local-model produced a bogus default).
+  const legacyModel = env.NOX_RESEARCH_AI_ENABLED === 'true' && isModelId(env.NOX_RESEARCH_AI_MODEL) ? env.NOX_RESEARCH_AI_MODEL : null;
+  const model = isModelId(env.DEEPSEEK_MODEL) ? env.DEEPSEEK_MODEL : legacyModel ?? DEFAULT_MODEL;
   const baseUrl = normalizeBaseUrl(env.DEEPSEEK_BASE_URL);
   return {
     apiKey,

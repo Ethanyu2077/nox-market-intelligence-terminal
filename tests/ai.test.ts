@@ -200,11 +200,12 @@ test('brief parser drops unknown citations and keeps grounded claims', () => {
     summary: 'OI down with price.',
     observed: [{ text: 'Price -1.12%', sources: ['S1'] }, { text: 'Invented', sources: ['S9'] }, { text: 'No source', sources: [] }],
     inferences: [{ text: 'Deleveraging', sources: ['S1', 'S8'] }],
-    hypotheses: [{ text: 'Longs exiting', sources: ['S1'], invalidation: 'OI recovers with price' }],
+    hypotheses: [{ text: 'Longs exiting', sources: ['S1'], invalidation: 'OI recovers with price' }, { text: 'Invented hypothesis', sources: ['S7'], invalidation: 'n/a' }],
     risks: [], missingData: ['Liquidation feed not covered'],
   }), context, { projectId: 'p1', model: 'deepseek-chat', keySource: 'server', usage: null });
   assert.equal(brief.observed.length, 1);
   assert.deepEqual(brief.inferences[0].sources, ['S1']);
+  assert.equal(brief.hypotheses.length, 1, 'hypotheses with only unknown citations must be dropped');
   assert.equal(brief.hypotheses[0].invalidation, 'OI recovers with price');
   assert.ok(brief.warnings.some((warning) => warning.includes('S9')));
   assert.ok(brief.warnings.some((warning) => warning.includes('S8')));

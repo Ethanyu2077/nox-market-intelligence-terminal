@@ -46,6 +46,8 @@ import { venueBreakers } from './venue-health.ts';
 import { isDepthVenue, orderBookSnapshot } from './orderbook.ts';
 import { capabilityRegistry } from './capability-registry.ts';
 import { acquireL2 } from './l2/feed.ts';
+import { analyzeLeadLag } from './leadlag.ts';
+import type { PriceSample } from '../shared/leadlag.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
 
@@ -141,6 +143,38 @@ app.get('/api/projects/:id/regimes-v2',safe(async(req,res)=>{
   const records=eventId.data?(await history.page(String(req.params.id),{kind:'regime',id:eventId.data,limit:1})).items:(await history.page(String(req.params.id),{kind:'regime',source:'nox.regime.v2',regimeInterval:interval.data,summarizeRegime:true,limit:100})).items.reverse();
   const reports=records.filter(e=>e.source==='nox.regime.v2'&&(e.payload as RegimeReport).interval===interval.data).slice(-100).map(e=>e.payload as RegimeReport);
   res.json({items:eventId.data?reports:reports.map(r=>({...r,venues:r.venues.map(v=>({...v,inputSnapshotCount:v.input.snapshots?.length??v.inputSnapshotCount??0,input:{...v.input,snapshots:[],perpBuckets:[],spotBuckets:[]}}))})),historicalEdge:null,inputsIncluded:!!eventId.data});
+}));
+app.post('/api/projects/:id/research/leadlag', safe(async (req, res) => {
+  const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
+  if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
+  const body = z.object({
+    venueA: exchangeSchema,
+    venueB: exchangeSchema,
+    windowMs: z.number().int().min(60_000).max(3_600_000).optional(),
+    horizonMs: z.number().int().min(60_000).max(3_600_000).optional(),
+    maxDelayMs: z.number().int().min(0).max(300_000).optional(),
+    costBpsPerSide: z.number().min(0).max(100).optional(),
+  }).parse(req.body);
+  // Samples come from the locally collected snapshot journal: event time, ingest time and
+  // price are recorded separately, so feed delay is measured rather than assumed.
+  const page = await history.page(project.id, { kind: 'snapshot', limit: 2000 });
+  const samples = new Map<string, PriceSample[]>();
+  for (const entry of page.items) {
+    const payload = entry.payload as { snapshots?: Array<{ exchange: string; eventTime: number; price: number | null }> };
+    for (const snapshot of payload?.snapshots ?? []) {
+      if (snapshot.price == null || !Number.isFinite(snapshot.price)) continue;
+      const rows = samples.get(snapshot.exchange) ?? [];
+      rows.push({ venue: snapshot.exchange, time: snapshot.eventTime, availableAt: entry.ingestTime, price: snapshot.price });
+      samples.set(snapshot.exchange, rows);
+    }
+  }
+  const report = analyzeLeadLag({
+    venueA: body.venueA,
+    venueB: body.venueB,
+    samplesA: (samples.get(body.venueA) ?? []).sort((a, b) => a.time - b.time),
+    samplesB: (samples.get(body.venueB) ?? []).sort((a, b) => a.time - b.time),
+  }, { ...(body.windowMs ? { windowMs: body.windowMs } : {}), ...(body.horizonMs ? { horizonMs: body.horizonMs } : {}), ...(body.maxDelayMs != null ? { maxDelayMs: body.maxDelayMs } : {}), ...(body.costBpsPerSide != null ? { costBpsPerSide: body.costBpsPerSide } : {}) });
+  res.json(report);
 }));
 app.get('/api/projects/:id/signal-lab', safe(async (req, res) => {
   const query = z.object({ horizon: z.coerce.number().int().min(5).max(1440).default(60), costBps: z.coerce.number().min(0).max(1000).default(10), asOf: z.coerce.number().finite().min(1e12).optional() }).parse(req.query);

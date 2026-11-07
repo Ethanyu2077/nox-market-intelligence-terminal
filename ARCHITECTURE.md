@@ -2,6 +2,14 @@
 
 For the current V2.2 incremental data/auth/regime architecture and its explicitly unverified production boundaries, see [V2_2_IMPLEMENTATION.md](V2_2_IMPLEMENTATION.md). This note retains the initial-stage architecture audit below.
 
+## Lead-lag research boundary (2026-11)
+
+`server/leadlag.ts` is a pure analysis over locally collected snapshots. Decisions may only use
+samples whose `availableAt` (ingest) has passed; forward outcomes require data observed strictly
+after the decision; lag and parameters are chosen on the first 70% and evaluated on the unseen
+30% with fees, baselines, sensitivity and bootstrap intervals. Insufficient samples or unstable
+results return `descriptive`/`insufficient`, never a trading claim.
+
 ## L2 boundary (2026-11)
 
 `server/l2/` maintains a sequence-validated continuous book (REST snapshot + deltas) for

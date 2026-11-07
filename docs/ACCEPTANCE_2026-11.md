@@ -187,3 +187,19 @@
 | 故障恢复（断线/REST 失败/DB 不可写/进程重启） | **NOT VERIFIED** | 未执行 |
 | 真实历史持久化与 Journal/Timescale 一致性 | **NOT VERIFIED** | 无真实采集数据 |
 | 冻结数据集 + SHA256 + 两次复现 | **NOT IMPLEMENTED** | 依赖真实采集与实例 |
+
+## 2026-11 增补（部署验证轮）
+
+执行环境：本机 macOS，未安装 Docker（`docker` 不存在），无 TimescaleDB 实例。
+
+| 项目 | 状态 | 证据/原因 |
+| --- | --- | --- |
+| Soak 提前结束/无数据判定 | TESTED | 提前结束与 15s 无数据 → FAIL；单次读取超时；每所独立 AbortController |
+| 管理员会话复用 | TESTED | 单 Cookie 复用；401 重认证一次；403 停止；reset 后重登 |
+| Docker Timescale 部署 | **NOT VERIFIED** | `docker` 命令不存在，未启动实例 |
+| Timescale READ/WRITE/CONNECTION/PROCESS RESTART | **NOT VERIFIED** | 无实例 |
+| Binance/Bybit/OKX 30 分钟采集 | **NOT VERIFIED** | 未执行；不得缩短冒充 |
+| 真实持久化 / Journal-Timescale 一致 | **NOT VERIFIED** | 无采集与实例 |
+| 冻结数据集 + SHA256 | **NOT IMPLEMENTED** | 依赖真实采集 |
+| 两次研究复现 | **NOT IMPLEMENTED** | 同上 |
+| 24 小时 soak | **NOT VERIFIED** | 30 分钟尚未通过 |

@@ -117,7 +117,8 @@ const safe = (handler: express.RequestHandler): express.RequestHandler => async 
   }
 };
 const flowQuery = z.object({ interval: z.enum(['1m', '5m', '15m', '1h', '4h']).default('1m'), reset: z.enum(['window', 'utc-day', 'utc-hour']).default('window'), at: z.coerce.number().finite().min(1e12).optional() });
-app.get('/api/operations', (_req, res) => res.json({ storage: history.status(), archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
+app.get('/api/operations', (_req, res) => res.json({
+  l2Collection: l2Collector.health(), storage: history.status(), archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
 app.get('/api/projects/:id/event-study',safe(async(req,res)=>{
   const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}
   const parsed=z.object({horizon:z.coerce.number().refine(v=>[15,60,240,1440].includes(v)).default(60),interval:z.enum(['5m','15m','1h','4h']).optional(),venue:exchangeSchema.optional(),label:z.string().max(100).optional(),minQuality:z.coerce.number().min(0).max(100).default(0),concentration:z.enum(['all','high','low']).default('all'),days:z.coerce.number().int().min(1).max(30).default(7),asOf:z.coerce.number().finite().min(1e12).optional()}).safeParse(req.query);

@@ -101,3 +101,58 @@ test('flush persists open buckets as incomplete audit records', async () => {
   assert.ok(bucket.exclusionReasons.includes('incomplete-bucket'));
   collector.stop();
 });
+
+test('health tracks sampling, writes, open buckets and flush', async () => {
+  const collector = new L2Collector(() => [project('active')], {} as never, {
+    intervalMs: 1_000, buckets: [5_000],
+    acquire: () => ({ release: () => undefined, snapshot: () => snapshot() }),
+    append: async () => undefined,
+  });
+  await collector.tick(1_000);
+  const health = collector.health();
+  assert.ok(health.sampled > 0);
+  assert.equal(health.activeFeeds, 1);
+  assert.ok(health.pendingBuckets > 0);
+  await collector.flush(2_000);
+  assert.equal(collector.health().writes, 1);
+  assert.equal(collector.health().pendingBuckets, 0);
+  collector.stop();
+});
+
+test('a failed journal write is retried on the next tick', async () => {
+  let attempts = 0;
+  const collector = new L2Collector(() => [project('active')], {} as never, {
+    intervalMs: 1_000, buckets: [1_000],
+    acquire: () => ({ release: () => undefined, snapshot: () => snapshot() }),
+    append: async () => { attempts += 1; if (attempts === 1) throw new Error('disk full'); },
+  });
+  await collector.tick(1_000);
+  await collector.tick(2_000).catch(() => undefined);
+  assert.equal(collector.health().writeFailures, 1);
+  assert.ok(collector.health().pendingRetries >= 1);
+  await collector.tick(3_000);
+  assert.equal(collector.health().pendingRetries, 0);
+  assert.ok(collector.health().writes >= 1);
+  collector.stop();
+});
+
+test('pausing a project releases its feed and resuming acquires a new one', async () => {
+  let mode: 'active' | 'paused' = 'active';
+  let acquired = 0, released = 0;
+  const collector = new L2Collector(() => [project(mode)], {} as never, {
+    intervalMs: 1_000, buckets: [5_000],
+    acquire: () => { acquired += 1; return { release: () => { released += 1; }, snapshot: () => snapshot() }; },
+    append: async () => undefined,
+  });
+  await collector.tick(1_000);
+  assert.equal(acquired, 1);
+  assert.equal(released, 0);
+  mode = 'paused';
+  await collector.tick(2_000);
+  assert.equal(released, 1);
+  assert.equal(collector.health().activeFeeds, 0);
+  mode = 'active';
+  await collector.tick(3_000);
+  assert.equal(acquired, 2);
+  collector.stop();
+});

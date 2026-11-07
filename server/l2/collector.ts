@@ -96,6 +96,11 @@ export class L2Collector {
   private feeds = new Map<string, FeedHandle>();
   private buckets = new Map<string, BucketState>();
   private lastSequence = new Map<string, { epoch: number; last: number }>();
+  private retries: Array<{ key: string; bucket: BucketState; bucketMs: number }> = [];
+  private sampled = 0;
+  private writes = 0;
+  private writeFailures = 0;
+  private lastPersistAt: number | null = null;
   private readonly acquire: NonNullable<L2CollectorDeps['acquire']>;
   private readonly append: NonNullable<L2CollectorDeps['append']>;
   private readonly intervalMs: number;
@@ -129,12 +134,33 @@ export class L2Collector {
   private async appendBucket(key: string, bucket: BucketState, bucketMs: number, now: number, incomplete: boolean): Promise<void> {
     const [projectId, venue, symbol] = key.split(':');
     const metric = aggregateBucket(projectId, venue as L2BucketMetric['venue'], symbol, bucket.samples, bucketMs, bucket.start, this.intervalMs, now, bucket.staleSkipped, incomplete);
-    await this.append({
-      id: `l2_${projectId}_${venue}_${symbol}_${bucketMs}_${bucket.start}`,
-      kind: 'l2', marketKey: `${venue}:perpetual:${symbol}`, projectId,
-      eventTime: metric.eventTime, ingestTime: metric.receivedAt,
-      source: `l2:${venue}`, quality: metric.researchUsable ? 'verified' : 'unverified', payload: metric,
-    });
+    try {
+      await this.append({
+        id: `l2_${projectId}_${venue}_${symbol}_${bucketMs}_${bucket.start}`,
+        kind: 'l2', marketKey: `${venue}:perpetual:${symbol}`, projectId,
+        eventTime: metric.eventTime, ingestTime: metric.receivedAt,
+        source: `l2:${venue}`, quality: metric.researchUsable ? 'verified' : 'unverified', payload: metric,
+      });
+      this.writes += 1;
+      this.lastPersistAt = now;
+    } catch (error) {
+      this.writeFailures += 1;
+      this.retries = [...this.retries, { key, bucket, bucketMs }];
+      throw error;
+    }
+  }
+
+  /** Collector health for operations: sampling, writes, retries and open buckets. */
+  health() {
+    return {
+      sampled: this.sampled,
+      writes: this.writes,
+      writeFailures: this.writeFailures,
+      pendingBuckets: this.buckets.size,
+      pendingRetries: this.retries.length,
+      lastPersistAt: this.lastPersistAt,
+      activeFeeds: this.feeds.size,
+    };
   }
 
   stop(): void {
@@ -146,10 +172,10 @@ export class L2Collector {
   }
 
   /** One sampling tick; exported for tests with an explicit clock. */
-  async tick(now = Date.now()): Promise<L2BucketMetric[]> {
+  async tick(now = Date.now()): Promise<void> {
     const active = this.projects().filter((project) => !project.archived && project.monitoring.streamingEnabled && project.monitoring.collectionMode === 'active');
     const wanted = new Set<string>();
-    const persisted: L2BucketMetric[] = [];
+    const persisted: Array<{ key: string; bucket: BucketState; bucketMs: number }> = [];
 
     for (const project of active) {
       for (const market of project.markets) {
@@ -175,11 +201,11 @@ export class L2Collector {
           let bucket = this.buckets.get(bucketKey);
           const start = Math.floor(now / bucketMs) * bucketMs;
           if (!bucket || bucket.start !== start) {
-            if (bucket && bucket.samples.length) persisted.push(aggregateBucket(project.id, market.exchange as L2BucketMetric['venue'], market.symbol, bucket.samples, bucketMs, bucket.start, this.intervalMs, now, bucket.staleSkipped));
+            if (bucket && bucket.samples.length) persisted.push({ key, bucket, bucketMs });
             bucket = { start, samples: [], staleSkipped: 0 };
             this.buckets.set(bucketKey, bucket);
           }
-          if (advanced) bucket.samples = [...bucket.samples, snapshot].slice(-Math.round(bucketMs / this.intervalMs));
+          if (advanced) { bucket.samples = [...bucket.samples, snapshot].slice(-Math.round(bucketMs / this.intervalMs)); this.sampled += 1; }
           else bucket.staleSkipped += 1;
         }
       }
@@ -194,20 +220,20 @@ export class L2Collector {
         for (const [bucketKey, bucket] of [...this.buckets.entries()]) {
           if (!bucketKey.startsWith(`${key}:`)) continue;
           const bucketMs = Number(bucketKey.split(':').at(-1));
-          void this.appendBucket(key, bucket, bucketMs, now, true);
+          void this.appendBucket(key, bucket, bucketMs, now, true).catch(() => undefined);
           this.buckets.delete(bucketKey);
         }
       }
     }
 
-    for (const metric of persisted) {
-      await this.append({
-        id: `l2_${metric.projectId}_${metric.venue}_${metric.symbol}_${metric.bucketMs}_${metric.bucketStart}`,
-        kind: 'l2', marketKey: `${metric.venue}:perpetual:${metric.symbol}`, projectId: metric.projectId,
-        eventTime: metric.eventTime, ingestTime: metric.receivedAt,
-        source: `l2:${metric.venue}`, quality: metric.verified ? 'verified' : 'unverified', payload: metric,
-      });
+    // Retry audit writes that failed previously (at-least-once, idempotent event ids).
+    for (const entry of [...this.retries]) {
+      try { await this.appendBucket(entry.key, entry.bucket, entry.bucketMs, now, true); this.retries = this.retries.filter((item) => item !== entry); }
+      catch { /* keep for the next tick */ }
     }
-    return persisted;
+    for (const entry of persisted) {
+      // Failures are counted and queued for retry; they never lose the audit record.
+      await this.appendBucket(entry.key, entry.bucket, entry.bucketMs, now, false).catch(() => undefined);
+    }
   }
 }

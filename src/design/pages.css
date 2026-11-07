@@ -276,3 +276,27 @@
   .app-shell .kpi-strip .kpi:nth-child(-n + 4) { border-bottom: 1px solid var(--line) !important; }
   .app-shell .page-head { flex-direction: column; align-items: stretch; }
 }
+
+/* Cross-exchange evidence */
+.cx-panel { margin-top: 16px; }
+.cx-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.cx-controls label { display: flex; flex-direction: column; gap: 4px; font: 10px var(--mono); color: var(--faint); text-transform: uppercase; }
+.cx-controls select { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; font: 11px var(--mono); }
+.cx-meta { margin-left: auto; color: var(--faint); font: 10px var(--mono); }
+.cx-status { font: 10px var(--mono); padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); text-transform: uppercase; }
+.cx-status.descriptive { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.cx-status.unavailable, .cx-status.insufficient { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.cx-table td, .cx-table th { font-size: 11px; }
+.cx-table tr.selected td { background: var(--surface-2); }
+.cx-oos { color: var(--warn); font: 9.5px var(--mono); }
+.cx-empty { padding: 16px; color: var(--muted); font-size: 12px; }
+.cx-empty ul, .cx-columns ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 11px; }
+.cx-detail { padding: 12px 14px; border-top: 1px solid var(--line); }
+.cx-detail-head { display: flex; justify-content: space-between; margin-bottom: 8px; font: 11px var(--mono); }
+.cx-detail table { width: 100%; border-collapse: collapse; }
+.cx-detail th, .cx-detail td { text-align: left; padding: 4px 6px; font: 10.5px var(--mono); border-bottom: 1px solid var(--line); }
+.cx-detail tr.selected td { color: var(--accent); }
+.cx-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+.cx-columns h4 { font: 10px var(--mono); color: var(--faint); text-transform: uppercase; margin: 0; }
+.cx-note { margin-top: 12px; color: var(--faint); font-size: 11px; line-height: 1.6; }
+@media (max-width: 860px) { .cx-columns { grid-template-columns: 1fr; } }

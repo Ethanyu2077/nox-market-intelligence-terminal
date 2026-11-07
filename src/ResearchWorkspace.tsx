@@ -5,6 +5,7 @@ import type { MarketProject, ProjectVenueResponse } from '../shared/types';
 import type { SignalEvent } from '../shared/research';
 import { INITIAL_RESEARCH_LAYOUT as INITIAL, RESEARCH_PANELS as PANELS, validLayout, type ResearchPanel as Panel } from '../shared/research-layout';
 import { ResearchAssistantPanel } from './ai/ResearchAssistantPanel';
+import { CrossExchangePanel } from './CrossExchangePanel';
 
 /**
  * Draggable research workspace. Panels share one project context; the assistant panel is
@@ -167,6 +168,7 @@ export function ResearchWorkspace({ project, data, chart, language }: { project:
           </div>
         </div>
       )}
+      <CrossExchangePanel project={project} language={language} />
     </section>
   );
 }

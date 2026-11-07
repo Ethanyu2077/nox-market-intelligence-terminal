@@ -23,3 +23,15 @@
 - 代码与单元测试层面：L2 序列、完整性、Lead-Lag 时间语义、多因子可比性门槛均有覆盖。
 - 真实验收层面：仅 Bybit/OKX 的连续 L2 同步完成；其余项目按上表标记 **NOT VERIFIED**，不得宣称已验收。
 - 下一步需要：可访问 Binance REST 的网络、一个可丢弃的 TimescaleDB 实例、以及冻结的样本集来复现 lead-lag。
+
+## 2026-11 增补（正确性审计第二轮）
+
+| 项目 | 结果 | 说明 |
+| --- | --- | --- |
+| 因子单位化（相对变化 vs 差值）、零/负/跨零、MAD 异常值 | PASS | 单元测试覆盖；`oi_level` 用有保护的相对变化，`oi_delta`/`funding_basis` 用差值 |
+| 全部交易所组合双向 Lead-Lag | PASS | 组合遍历 + 每个组合双向、多 lag；多重假设计数与 Bonferroni 提示 |
+| Fold 审计（含每折独立 Selected Lag） | PASS | `FoldResult` 记录 trainStart/trainEnd/purgedTrain/selectedLagMs |
+| Book Epoch 与跨 Epoch 序列保护 | PASS | 快照重建递增 epoch；collector 按 epoch 比较序列，跨 epoch 桶标记 `epoch-change` |
+| 关闭/暂停时桶处理 | PASS | `flush()` 将未完成桶写入审计记录（`incomplete-bucket`） |
+| 真实历史冻结样本复现 | **NOT VERIFIED** | 本机没有可授权的真实历史导出；现有回归全部为确定性合成 fixture，不得冒充真实复现 |
+| Cross-Exchange Evidence Panel UI | **NOT IMPLEMENTED** | 本轮只完成分析层；面板仍待开发 |

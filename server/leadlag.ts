@@ -172,11 +172,16 @@ function walkForward(a: PriceSample[], b: PriceSample[], options: LeadLagOptions
     selectedLagMs = selectedLagMs ?? selection.lagMs;
     const { pairs } = buildPairs(a, b, options, lag);
     // Purge training outcomes that reach into the test window.
-    const train = pairs.filter((pair) => pair.decisionTime + options.horizonMs + lag < trainEnd);
-    const test = pairs.filter((pair) => pair.decisionTime >= testStart && pair.decisionTime < testEnd);
+    const trainAll = pairs.filter((pair) => pair.decisionTime < trainEnd);
+    const train = trainAll.filter((pair) => pair.decisionTime + options.horizonMs + lag < trainEnd);
+    // Strategy and all baselines share one common decision set: a missing momentum input
+    // removes the decision from every side, so hit rates are always comparable.
+    const test = pairs.filter((pair) => pair.decisionTime >= testStart && pair.decisionTime < testEnd && pair.priorReturn != null);
     oosPairs.push(...test);
     folds.push({
+      trainStart: times[0], trainEnd,
       testStart, testEnd,
+      purgedTrain: trainAll.length - train.length,
       trainSamples: train.length,
       testSamples: test.length,
       selectedLagMs: selection.lagMs,
@@ -216,7 +221,7 @@ export function analyzeLeadLag(input: LeadLagInput, overrides: Partial<LeadLagOp
   for (const pair of oosPairs) {
     alwaysLong.push(pair.forwardReturn - cost);
     randomized.push((random() < 0.5 ? -1 : 1) * pair.forwardReturn - cost);
-    if (pair.priorReturn != null) momentum.push(Math.sign(pair.priorReturn) * pair.forwardReturn - cost);
+    momentum.push(Math.sign(pair.priorReturn as number) * pair.forwardReturn - cost);
   }
   const baselines = [baseline('momentum', momentum), baseline('always-long', alwaysLong), baseline('randomized', randomized)];
   const bestBaseline = Math.max(...baselines.map((row) => row.hitRate ?? 0));

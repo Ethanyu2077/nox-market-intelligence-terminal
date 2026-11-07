@@ -442,6 +442,6 @@ const server = app.listen(port, '127.0.0.1', () => console.log(`NOX API listenin
   }
 }
 let shuttingDown = false;
-const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
+const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; try { await l2Collector.flush(); } catch { /* audit flush best effort */ } l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

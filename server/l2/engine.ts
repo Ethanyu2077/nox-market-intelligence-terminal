@@ -57,6 +57,7 @@ export class L2Book {
   private syncedAt: number | null = null;
   private lastMessageAt: number | null = null;
   private lastValidUpdate: number | null = null;
+  private epoch = 0;
   private eventTime = 0;
   private needStraddle = false;
   private lastPu: number | null = null;
@@ -89,6 +90,7 @@ export class L2Book {
     this.syncedAt = now;
     this.lastMessageAt = now;
     this.lastValidUpdate = snapshot.sequence.last;
+    this.epoch += 1;
     this.needStraddle = this.venue === 'binance';
     this.lastPu = null;
     if (this.venue === 'okx') this.checksumState = 'unchecked';
@@ -230,6 +232,7 @@ export class L2Book {
       syncedAt: this.syncedAt,
       lastMessageAt: this.lastMessageAt,
       lastValidUpdate: this.lastValidUpdate,
+      epoch: this.epoch,
       gaps: this.gaps,
       resyncs: this.resyncs,
       integrity,

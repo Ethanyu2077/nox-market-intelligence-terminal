@@ -9,7 +9,7 @@ const snapshot = (over: Partial<L2Snapshot> = {}): L2Snapshot => ({
   bids: [{ price: 100, quantity: 1, notional: 100 }], asks: [{ price: 101, quantity: 1, notional: 101 }],
   bestBid: 100, bestAsk: 101, midPrice: 100.5, spreadBps: 99.5, bidDepthUsd: 100, askDepthUsd: 100, imbalancePct: 0,
   eventTime: 1_000, syncedAt: 1_000, lastMessageAt: 1_000, lastValidUpdate: 2, gaps: 0, resyncs: 0,
-  integrity: 'ok', verified: true, limitations: [], ...over,
+  integrity: 'ok', verified: true, epoch: 1, limitations: [], ...over,
 });
 
 const project = (mode: 'active' | 'standard' | 'paused'): MarketProject => ({
@@ -74,5 +74,30 @@ test('an unchanged book is not counted twice as a fresh sample', async () => {
   assert.ok(bucket.staleSkipped >= 1);
   assert.equal(bucket.researchUsable, false);
   assert.ok(bucket.exclusionReasons.includes('stale-sequence-skipped'));
+  collector.stop();
+});
+
+test('a bucket spanning two book epochs is audit-only', () => {
+  const bucket = aggregateBucket('p1', 'binance', 'BTCUSDT', [snapshot({ epoch: 1 }), snapshot({ epoch: 2 })], 5_000, 1_000, 1_000, 6_000);
+  assert.equal(bucket.researchUsable, false);
+  assert.ok(bucket.exclusionReasons.includes('epoch-change'));
+  assert.deepEqual(bucket.epochs, [1, 2]);
+  assert.equal(bucket.epochChanges, 1);
+});
+
+test('flush persists open buckets as incomplete audit records', async () => {
+  const appended: Array<{ payload: unknown }> = [];
+  const collector = new L2Collector(() => [project('active')], {} as never, {
+    intervalMs: 1_000,
+    buckets: [5_000],
+    acquire: () => ({ release: () => undefined, snapshot: () => snapshot() }),
+    append: async (event) => { appended.push({ payload: event.payload }); },
+  });
+  await collector.tick(1_000);
+  await collector.flush(2_000);
+  assert.equal(appended.length, 1);
+  const bucket = appended[0].payload as { researchUsable: boolean; exclusionReasons: string[] };
+  assert.equal(bucket.researchUsable, false);
+  assert.ok(bucket.exclusionReasons.includes('incomplete-bucket'));
   collector.stop();
 });

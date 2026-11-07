@@ -115,3 +115,12 @@ test('Bybit: a fresh snapshot rebuilds the book and resets the sequence', () => 
   assert.equal(s.sequence.last, 20);
   assert.equal(s.state, 'live');
 });
+
+test('every snapshot rebuild advances the book epoch', () => {
+  const book = new L2Book('binance', 'BTCUSDT', () => 2_000);
+  book.applySnapshot({ ...snap(100), eventTime: 2_000 });
+  assert.equal(book.snapshot(2_000).epoch, 1);
+  book.applySnapshot({ ...snap(200), eventTime: 2_000 });
+  assert.equal(book.snapshot(2_000).epoch, 2);
+  assert.equal(book.snapshot(2_000).sequence.last, 200);
+});

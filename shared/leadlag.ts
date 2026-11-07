@@ -43,10 +43,15 @@ export interface Baseline { name: string; samples: number; hitRate: number | nul
 export interface Uncertainty { hitRate: [number, number] | null; meanNetPct: [number, number] | null; blockSize: number }
 
 export interface FoldResult {
+  trainStart: number;
+  trainEnd: number;
   testStart: number;
   testEnd: number;
+  /** Training pairs removed because their outcome would overlap the test window. */
+  purgedTrain: number;
   trainSamples: number;
   testSamples: number;
+  /** Lag selected on this fold's training data only. */
   selectedLagMs: number | null;
   hitRate: number | null;
   meanNetPct: number | null;

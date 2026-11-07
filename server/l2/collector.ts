@@ -19,7 +19,7 @@ import { acquireL2 } from './feed.ts';
 const VENUES = new Set(['binance', 'bybit', 'okx']);
 const INTEGRITY_RANK: Record<L2Snapshot['integrity'], number> = { ok: 0, 'checksum-unchecked': 1, 'checksum-failed': 2, gap: 3, unknown: 4 };
 
-export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'], symbol: string, samples: L2Snapshot[], bucketMs: number, bucketStart: number, intervalMs: number, receivedAt: number, staleSkipped = 0): L2BucketMetric {
+export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'], symbol: string, samples: L2Snapshot[], bucketMs: number, bucketStart: number, intervalMs: number, receivedAt: number, staleSkipped = 0, incomplete = false): L2BucketMetric {
   const first = samples[0], last = samples[samples.length - 1];
   const mean = (pick: (row: L2Snapshot) => number | null): number | null => {
     const values = samples.map(pick).filter((value): value is number => value != null && Number.isFinite(value));
@@ -40,6 +40,9 @@ export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'
   const coveragePct = Math.min(100, samples.length / Math.max(1, Math.round(bucketMs / intervalMs)) * 100);
   if (coveragePct < 80) reasons.push('low-coverage');
   if (staleSkipped > 0) reasons.push('stale-sequence-skipped');
+  const epochs = [...new Set(samples.map((row) => row.epoch))];
+  if (epochs.length > 1) reasons.push('epoch-change');
+  if (incomplete) reasons.push('incomplete-bucket');
   let maxGap: number | null = null;
   for (let index = 1; index < samples.length; index += 1) {
     const gap = samples[index].lastMessageAt != null && samples[index - 1].lastMessageAt != null ? (samples[index].lastMessageAt as number) - (samples[index - 1].lastMessageAt as number) : null;
@@ -66,6 +69,8 @@ export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'
     exclusionReasons: reasons,
     maxSampleGapMs: maxGap,
     staleSkipped,
+    epochs,
+    epochChanges: Math.max(0, epochs.length - 1),
     integrity: samples.reduce<L2Snapshot['integrity']>((worst, row) => INTEGRITY_RANK[row.integrity] > INTEGRITY_RANK[worst] ? row.integrity : worst, 'ok'),
     verified: samples.every((row) => row.verified),
     sequenceLast: last?.sequence.last ?? null,
@@ -90,7 +95,7 @@ export class L2Collector {
   private timer: NodeJS.Timeout | null = null;
   private feeds = new Map<string, FeedHandle>();
   private buckets = new Map<string, BucketState>();
-  private lastSequence = new Map<string, number>();
+  private lastSequence = new Map<string, { epoch: number; last: number }>();
   private readonly acquire: NonNullable<L2CollectorDeps['acquire']>;
   private readonly append: NonNullable<L2CollectorDeps['append']>;
   private readonly intervalMs: number;
@@ -110,6 +115,26 @@ export class L2Collector {
     if (this.timer) return;
     this.timer = setInterval(() => { void this.tick().catch(() => undefined); }, this.intervalMs);
     this.timer.unref?.();
+  }
+
+  /** Persist every open bucket as an audit-only (research-unusable) record. */
+  async flush(now = Date.now()): Promise<void> {
+    for (const [bucketKey, bucket] of [...this.buckets.entries()]) {
+      const bucketMs = Number(bucketKey.split(':').at(-1));
+      await this.appendBucket(bucketKey.split(':').slice(0, -1).join(':'), bucket, bucketMs, now, true);
+      this.buckets.delete(bucketKey);
+    }
+  }
+
+  private async appendBucket(key: string, bucket: BucketState, bucketMs: number, now: number, incomplete: boolean): Promise<void> {
+    const [projectId, venue, symbol] = key.split(':');
+    const metric = aggregateBucket(projectId, venue as L2BucketMetric['venue'], symbol, bucket.samples, bucketMs, bucket.start, this.intervalMs, now, bucket.staleSkipped, incomplete);
+    await this.append({
+      id: `l2_${projectId}_${venue}_${symbol}_${bucketMs}_${bucket.start}`,
+      kind: 'l2', marketKey: `${venue}:perpetual:${symbol}`, projectId,
+      eventTime: metric.eventTime, ingestTime: metric.receivedAt,
+      source: `l2:${venue}`, quality: metric.researchUsable ? 'verified' : 'unverified', payload: metric,
+    });
   }
 
   stop(): void {
@@ -140,9 +165,11 @@ export class L2Collector {
         try { snapshot = feed.snapshot(); } catch { continue; }
         if (snapshot.state === 'unavailable' || snapshot.sequence.last == null) continue;
         // Never reuse an unchanged book as a fresh observation.
-        const previousSequence = this.lastSequence.get(key);
-        const advanced = previousSequence == null || snapshot.sequence.last > previousSequence;
-        if (advanced) this.lastSequence.set(key, snapshot.sequence.last);
+        const previous = this.lastSequence.get(key);
+        // A new epoch means the book was rebuilt: sequence ids from the old epoch must not
+        // be compared with the new one.
+        const advanced = previous == null || previous.epoch !== snapshot.epoch || snapshot.sequence.last > previous.last;
+        if (advanced) this.lastSequence.set(key, { epoch: snapshot.epoch, last: snapshot.sequence.last });
         for (const bucketMs of this.bucketSizes) {
           const bucketKey = `${key}:${bucketMs}`;
           let bucket = this.buckets.get(bucketKey);
@@ -160,7 +187,17 @@ export class L2Collector {
 
     // Release feeds for projects/markets that stopped being active.
     for (const [key, feed] of this.feeds) {
-      if (!wanted.has(key)) { feed.release(); this.feeds.delete(key); this.lastSequence.delete(key); }
+      if (!wanted.has(key)) {
+        feed.release();
+        this.feeds.delete(key);
+        this.lastSequence.delete(key);
+        for (const [bucketKey, bucket] of [...this.buckets.entries()]) {
+          if (!bucketKey.startsWith(`${key}:`)) continue;
+          const bucketMs = Number(bucketKey.split(':').at(-1));
+          void this.appendBucket(key, bucket, bucketMs, now, true);
+          this.buckets.delete(bucketKey);
+        }
+      }
     }
 
     for (const metric of persisted) {

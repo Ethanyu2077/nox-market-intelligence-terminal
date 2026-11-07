@@ -41,6 +41,8 @@ export interface L2Snapshot {
   /** True only when completeness is confirmed (sequence valid and, for OKX, checksum matched). */
   verified: boolean;
   lastValidUpdate: number | null;
+  /** Increments every time the book is rebuilt from a snapshot. */
+  epoch: number;
   limitations: string[];
 }
 
@@ -77,6 +79,8 @@ export interface L2BucketMetric {
   exclusionReasons: string[];
   maxSampleGapMs: number | null;
   staleSkipped: number;
+  epochs: number[];
+  epochChanges: number;
   integrity: L2Snapshot['integrity'];
   verified: boolean;
   sequenceLast: number | null;

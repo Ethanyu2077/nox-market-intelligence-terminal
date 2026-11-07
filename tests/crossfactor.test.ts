@@ -28,8 +28,8 @@ test('symmetric relationships are reported as direction-ambiguous, not assigned 
   const report = buildFactorEvidence('oi_delta', [...a, ...b], opts);
   assert.equal(report.comparable, true);
   assert.equal(report.leader, null, 'a symmetric inverse relationship has no identifiable leader');
-  assert.equal(report.directions.length, 6, 'both directions and three lags are reported');
-  assert.ok(report.counterEvidence.some((text) => /not identifiable/.test(text)));
+  assert.equal(report.pairs[0].directions.length, 6, 'both directions and three lags are reported');
+  assert.equal(report.pairs[0].leader, null, 'no arbitrary winner is picked for a symmetric pair');
 });
 
 test('an asymmetric lead is attributed to the leading venue by directional tests', () => {
@@ -63,7 +63,7 @@ test('decisions are matched once and only use data available at decision time', 
 
   const late = a.map((sample) => ({ ...sample, availableAt: T0 + 10_000_000 }));
   const blocked = buildFactorEvidence('oi_delta', [...late, ...b], opts);
-  const forward = blocked.directions.filter((direction) => direction.from === 'binance');
+  const forward = blocked.pairs[0].directions.filter((direction) => direction.from === 'binance');
   assert.ok(forward.length > 0);
   assert.ok(forward.every((direction) => direction.samples === 0), 'late-available A data must not enter a decision');
 });
@@ -77,9 +77,9 @@ test('irregular sampling is aligned by timestamps, not by array index', () => {
     irregular.push({ venue: 'binance', factor: 'oi_delta', time, availableAt: time, value: price, unit: 'pct', coveragePct: 100 });
   }
   const follow = irregular.map((sample) => ({ ...sample, venue: 'bybit', time: sample.time + 7_000, availableAt: sample.availableAt + 7_000 }));
-  const report = buildFactorEvidence('oi_delta', [...irregular, ...follow], { ...opts, maxSkewMs: 30_000 });
+  const report = buildFactorEvidence('oi_delta', [...irregular, ...follow], opts);
   assert.equal(report.comparable, true);
-  assert.ok(report.samples > 0);
+  assert.ok(report.pairs.some((pair) => pair.directions.some((direction) => direction.samples > 0)));
 });
 
 test('mixed units, low coverage, large gaps and missing values are refused', () => {

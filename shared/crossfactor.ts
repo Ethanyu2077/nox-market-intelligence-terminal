@@ -25,6 +25,17 @@ export interface DirectionResult {
   selected: boolean;
 }
 
+export interface FactorPair {
+  venues: [string, string];
+  directions: DirectionResult[];
+  leader: string | null;
+  follower: string | null;
+  lagMs: number | null;
+  correlation: number | null;
+  samples: number;
+  verdict: 'insufficient' | 'descriptive';
+}
+
 export interface FactorEvidence {
   factor: CrossFactorId;
   unit: string;
@@ -33,6 +44,11 @@ export interface FactorEvidence {
   venues: Array<{ venue: string; samples: number; coveragePct: number; gaps: number; latest: number | null }>;
   /** Both directions are always reported; the leader is never inferred from a sign. */
   directions: DirectionResult[];
+  /** Every valid venue combination, each tested in both directions. */
+  pairs: FactorPair[];
+  transform: 'relative' | 'difference';
+  hypothesesTested: number;
+  bonferroniAlpha: number;
   leader: string | null;
   follower: string | null;
   lagMs: number | null;

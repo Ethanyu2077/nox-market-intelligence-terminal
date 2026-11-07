@@ -21,9 +21,15 @@ test('walk-forward produces out-of-sample folds and a capped verdict', () => {
   const { a, b } = synthetic();
   const report = analyzeLeadLag({ venueA: 'binance', venueB: 'bybit', samplesA: a, samplesB: b }, { windowMs: 120_000, horizonMs: 60_000, minSamples: 20, maxDelayMs: 5_000, bootstrapRounds: 50, folds: 3 });
   assert.equal(report.folds.length, 3);
+  for (const fold of report.folds) {
+    assert.ok(fold.trainEnd <= fold.testStart);
+    assert.ok(fold.purgedTrain >= 0);
+    assert.ok(fold.selectedLagMs != null && fold.selectedLagMs >= 0, 'each fold records its own selected lag');
+  }
   assert.ok(report.outOfSample.samples >= 20);
   assert.ok(report.outOfSample.uncertainty.hitRate != null);
   assert.equal(report.baselines.length, 3);
+  for (const baseline of report.baselines) assert.equal(baseline.samples, report.outOfSample.samples, 'all baselines share the strategy OOS set');
   assert.ok(['descriptive', 'promising-not-tradable'].includes(report.verdict));
   assert.ok(report.multipleTesting.lagsTested >= 1);
   assert.match(report.notes.join(' '), /Multiple testing/);

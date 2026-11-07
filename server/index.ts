@@ -85,6 +85,7 @@ app.use((req, res, next) => {
 });
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
 app.use(express.json({ limit: '160kb' }));
+const PROCESS_STARTED_AT = Date.now();
 const l2Collector = new L2Collector(() => store.getProjects(true), history);
 l2Collector.start();
 const alerts = new AlertService(dataDirectory, () => store.getAlerts(), () => store.getProjects(true));
@@ -119,6 +120,7 @@ const safe = (handler: express.RequestHandler): express.RequestHandler => async 
 };
 const flowQuery = z.object({ interval: z.enum(['1m', '5m', '15m', '1h', '4h']).default('1m'), reset: z.enum(['window', 'utc-day', 'utc-hour']).default('window'), at: z.coerce.number().finite().min(1e12).optional() });
 app.get('/api/operations', (_req, res) => res.json({
+  process: { pid: process.pid, startedAt: PROCESS_STARTED_AT },
   l2Collection: l2Collector.health(), storage: history.status(), archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
 app.get('/api/projects/:id/event-study',safe(async(req,res)=>{
   const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}
@@ -230,6 +232,13 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
     asOf: asOf ?? Date.now(),
     dataWindow: { ...report.dataWindow, bucketMs: FACTOR_TIMEFRAMES[timeframe] },
   });
+}));
+// Read-only acceptance hook: lets the disposable-database restart probe read rows back
+// through the running API instead of opening its own connection.
+app.get('/api/acceptance/records', safe(async (req, res) => {
+  const source = z.string().min(3).max(200).parse(req.query.source);
+  const page = await history.page('acceptance', { kind: 'snapshot', source, limit: 100, asOf: Date.now() });
+  res.json({ items: page.items.map((event) => ({ id: event.id, eventTime: event.eventTime, ingestTime: event.ingestTime, payload: event.payload })) });
 }));
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));

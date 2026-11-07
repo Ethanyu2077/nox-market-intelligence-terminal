@@ -8,6 +8,7 @@
  * deleted at the end.
  */
 import { execSync } from 'node:child_process';
+import { evaluateRestart } from './lib/restart.mjs';
 
 const url = process.env.DATABASE_URL;
 const allowWrites = process.env.ACCEPTANCE_ALLOW_WRITES === '1' && /(test|acceptance|tmp|ci)/i.test(url ?? '');
@@ -73,24 +74,43 @@ try {
     details.connectionRecovery = { rows: after.rows.length, idsIntact: recovered, via: 'new connection pool' };
   } finally { await fresh.end(); }
 
-  // Process restart recovery: only with an explicit, opt-in restart command.
+  // Process restart recovery: requires an authorized restart command, an API base for
+  // process identity and read-back, and a healthy API after the restart.
+  const apiBase = process.env.NOX_API_URL;
   const restart = process.env.ACCEPTANCE_RESTART_CMD;
-  if (!restart) {
+  if (!restart || !apiBase) {
     status.processRestartRecovery = 'NOT VERIFIED';
-    details.processRestartRecovery = 'ACCEPTANCE_RESTART_CMD is not set; a new pool is connection recovery, not a process restart';
+    details.processRestartRecovery = 'requires NOX_API_URL and ACCEPTANCE_RESTART_CMD; connection recovery is not a process restart';
   } else {
-    try { execSync(restart, { stdio: 'inherit', timeout: 60_000 }); details.restart = 'command executed'; }
-    catch (error) { details.restart = `command failed: ${error instanceof Error ? error.message : error}`; }
-    const restarted = new Pool({ connectionString: url, connectionTimeoutMillis: 5_000 });
+    const apiJson = async (path) => {
+      const response = await fetch(`${apiBase}${path}`, { signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    };
+    let identityBefore = null, idsBefore = [], restartOk = false, readyAfter = false;
+    let identityAfter = null, idsAfter = [], apiReadAvailable = false;
     try {
-      const after = await restarted.query('SELECT id, event_time, payload FROM nox_history_events WHERE source=$1 ORDER BY event_time', [source]);
-      const recovered = after.rows.length === 2 && after.rows.every((row, index) => row.id === events[index].id && Number(row.payload.price) === events[index].payload.price);
-      status.processRestartRecovery = recovered && details.restart === 'command executed' ? 'PASS' : 'FAIL';
-      details.processRestartRecovery = { rows: after.rows.length, idsIntact: recovered, restart: details.restart };
-    } catch (error) {
-      status.processRestartRecovery = 'FAIL';
-      details.processRestartRecovery = { error: error instanceof Error ? error.message : 'query failed' };
-    } finally { await restarted.end(); }
+      identityBefore = (await apiJson('/api/operations')).process?.startedAt ?? null;
+      idsBefore = ((await apiJson(`/api/acceptance/records?source=${encodeURIComponent(source)}`)).items ?? []).map((item) => item.id);
+    } catch (error) { details.preRestartRead = error instanceof Error ? error.message : 'API read failed'; }
+
+    try { execSync(restart, { stdio: 'inherit', timeout: 60_000 }); restartOk = true; }
+    catch (error) { restartOk = false; details.restart = error instanceof Error ? error.message : 'restart failed'; }
+
+    for (let attempt = 0; attempt < 20 && !readyAfter; attempt += 1) {
+      try { await apiJson('/api/health'); readyAfter = true; } catch { await new Promise((resolve) => setTimeout(resolve, 1_000)); }
+    }
+    if (readyAfter) {
+      try {
+        identityAfter = (await apiJson('/api/operations')).process?.startedAt ?? null;
+        idsAfter = ((await apiJson(`/api/acceptance/records?source=${encodeURIComponent(source)}`)).items ?? []).map((item) => item.id);
+        apiReadAvailable = true;
+      } catch (error) { details.postRestartRead = error instanceof Error ? error.message : 'API read failed'; }
+    }
+
+    const decision = evaluateRestart({ restartAuthorized: Boolean(restart), restartOk, identityBefore, identityAfter, readyAfter, apiReadAvailable, idsBefore, idsAfter });
+    status.processRestartRecovery = decision.status;
+    details.processRestartRecovery = { ...decision, identityBefore, identityAfter, idsBefore: idsBefore.length, idsAfter: idsAfter.length };
   }
 } catch (error) {
   details.error = error instanceof Error ? error.message : 'query failed';

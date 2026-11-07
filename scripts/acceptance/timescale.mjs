@@ -10,7 +10,7 @@
 import { execSync } from 'node:child_process';
 import { evaluateRestart } from './lib/restart.mjs';
 import { isWritableDatabase } from './lib/db-safety.mjs';
-import { credentialsFromEnv, login } from './lib/api-session.mjs';
+import { authorizedGet, credentialsFromEnv } from './lib/api-session.mjs';
 
 const url = process.env.DATABASE_URL;
 let allowWrites = false;
@@ -88,20 +88,12 @@ try {
     status.processRestartRecovery = 'NOT VERIFIED';
     details.processRestartRecovery = 'requires NOX_API_URL and ACCEPTANCE_RESTART_CMD; connection recovery is not a process restart';
   } else {
-    let session = null;
-    const ensureSession = async () => {
-      if (session?.ok && session.role === 'admin') return session;
-      const credentials = credentialsFromEnv();
-      if (!credentials.ok) return { ok: false, reason: credentials.reason };
-      session = await login(apiBase, credentials);
-      return session;
-    };
+    const credentials = credentialsFromEnv();
     const apiJson = async (path) => {
-      const active = await ensureSession();
-      if (!active.ok || active.role !== 'admin') throw new Error(active.reason ?? 'admin session unavailable');
-      const response = await fetch(`${apiBase}${path}`, { signal: AbortSignal.timeout(5_000), headers: { cookie: active.cookie } });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
+      // One 401 re-authentication is handled inside authorizedGet; 403 is never retried.
+      const result = await authorizedGet(apiBase, path, credentials);
+      if (!result.ok) throw new Error(result.reason ?? `HTTP ${result.status}`);
+      return result.data;
     };
     let identityBefore = null, idsBefore = [], restartOk = false, readyAfter = false;
     let identityAfter = null, idsAfter = [], apiReadAvailable = false;
@@ -118,7 +110,6 @@ try {
     }
     if (readyAfter) {
       try {
-        session = null; // a restart invalidates the session; re-authenticate explicitly
         identityAfter = (await apiJson('/api/operations')).process?.startedAt ?? null;
         idsAfter = ((await apiJson(`/api/acceptance/records?source=${encodeURIComponent(source)}`)).items ?? []).map((item) => item.id);
         apiReadAvailable = true;

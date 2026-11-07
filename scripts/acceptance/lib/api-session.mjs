@@ -26,3 +26,20 @@ export async function login(base, credentials, fetchImpl = fetch) {
   try { role = (await response.json())?.user?.role ?? null; } catch { /* body optional */ }
   return { ok: true, cookie: raw.split(';')[0], role };
 }
+
+/** GET with one re-authentication retry on 401; 403 is never retried. */
+export async function authorizedGet(base, path, credentials, fetchImpl = fetch) {
+  if (!credentials?.ok) return { ok: false, status: 0, reason: credentials?.reason ?? 'missing admin credentials' };
+  const attempt = async () => {
+    const session = await login(base, credentials, fetchImpl);
+    if (!session.ok) return { ok: false, status: session.status, reason: session.reason, retryable: session.status === 401 };
+    const response = await fetchImpl(`${base}${path}`, { headers: { cookie: session.cookie } });
+    return { ok: response.ok, status: response.status, response, retryable: response.status === 401 };
+  };
+  let result = await attempt();
+  if (result.status === 401) result = await attempt();
+  if (result.ok) return { ok: true, status: result.status, data: await result.response.json() };
+  if (result.status === 403) return { ok: false, status: 403, reason: 'admin role required' };
+  if (result.status === 401) return { ok: false, status: 401, reason: 'admin session rejected after one retry' };
+  return { ok: false, status: result.status ?? 0, reason: result.reason ?? `HTTP ${result.status}` };
+}

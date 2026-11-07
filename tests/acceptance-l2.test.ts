@@ -1,64 +1,77 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // @ts-expect-error plain ESM module used by the acceptance scripts
-import { analyzeL2Frames } from '../scripts/acceptance/lib/l2-analysis.mjs';
+import { analyzeL2Frames, evaluateL2 } from '../scripts/acceptance/lib/l2-analysis.mjs';
 
-const snapshot = (over: Record<string, unknown> = {}) => ({
+const snap = (over: Record<string, unknown> = {}) => ({
   state: 'live', verified: true, integrity: 'ok', epoch: 1, sequence: { last: 10 }, gaps: 0, resyncs: 0,
   spreadBps: 0.5, bidDepthUsd: 1000, askDepthUsd: 1200, lastMessageAt: 0, ...over,
 });
-const frames = (times: number[], over: Record<string, unknown> = {}, start = 10) => times.map((at, index) => ({ at, snapshot: snapshot({ ...over, sequence: { last: start + index } }) }));
+const frame = (at: number, over: Record<string, unknown> = {}, seq = 10) => ({ at, snapshot: snap({ ...over, sequence: { last: seq } }) });
 
-test('continuous updates: longest run equals the whole window and advances count', () => {
-  const result = analyzeL2Frames(frames([0, 1000, 2000, 3000, 4000]), { requestedMs: 5000 });
-  assert.equal(result.sequenceAdvanceCount, 4);
-  assert.equal(result.longestContinuousLiveMs, 4000);
-  assert.equal(result.totalValidLiveMs, 4000);
-  assert.equal(result.maxUpdateGapMs, 1000);
-  assert.equal(result.duplicates, 0);
+test('continuous live window passes with full coverage', () => {
+  const frames = [0, 1000, 2000, 3000, 4000].map((at, index) => frame(at, {}, 10 + index));
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 4000, requestedMs: 4000 });
+  assert.equal(metrics.longestContinuousLiveMs, 4000);
+  assert.equal(metrics.totalValidLiveMs, 4000);
+  assert.equal(metrics.validWindowPct, 100);
+  assert.equal(metrics.sequenceAdvanceCount, 4);
+  assert.equal(evaluateL2(metrics, { requestedMs: 4000 }).status, 'PASS');
 });
 
-test('repeated snapshots and heartbeats are not updates or advances', () => {
-  const framesInput = [
-    { at: 0, snapshot: snapshot({ sequence: { last: 10 } }) },
-    { at: 250, snapshot: snapshot({ sequence: { last: 10 } }) },
-    { at: 500, snapshot: snapshot({ sequence: { last: 10 } }) },
-  ];
-  const result = analyzeL2Frames(framesInput, { requestedMs: 5000 });
-  assert.equal(result.updatedFrames, 1);
-  assert.equal(result.duplicates, 2);
-  assert.equal(result.sequenceAdvanceCount, 0);
-  assert.equal(result.longestContinuousLiveMs, 0);
+test('repeated heartbeat snapshots are not updates or advances', () => {
+  const metrics = analyzeL2Frames([frame(0), frame(250), frame(500)], { windowStart: 0, windowEnd: 500, requestedMs: 500 });
+  assert.equal(metrics.updatedFrames, 1);
+  assert.ok(metrics.duplicates >= 2);
+  assert.equal(metrics.sequenceAdvanceCount, 0);
+  assert.equal(metrics.longestContinuousLiveMs, 0);
 });
 
-test('an interruption splits the run: longest is not the sum of segments', () => {
-  const input = [...frames([0, 1000, 2000]), ...frames([8000, 9000, 10_000], {}, 20)];
-  const result = analyzeL2Frames(input, { requestedMs: 10_000 });
-  assert.equal(result.longestContinuousLiveMs, 2000, 'separate runs are never summed into the longest');
-  assert.equal(result.totalValidLiveMs, 4000);
-  assert.equal(result.maxUpdateGapMs, 6000);
+test('an interruption splits the run and reduces coverage against the full window', () => {
+  const frames = [frame(0, {}, 10), frame(1000, {}, 11), frame(2000, {}, 12), frame(8000, {}, 13), frame(9000, {}, 14)];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 9000, requestedMs: 9000 });
+  assert.equal(metrics.longestContinuousLiveMs, 2000, 'segments are never summed');
+  assert.equal(metrics.totalValidLiveMs, 3000);
+  assert.equal(metrics.maxUpdateGapMs, 6000);
+  assert.ok(metrics.validWindowPct < 100);
 });
 
-test('stale or unverified snapshots do not count as live time', () => {
-  const input = [
-    { at: 0, snapshot: snapshot({ state: 'stale' }) },
-    { at: 1000, snapshot: snapshot({ verified: false }) },
-    { at: 2000, snapshot: snapshot({ sequence: { last: 12 } }) },
-    { at: 3000, snapshot: snapshot({ sequence: { last: 13 } }) },
-  ];
-  const result = analyzeL2Frames(input, { requestedMs: 5000 });
-  assert.equal(result.updatedFrames, 2);
-  assert.equal(result.longestContinuousLiveMs, 1000);
+test('live -> stale -> live breaks continuity', () => {
+  const frames = [frame(0), frame(1000, { state: 'stale', verified: false }), frame(2000, {}, 12), frame(3000, {}, 13)];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 3000, requestedMs: 3000 });
+  assert.equal(metrics.stateCounts.stale, 1);
+  assert.equal(metrics.longestContinuousLiveMs, 1000);
+  assert.ok(metrics.invalidStateDurationMs >= 2000);
+  assert.equal(metrics.recoveryCompleted, true);
 });
 
-test('epoch change is recorded and does not count as a sequence advance', () => {
-  const input = [
-    { at: 0, snapshot: snapshot({ epoch: 1, sequence: { last: 10 } }) },
-    { at: 1000, snapshot: snapshot({ epoch: 2, sequence: { last: 4 } }) },
-    { at: 2000, snapshot: snapshot({ epoch: 2, sequence: { last: 5 } }) },
-  ];
-  const result = analyzeL2Frames(input, { requestedMs: 5000 });
-  assert.equal(result.epochChanges, 1);
-  assert.equal(result.sequenceAdvanceCount, 1);
-  assert.equal(result.longestContinuousLiveMs, 1000);
+test('live -> resyncing -> live breaks continuity and records recovery', () => {
+  const frames = [frame(0), frame(1000, { state: 'resyncing' }), frame(2000, {}, 12), frame(3000, {}, 13)];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 3000, requestedMs: 3000 });
+  assert.equal(metrics.stateCounts.resyncing, 1);
+  assert.equal(metrics.longestContinuousLiveMs, 1000);
+  assert.equal(metrics.recoveryCompleted, true);
+});
+
+test('checksum failure without recovery fails the evaluation', () => {
+  const frames = [frame(0), frame(1000, { integrity: 'checksum-failed', verified: false })];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 1000, requestedMs: 1000 });
+  assert.equal(metrics.stateCounts.checksumFailed, 1);
+  assert.equal(metrics.finalVerified, false);
+  assert.equal(evaluateL2(metrics, { requestedMs: 1000 }).status, 'FAIL');
+});
+
+test('epoch change breaks the run and is counted', () => {
+  const frames = [frame(0, { epoch: 1 }, 10), frame(1000, { epoch: 2 }, 4), frame(2000, { epoch: 2 }, 5)];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 2000, requestedMs: 2000 });
+  assert.equal(metrics.epochChanges, 1);
+  assert.equal(metrics.longestContinuousLiveMs, 1000);
+  assert.equal(metrics.sequenceAdvanceCount, 1);
+});
+
+test('coverage uses the requested window, not the valid span', () => {
+  const frames = [frame(0), frame(1000, {}, 11), frame(2000, {}, 12), frame(3000, {}, 13), frame(4000, {}, 14)];
+  const metrics = analyzeL2Frames(frames, { windowStart: 0, windowEnd: 10_000, requestedMs: 10_000 });
+  assert.equal(metrics.validWindowPct, 40);
+  assert.equal(evaluateL2(metrics, { requestedMs: 10_000 }).status, 'FAIL');
 });

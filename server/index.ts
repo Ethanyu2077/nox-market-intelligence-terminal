@@ -99,7 +99,16 @@ const projectBodySchema = z.object({
   monitoring: z.object({ collectionMode: z.enum(['active','standard','paused']).optional(), defaultInterval: z.enum(['1m', '5m', '15m', '1h', '4h']).optional(), streamingEnabled: z.boolean().optional() }).optional()
 });
 
-const safe = (handler: express.RequestHandler): express.RequestHandler => async (req, res, next) => { try { await handler(req, res, next); } catch (error) { const message = error instanceof Error ? error.message : 'Unknown error'; res.status(502).json({ error: { code: 'UPSTREAM_ERROR', message, timestamp: Date.now() } }); } };
+const safe = (handler: express.RequestHandler): express.RequestHandler => async (req, res, next) => {
+  try { await handler(req, res, next); }
+  catch (error) {
+    // A handler can throw after streaming a response (client aborted, SSE ended). Trying to
+    // send a JSON error then throws ERR_HTTP_HEADERS_SENT and kills the process.
+    if (res.headersSent) { if (!res.writableEnded && !res.destroyed) res.end(); return; }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(502).json({ error: { code: 'UPSTREAM_ERROR', message, timestamp: Date.now() } });
+  }
+};
 const flowQuery = z.object({ interval: z.enum(['1m', '5m', '15m', '1h', '4h']).default('1m'), reset: z.enum(['window', 'utc-day', 'utc-hour']).default('window'), at: z.coerce.number().finite().min(1e12).optional() });
 app.get('/api/operations', (_req, res) => res.json({ storage: history.status(), archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
 app.get('/api/projects/:id/event-study',safe(async(req,res)=>{
@@ -284,14 +293,14 @@ app.get('/api/market/:exchange/:symbol/depth', safe(async (req, res) => {
 app.get('/api/market/:exchange/:symbol/stream', (req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange); if (!exchange.success) { res.status(400).json({ error: { code: 'INVALID_EXCHANGE', message: 'Unsupported exchange', timestamp: Date.now() } }); return; }
   res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
-  const send = (event: string, payload: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  const send = (event: string, payload: unknown) => { if (res.writableEnded || res.destroyed) return; res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); };
   const stop = openExchangeStream(exchange.data, String(req.params.symbol), (payload) => send('market', payload), (state, detail) => send('connection', { state, detail, timestamp: Date.now() }));
   const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 15_000);
   req.on('close', () => { clearInterval(heartbeat); stop(); });
 });
 app.get('/api/market/:symbol/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
-  const send = (event: string, payload: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  const send = (event: string, payload: unknown) => { if (res.writableEnded || res.destroyed) return; res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); };
   const stop = openMarketStream(String(req.params.symbol), (payload) => send('market', payload), (state, detail) => send('connection', { state, detail, timestamp: Date.now() }));
   const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 15_000);
   req.on('close', () => { clearInterval(heartbeat); stop(); });

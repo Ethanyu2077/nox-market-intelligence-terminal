@@ -24,7 +24,7 @@ function pct(value: number | null | undefined): string {
  * The market strip is the terminal's persistent context: whatever page you are on, the
  * instrument, price, funding and freshness stay visible and the timeframe is one click away.
  */
-export interface VenueOption { id: ExchangeSelection; label: string; transport: 'native' | 'ccxt' | 'aggregate' }
+export interface VenueOption { id: ExchangeSelection; label: string; transport: 'native' | 'ccxt' | 'aggregate'; ws: boolean }
 
 export function MarketBar({ project, primary, overview, coverage, exchange, onExchange, venues, interval, onInterval, lastEvent, language, onSwitchProject }: {
   project: MarketProject | null;

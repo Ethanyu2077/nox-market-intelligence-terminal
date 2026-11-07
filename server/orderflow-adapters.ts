@@ -18,6 +18,7 @@ export function normalizeFlowTrade(market: ProjectMarket, row: Row, multiplier: 
     case 'gate': id = row.id; price = row.price; quantity = market.marketType === 'spot' ? row.amount : Math.abs(num(row.size) ?? NaN); side = market.marketType === 'spot' ? row.side : num(row.size) == null || num(row.size) === 0 ? null : Number(row.size) > 0 ? 'buy' : 'sell'; time = row.create_time_ms ?? row.create_time; break;
     case 'kucoin': id = row.tradeId ?? row.sequence; price = row.price; quantity = row.size; side = row.side; time = (num(row.ts ?? row.time) ?? NaN) / 1e6; break;
     case 'mexc': id = row.id; price = row.price; quantity = row.qty; side = typeof row.isBuyerMaker === 'boolean' ? row.isBuyerMaker ? 'sell' : 'buy' : null; time = row.time; break;
+    case 'aster': id = row.a; price = row.p; quantity = row.q; side = typeof row.m === 'boolean' ? (row.m ? 'sell' : 'buy') : null; time = row.T; break;
   }
   const p = num(price), q = num(quantity), rawTime = num(time); const s = String(side).toLowerCase();
   // Gate futures REST timestamps are fractional SECONDS while its WebSocket feed uses ms, so
@@ -60,6 +61,7 @@ export async function recentFlowTrades(market: ProjectMarket, instrument: Instru
     gate: spot ? `https://api.gateio.ws/api/v4/spot/trades?currency_pair=${symbol}&limit=1000` : `https://api.gateio.ws/api/v4/futures/usdt/trades?contract=${symbol}&limit=1000`,
     kucoin: spot ? `https://api.kucoin.com/api/v1/market/histories?symbol=${symbol}` : `https://api-futures.kucoin.com/api/v1/trade/history?symbol=${symbol}`,
     mexc: `https://api.mexc.com/api/v3/trades?symbol=${symbol}&limit=1000`,
+    aster: `https://fapi.asterdex.com/fapi/v1/aggTrades?symbol=${symbol}&limit=1000`,
   };
   const url = urls[market.exchange];
   // CCXT-only venues expose snapshots but no normalised trade tape; fail explicitly.
@@ -88,6 +90,7 @@ export function normalizeLiquidation(message: Row, symbol: string): LiquidationE
 
 // Dedicated spot subscription; perpetuals reuse the existing multiplexed exchange stream.
 export function openFlowStream(market: ProjectMarket, instrument: Instrument, onTrade: (trade: FlowTrade) => void, onState: (state: string, detail?: string) => void, onLiquidation: (event: LiquidationEvent) => void, onLiquidationState: (state: string) => void = () => {}) {
+  if (market.exchange === 'aster') { onState('partial', 'REST-only: Aster has no verified public WebSocket adapter; trades are polled'); return () => {}; }
   if (market.marketType === 'perpetual') {
     const stop = openExchangeStream(market.exchange, market.symbol, raw => {
       const wrapper = raw as Row, data = (wrapper.data ?? wrapper) as Row;

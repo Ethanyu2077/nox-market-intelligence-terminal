@@ -4,7 +4,11 @@ For the current V2.2 incremental data/auth/regime architecture and its explicitl
 
 ## Venue layer: native adapters + CCXT (2026-11)
 
-The nine native venues stay on their own REST/WebSocket adapters. CCXT is a **coverage and
+Ten native venues (Binance, Bitget, Bybit, OKX, Gate, KuCoin, MEXC, Aster, Upbit, Bithumb) stay on their own
+REST/WebSocket adapters. Aster reuses the Binance-compatible USDⓈ-M wire format but exposes no
+`openInterestHist`; its series returns empty OI and the position-flow engine withholds OI-dependent
+labels. It is REST-polled (no verified public WebSocket) and shows `60S POLL` rather than `LIVE`.
+ CCXT is a **coverage and
 resilience layer**, imported lazily and disabled by default for extra venues:
 
 - `NOX_CCXT_VENUES` enables `htx` / `bingx` / `phemex` / `bitfinex` USDT perpetuals;

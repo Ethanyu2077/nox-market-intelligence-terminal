@@ -19,7 +19,7 @@ export interface Instrument {
 }
 
 /** Venues with a hand-written native adapter (REST + where available WebSocket). */
-export const NATIVE_EXCHANGE_IDS = ['binance', 'bitget', 'bybit', 'okx', 'gate', 'kucoin', 'mexc', 'upbit', 'bithumb'] as const;
+export const NATIVE_EXCHANGE_IDS = ['binance', 'bitget', 'bybit', 'okx', 'gate', 'kucoin', 'mexc', 'aster', 'upbit', 'bithumb'] as const;
 /**
  * Venues served exclusively through CCXT. They are inert until enabled with
  * NOX_CCXT_VENUES, so discovery latency and UI clutter stay opt-in.
@@ -441,6 +441,9 @@ export interface Overview {
   eventTime: number;
   source: string;
   quality: Quality;
+  /** Top-of-book when the snapshot path fetched it; nullable and optional by design. */
+  bid?: number | null;
+  ask?: number | null;
 }
 
 export interface AlertRule {

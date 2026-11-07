@@ -93,7 +93,11 @@ function openExchangeStreamRaw(exchange: ExchangeId, symbol: string, onEvent: Ev
 }
 
 const sharedStreams = new Map<string, { listeners: Set<{ event: EventHandler; state: StateHandler }>; stop: () => void; status: [string, string?] }>();
+const STREAM_VENUES = new Set<ExchangeId>(['binance', 'bybit', 'okx', 'bitget', 'gate', 'kucoin', 'mexc']);
+
 export function openExchangeStream(exchange: ExchangeId, symbol: string, onEvent: EventHandler, onState: StateHandler) {
+  // Never route a venue without a verified adapter through another venue's socket.
+  if (!STREAM_VENUES.has(exchange)) { onState('stale', `${exchange} has no verified public WebSocket adapter`); return () => {}; }
   const key = `${exchange}:${symbol}`;
   let entry = sharedStreams.get(key);
   if (!entry) {

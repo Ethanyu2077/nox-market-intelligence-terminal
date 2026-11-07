@@ -27,7 +27,7 @@ Independent, project-based crypto market monitoring for user-selected external t
 ## Working in this version
 
 - Persistent Project Watchlist with no hardcoded default symbols. Projects can be discovered by token symbol or contract address, confirmed, reordered, archived, edited and removed.
-- Native Spot and USDT perpetual discovery across Binance, Bitget, Bybit, OKX, Gate, KuCoin and MEXC, with explicit pair selection and one primary perpetual analytics feed per project.
+- Native Spot and USDT perpetual discovery across Binance, Bitget, Bybit, OKX, Gate, KuCoin, MEXC and Aster, with explicit pair selection and one primary perpetual analytics feed per project. Aster uses its Binance-compatible USDⓈ-M REST API; it has no historical OI endpoint, so OI-dependent labels are withheld rather than estimated.
 - Global project switching that updates the live market workspace without leaving the application.
 - Live selected-project 24H price/volume, base and USD OI, funding and next-settlement countdown.
 - Synchronized Price/Volume, base OI and futures CVD chart panels for a selected instrument.

@@ -3,6 +3,7 @@ import type {
   ProjectDiscoveryResult, ProjectMarket, ProjectVenueResponse, VenueMarketSnapshot
 } from '../shared/types.ts';
 import { getInstruments as getBinanceFutures, getSpotInstruments as getBinanceSpot, overview as getBinanceOverview } from './binance.ts';
+import { getInstruments as getAsterFutures, overview as getAsterOverview } from './aster.ts';
 import { resolveDexPaprikaIdentity } from './dexpaprika.ts';
 import {koreanSpot,koreanBaseSymbol} from './korean-spot.ts';
 import { ccxtInstruments, ccxtSnapshot } from './ccxt/adapter.ts';
@@ -21,7 +22,8 @@ const nativeCapabilityRows: Array<Omit<ExchangeCapabilities, 'transport' | 'enab
   { exchange: 'okx', label: 'OKX', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['OI base quantity uses venue-reported oiCcy, not raw contract count.'] },
   { exchange: 'gate', label: 'Gate', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Contract counts are normalized with quanto_multiplier.'] },
   { exchange: 'kucoin', label: 'KuCoin', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Public token-based futures stream is negotiated server-side.'] },
-  { exchange: 'mexc', label: 'MEXC', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Public futures REST and deal/ticker streams are enabled.', 'Contract detail is cached to respect the documented low discovery rate limit.', 'Unsupported metrics remain unavailable.'] }
+  { exchange: 'mexc', label: 'MEXC', restDiscovery: true, restSnapshot: true, websocketTrades: true, websocketTicker: true, websocketOrderBook: false, historicalSeries: false, openInterest: true, funding: true, liquidations: false, notes: ['Public futures REST and deal/ticker streams are enabled.', 'Contract detail is cached to respect the documented low discovery rate limit.', 'Unsupported metrics remain unavailable.'] },
+  { exchange: 'aster', label: 'Aster', restDiscovery: true, restSnapshot: true, websocketTrades: false, websocketTicker: false, websocketOrderBook: false, historicalSeries: true, openInterest: true, funding: true, liquidations: false, notes: ['Binance-compatible USDⓈ-M REST; asterdex does not expose openInterestHist, so OI history is unavailable (not zero).', 'Candles and aggressor trades are available; OI-dependent labels are withheld.', 'No verified public WebSocket adapter: quotes and flow are REST-polled and labelled as such.'] }
 ];
 
 const ccxtConfig = resolveCcxtConfig();
@@ -155,6 +157,8 @@ async function kucoinCatalog() {
     ...rows(spots).filter((r) => r.quoteCurrency === 'USDT' && r.enableTrading !== false).map((r) => instrument('kucoin', 'spot', text(r.symbol), text(r.baseCurrency), text(r.quoteCurrency), 'trading', { tickSize: number(r.priceIncrement) ?? 0, stepSize: number(r.baseIncrement) ?? 0 }))
   ];
 }
+async function asterCatalog() { return getAsterFutures().then(rows => rows); }
+
 async function mexcCatalog() {
   // MEXC returns full ~1.5-2.3 MB catalogs; a 10s ceiling dropped the venue on slower links.
   const [futures, spots] = await Promise.all([
@@ -170,7 +174,7 @@ async function mexcCatalog() {
 }
 
 const catalogs: Record<ExchangeId, CatalogLoader> = {
-  binance: binanceCatalog, bitget: bitgetCatalog, bybit: bybitCatalog, okx: okxCatalog, gate: gateCatalog, kucoin: kucoinCatalog, mexc: mexcCatalog,
+  binance: binanceCatalog, bitget: bitgetCatalog, bybit: bybitCatalog, okx: okxCatalog, gate: gateCatalog, kucoin: kucoinCatalog, mexc: mexcCatalog, aster: asterCatalog,
   upbit: () => koreanSpot.instruments('upbit'), bithumb: () => koreanSpot.instruments('bithumb'),
   htx: () => ccxtInstruments('htx'), bingx: () => ccxtInstruments('bingx'), phemex: () => ccxtInstruments('phemex'), bitfinex: () => ccxtInstruments('bitfinex'),
 };
@@ -244,6 +248,10 @@ async function nativeSnapshot(market: ProjectMarket): Promise<VenueMarketSnapsho
     // the absolute venue time and is preferred.
     const fundingDuration = number(r.nextFundingRateTime);
     return unavailableSnapshot('kucoin', market, 'KuCoin Futures contract detail', { price, markPrice: mark, change24hPct: pct(r.priceChgPct), volume24hBase: number(r.volumeOf24h), volume24hUsd: number(r.turnoverOf24h), oiBase, oiUsd: oiBase != null && mark != null ? oiBase * mark : null, fundingRate: number(r.fundingFeeRate), nextFundingTime: timestamp(r.nextFundingRateDateTime) ?? (fundingDuration != null ? Date.now() + fundingDuration : null), eventTime: timestamp(r.lastTradeTime) ?? Date.now() });
+  }
+  if (market.exchange === 'aster') {
+    const row = await getAsterOverview(market.symbol);
+    return unavailableSnapshot('aster', market, row.source, { price: row.price, markPrice: row.markPrice, change24hPct: row.change24hPct, volume24hBase: row.volume24hBase, volume24hUsd: row.volume24hUsd, cvd: row.cvdWindowDelta, oiBase: row.oiBase, oiUsd: row.oiUsd, fundingRate: row.fundingRate, nextFundingTime: row.nextFundingTime, bid: row.bid ?? null, ask: row.ask ?? null, eventTime: row.eventTime, quality: row.quality });
   }
   if (market.exchange === 'mexc') {
     const p = await json<Json>(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${encodeURIComponent(market.symbol)}`); const r = (Array.isArray(p.data) ? p.data[0] : p.data) as Json | undefined; if (!r) throw new Error(`MEXC ticker unavailable: ${text(p.message || p.code || 'empty response')}`); const details = await getExchangeInstruments('mexc'); const detail = details.find((i) => i.id === market.id); const contractSize = detail?.contractMultiplier ?? 1; const contracts = number(r.holdVol); const mark = number(r.fairPrice); const oiBase = normalizeContractQuantity(contracts, contractSize);

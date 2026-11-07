@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { getInstruments, marketSeries, openMarketStream, overview, scanner } from './binance.ts';
+import { marketSeries as asterMarketSeries } from './aster.ts';
 import { discoverAcrossExchanges, exchangeCapabilities, getExchangeInstruments, projectVenueSnapshots } from './exchanges.ts';
 import { openExchangeStream } from './exchange-streams.ts';
 import { EXCHANGE_IDS, type ExchangeId } from '../shared/types.ts';
@@ -231,6 +232,15 @@ app.post('/api/projects/selection', safe(async (req, res) => { const body = z.ob
 app.get('/api/scanner', safe(async (req, res) => { const limit = Math.min(Number(req.query.limit ?? process.env.SCANNER_LIMIT ?? 24), 40); res.json({ items: await scanner(limit), timestamp: Date.now(), source: 'Binance USDⓈ-M public API', units: { price: 'USDT per base', volume24hUsd: 'USDT notional', oiBase: 'base quantity', oiUsd: 'USDT mark notional', fundingRate: 'decimal per settlement interval' } }); }));
 app.get('/api/market/:symbol/overview', safe(async (req, res) => res.json(await overview(String(req.params.symbol)))));
 app.get('/api/market/:symbol/series', safe(async (req, res) => { const interval = z.enum(['1m', '5m', '15m', '1h', '4h']).catch('5m').parse(req.query.interval); res.json(await marketSeries(String(req.params.symbol), interval)); }));
+// Venue-scoped series so a non-Binance primary feed (e.g. Aster) can drive the native charts.
+app.get('/api/market/:exchange/:symbol/series', safe(async (req, res) => {
+  const exchange = exchangeSchema.safeParse(req.params.exchange);
+  if (!exchange.success) { res.status(400).json({ error: { message: 'Unsupported exchange' } }); return; }
+  const interval = z.enum(['1m', '5m', '15m', '1h', '4h']).catch('5m').parse(req.query.interval);
+  if (exchange.data === 'binance') { res.json(await marketSeries(String(req.params.symbol), interval)); return; }
+  if (exchange.data === 'aster') { res.json(await asterMarketSeries(String(req.params.symbol), interval)); return; }
+  res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } });
+}));
 app.get('/api/market/:exchange/:symbol/stream', (req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange); if (!exchange.success) { res.status(400).json({ error: { code: 'INVALID_EXCHANGE', message: 'Unsupported exchange', timestamp: Date.now() } }); return; }
   res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();

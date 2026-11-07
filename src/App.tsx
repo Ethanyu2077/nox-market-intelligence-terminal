@@ -214,8 +214,14 @@ export default function App() {
   const localizedSeries = useMemo(() => language === 'zh' && series ? { ...series, positionFlow: { ...series.positionFlow, signals: series.positionFlow.signals.map((signal) => ({ ...signal, label: translate(signal.label, language) })) } } : series, [language, series]);
   const primaryMarket = selectedProject?.markets.find((market) => market.id === selectedProject.primaryMarketId) ?? selectedProject?.markets.find((market) => market.marketType === 'perpetual') ?? null;
   const activeMarket = exchange === 'aggregated' ? primaryMarket : selectedProject?.markets.find((market) => market.exchange === exchange && market.marketType === 'perpetual') ?? null;
-  const analyticsMarket = activeMarket?.exchange === 'binance' ? activeMarket : selectedProject?.markets.find((market) => market.exchange === 'binance' && market.marketType === 'perpetual') ?? null;
+  // Venues with a native historical-series adapter. Aster shares the Binance-compatible
+  // candle/aggTrade shape; other venues keep REST snapshots only.
+  const seriesMarket = activeMarket && (activeMarket.exchange === 'binance' || activeMarket.exchange === 'aster')
+    ? activeMarket
+    : selectedProject?.markets.find((market) => (market.exchange === 'binance' || market.exchange === 'aster') && market.marketType === 'perpetual') ?? null;
+  const analyticsMarket = seriesMarket;
   const symbol = analyticsMarket?.symbol ?? '';
+  const analyticsVenue = analyticsMarket?.exchange ?? '';
   const coverage = venueData ? { successful: venueData.aggregate.coverage.successful, requested: venueData.aggregate.coverage.requested } : null;
   // On the watchlist the transport is REST polling by definition; never show a socket state there.
   const displayConnection: ConnectionState = page === 'projects' ? 'polling' : connection;
@@ -242,7 +248,7 @@ export default function App() {
     const controller = new AbortController(); loadAbort.current = controller;
     if (!quiet) setLoading(true); setError('');
     const requests: Array<Promise<unknown>> = [api<ProjectVenueResponse>(`/projects/${selectedProject.id}/venues`, { signal: controller.signal })];
-    if (symbol) requests.push(api<MarketSeries>(`/market/${symbol}/series?interval=${interval}`, { signal: controller.signal }));
+    if (symbol && analyticsVenue) requests.push(api<MarketSeries>(`/market/${analyticsVenue}/${symbol}/series?interval=${interval}`, { signal: controller.signal }));
     const [venues, nativeSeries] = await Promise.allSettled(requests);
     if (generation !== loadGeneration.current) return;
     if (venues.status === 'fulfilled') {
@@ -257,11 +263,16 @@ export default function App() {
     const failures = [venues, nativeSeries].filter((result) => result?.status === 'rejected') as PromiseRejectedResult[];
     if (failures.length) setError(`${requests.length - failures.length} of ${requests.length} selected-project datasets loaded; ${failures[0].reason instanceof Error ? failures[0].reason.message : 'an upstream request failed'}`);
     setLoading(false);
-  }, [symbol, interval, selectedProject, exchange]);
+  }, [symbol, analyticsVenue, interval, selectedProject, exchange]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { loadGeneration.current += 1; loadAbort.current?.abort(); }, []);
-  useEffect(() => { if (!symbol) return; const timer = setInterval(() => { void load(true); }, 60_000); return () => clearInterval(timer); }, [symbol, load]);
+  useEffect(() => {
+    if (!symbol) return;
+    const socket = Boolean(venues.find((venue) => venue.id === activeMarket?.exchange)?.ws);
+    const timer = setInterval(() => { void load(true); }, socket ? 60_000 : 15_000);
+    return () => clearInterval(timer);
+  }, [symbol, load, venues, activeMarket?.exchange]);
   useEffect(() => {
     // The watchlist page has no instrument view; opening a venue socket there only burns
     // connections and produces misleading "degraded" transport labels.
@@ -270,6 +281,9 @@ export default function App() {
     // only an enabled stream that stops delivering is stale.
     if (!selectedProject?.monitoring.streamingEnabled) { setConnection('polling'); return; }
     if (!activeMarket) { setConnection('stale'); return; }
+    // Venues without a verified public WebSocket (Aster, Upbit/Bithumb) are REST-polled;
+    // opening an SSE that the server will immediately close only produces false 'stale'.
+    if (!venues.find((venue) => venue.id === activeMarket.exchange)?.ws) { setConnection('polling'); return; }
     const streamVenue = activeMarket.exchange;
     // The SSE payload is one venue's feed. It may feed a single-venue view and the native
     // Binance series, but it must never be written into the cross-venue aggregate overview:
@@ -297,7 +311,7 @@ export default function App() {
     events.addEventListener('connection', connectionListener as EventListener); events.addEventListener('market', marketListener as EventListener); events.addEventListener('heartbeat', heartbeatListener as EventListener);
     events.onerror = () => setConnection('stale');
     return () => { lastTradeId.current = null; events.close(); };
-  }, [activeMarket, exchange, interval, page, selectedProject?.monitoring.streamingEnabled]);
+  }, [activeMarket, exchange, interval, page, selectedProject?.monitoring.streamingEnabled, venues]);
   useEffect(() => { const timer = setInterval(() => setConnection((s) => lastStreamEvent && Date.now() - lastStreamEvent > 20_000 ? 'stale' : s), 5_000); return () => clearInterval(timer); }, [lastStreamEvent]);
   useEffect(() => { localStorage.setItem('nox-language', language); document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'; }, [language]);
   useEffect(() => { localStorage.setItem('nox-theme', theme); document.documentElement.style.colorScheme = theme; }, [theme]);
@@ -735,10 +749,10 @@ function NOXMarketStructureChart({ overview, series, interval }: { overview: Ove
   return <>
     <div className="chart-toolbar"><div><span>Mode</span><button className="active">Observed</button><button disabled>Regime overlay · P2</button></div><div className="coverage"><span>CVD coverage</span><strong>{series?.coverage.tradeCount ?? 0} aggregate trades</strong><em>{series?.coverage.cvdFrom ? new Date(series.coverage.cvdFrom).toLocaleTimeString() : 'unavailable'}</em></div></div>
     <section className="chart-stack panel">
-      <PanelHead title="Price & volume" meta={`${interval.toUpperCase()} candles · USDT per base · Binance`} action={overview ? `Mark ${formatPrice(overview.markPrice)}` : undefined}/>
+      <PanelHead title="Price & volume" meta={`${interval.toUpperCase()} candles · USDT per base · ${series?.source?.replace(/ REST.*$/, '') ?? 'awaiting series'}`} action={overview ? `Mark ${formatPrice(overview.markPrice)}` : undefined}/>
       <CandleChart points={points} cursor={cursor} onCursor={setCursor}/>
       <div className="chart-divider"/>
-      <ChartLabel title="Open interest" meta="Base quantity — not USD notional" current={formatCompact(series?.oiBase.at(-1)?.value)}/>
+      <ChartLabel title="Open interest" meta={series && !series.oiBase.length ? series.coverage.oiSource : 'Base quantity — not USD notional'} current={formatCompact(series?.oiBase.at(-1)?.value)}/>
       <LineChart points={series?.oiBase ?? []} cursor={cursor} onCursor={setCursor} color="#b9c3ca" height={145}/>
       <div className="chart-divider"/>
       <ChartLabel title="Futures CVD" meta="Aggressor buy notional − aggressor sell notional · baseline reset at fetched window" current={formatCompact(series?.cvd.at(-1)?.value, true)}/>

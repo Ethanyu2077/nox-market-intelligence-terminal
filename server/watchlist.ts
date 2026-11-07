@@ -1,6 +1,7 @@
 import type { MarketProject } from '../shared/types.ts';
 import type { WatchlistQuote, WatchlistQuotesResponse } from '../shared/watchlist.ts';
 import { priceSparkline } from './binance.ts';
+import { priceSparkline as asterSparkline } from './aster.ts';
 import { projectVenueSnapshots } from './exchanges.ts';
 
 /**
@@ -30,7 +31,10 @@ async function quoteFor(project: MarketProject, asOf: number): Promise<Watchlist
   }
   const [venues, sparkline] = await Promise.allSettled([
     projectVenueSnapshots([primary]),
-    primary.exchange === 'binance' && primary.marketType === 'perpetual' ? priceSparkline(primary.symbol) : Promise.resolve([]),
+    primary.marketType !== 'perpetual' ? Promise.resolve([])
+      : primary.exchange === 'binance' ? priceSparkline(primary.symbol)
+      : primary.exchange === 'aster' ? asterSparkline(primary.symbol)
+      : Promise.resolve([]),
   ]);
 
   if (venues.status === 'rejected') {

@@ -110,3 +110,17 @@
 | Timescale 真实执行 | **NOT VERIFIED** | 无测试实例，未执行 |
 | Evidence Panel 专项 E2E | **NOT IMPLEMENTED** | 本轮未新增浏览器交互套件 |
 | 冻结历史样本/SHA256、断网重连、重启恢复、抽样核对 | **NOT VERIFIED** | 缺环境/授权 |
+
+
+## 2026-11 增补（最终 E2E/验收工具轮）
+
+| 项目 | 状态 | 证据 |
+| --- | --- | --- |
+| Evidence Panel 专项 E2E | **TESTED（本地）** | Chrome 157.0.8103.38，19 项断言 PASS，报告 `artifacts/e2e-evidence/report.json` |
+| 专项 E2E 进入 CI | IMPLEMENTED | workflow 新增 `Evidence Panel E2E` 步骤；本轮 CI 结果见运行链接 |
+| Timescale 状态拆分 | TESTED（脚本逻辑） | read/write/connectionRecovery/processRestartRecovery 独立；未连接实例 |
+| L2 连续性指标 | IMPLEMENTED | 探针未取得真实 PASS；本轮在 API 上执行结果为 NOT VERIFIED |
+| 冻结真实历史样本/SHA256 | **NOT VERIFIED** | 无授权导出 |
+| Binance/Bybit/OKX L2 实机 | **NOT VERIFIED** | 探针本轮未达到连续性门槛 |
+| 断网重连、进程重启恢复、盘口抽样 | **NOT VERIFIED** | 未执行 |
+| Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | 无逐所历史序列 |

@@ -1,6 +1,7 @@
 # Production acceptance runbook
 
-All commands are read-only probes. A probe prints `PASS` only with direct evidence;
+The L2 probe is read-only. The Timescale probe performs isolated test writes only with
+explicit opt-in; it is not a read-only command. A probe prints `PASS` only with direct evidence;
 missing environments print `NOT VERIFIED` and must not be counted as passing.
 
 ## 1. Live L2 (Binance / Bybit / OKX)
@@ -85,3 +86,28 @@ node scripts/acceptance/timescale.mjs
 - Binance live L2 (REST intermittently unreachable here).
 - Network interruption/reconnect execution.
 - Timescale with a real disposable instance (script not executed).
+
+
+## Updates (final E2E round)
+
+### Evidence Panel E2E
+
+`npm run e2e:evidence` renders `e2e/evidence.html` (real CrossExchangePanel) in Chromium,
+intercepts the research API with deterministic fixtures and asserts 19 behaviours
+(factor/timeframe/lookback/pair/sort, coverage, truncation, 500, empty, OOS NOT VERIFIED,
+EN/ZH, 390px, no console errors). Missing Chrome reports SKIPPED (exit 2). CI runs it after
+the smoke E2E. Fixtures are UI-only.
+
+### Timescale statuses
+
+READ / WRITE / CONNECTION RECOVERY / PROCESS RESTART RECOVERY are independent.
+`connectionRecovery` uses a fresh pool in the same process. `processRestartRecovery` runs
+only with `ACCEPTANCE_RESTART_CMD` and stays NOT VERIFIED otherwise. Overall PASS requires
+all four.
+
+### L2 continuity
+
+Probe V2 reports requested/observed/continuous durations, max update gap, invalid-state
+duration, valid window %, sequence advances, epoch changes and recoveryCompleted. PASS
+requires ≥80% observed window, ≥80% valid window, gap ≤5s, one epoch, no new gap, positive
+spread/depth, delay ≤15s and no early SSE end. Fewer than two valid frames is NOT VERIFIED.

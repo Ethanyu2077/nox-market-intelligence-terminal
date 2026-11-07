@@ -43,17 +43,19 @@ export async function scanHistory(store: Pager, projectId: string, options: Scan
     const page = await store.page(projectId, {
       kind: options.kind, from: options.from, to: options.to, asOf: options.asOf, cursor: cursor ?? undefined, limit: options.limit,
     });
+    // Consume the WHOLE page. Stopping mid-page and returning that page's next cursor
+    // would silently skip the remaining records; maxRecords is a soft bound of one page.
     for (const item of page.items) {
       scanned += 1;
       // Stable identity: the same event can reappear on a page boundary after a new write.
       if (seen.has(item.id)) { duplicates += 1; continue; }
       seen.add(item.id);
       items.push(item);
-      if (items.length >= options.maxRecords) { reason = 'max-records'; break; }
     }
     pages += 1;
     cursor = page.nextCursor;
-    if (reason === 'max-records' || !cursor) break;
+    if (items.length >= options.maxRecords) { reason = 'max-records'; break; }
+    if (!cursor) break;
   }
 
   return { items, cursor, scanned, duplicates, truncated: reason != null, reason };

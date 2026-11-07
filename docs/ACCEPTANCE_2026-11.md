@@ -162,3 +162,14 @@
 | Timescale 实库验收 | **NOT VERIFIED** | 无测试实例；脚本尚未携带 admin 会话 |
 | L2 实机连续性 | **NOT VERIFIED** | 未取得连续有效数据 |
 | 断网重连、冻结样本/SHA256、抽样核对、Spot/Perp VD/CVD | **NOT VERIFIED** | 缺环境/授权 |
+
+## 2026-11 增补（验收集成轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| Timescale 管理员认证接入 | TESTED | 仅环境变量凭据；复用 /api/auth/login；重启后强制重新登录；缺凭据/401/403 → NOT VERIFIED |
+| L2 Recovery 报告一致性 | TESTED | 探针直接使用 metrics.recoveryCompleted 与 evaluateL2 状态；12 个 L2 测试 |
+| 测试库身份校验 | TESTED | 需 ACCEPTANCE_ALLOW_WRITES=1 + ACCEPTANCE_TEST_DB_NAME 与实际 current_database() 一致且可丢弃 |
+| Timescale 实库执行 | **NOT VERIFIED** | 无测试实例，未执行；脚本未在真实库上跑过 |
+| Binance / Bybit / OKX 连续 L2 | **NOT VERIFIED** | 未取得连续有效数据 |
+| 断网重连、冻结样本/SHA256、抽样核对、Spot/Perp VD/CVD | **NOT VERIFIED** | 缺环境/授权 |

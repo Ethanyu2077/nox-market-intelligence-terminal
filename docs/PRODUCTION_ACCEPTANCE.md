@@ -131,3 +131,14 @@ deduplicated (epoch+sequence), longest continuous live is the longest single run
 sum of segments), and PASS requires ≥80% observed window, ≥80% valid window, ≥80% longest
 run, gap ≤5s, no new gap, valid spread/depth, delay ≤15s and no early SSE end. Fewer than
 two valid updates is NOT VERIFIED.
+
+## Updates (acceptance integration)
+
+- Timescale probe requires `ACCEPTANCE_ADMIN_USER` + `ACCEPTANCE_ADMIN_PASSWORD` (never logged);
+  it logs in through `/api/auth/login`, sends the session cookie to `/api/acceptance/records`,
+  and re-authenticates after an authorized restart. Missing/invalid credentials are
+  NOT VERIFIED, never anonymous access.
+- Writes require `ACCEPTANCE_ALLOW_WRITES=1` AND `ACCEPTANCE_TEST_DB_NAME` matching the
+  connected `current_database()`, which must look disposable. URL matching alone is rejected.
+- L2 JSON report fields (recovery, gap, resync, status) come from the same analyzer decision;
+  `state=live` or `integrity=ok` alone never implies recovery.

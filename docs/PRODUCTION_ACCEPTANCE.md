@@ -111,3 +111,23 @@ Probe V2 reports requested/observed/continuous durations, max update gap, invali
 duration, valid window %, sequence advances, epoch changes and recoveryCompleted. PASS
 requires ≥80% observed window, ≥80% valid window, gap ≤5s, one epoch, no new gap, positive
 spread/depth, delay ≤15s and no early SSE end. Fewer than two valid frames is NOT VERIFIED.
+
+
+## Updates (acceptance integrity round)
+
+### Process restart recovery
+
+Requires `NOX_API_URL`, `ACCEPTANCE_RESTART_CMD`, `DATABASE_URL` and
+`ACCEPTANCE_ALLOW_WRITES=1`. The probe records process `startedAt` and test ids through the
+API, runs only the explicitly configured restart, waits for `/api/health`, then re-reads
+identity and ids through `/api/acceptance/records`. PASS requires a changed identity, a
+ready API, and identical ids without duplicates. Connection-pool recovery is reported
+separately and never satisfies process restart recovery.
+
+### L2 continuity
+
+`l2-live.mjs` now uses `scripts/acceptance/lib/l2-analysis.mjs`: repeated snapshots are
+deduplicated (epoch+sequence), longest continuous live is the longest single run (never a
+sum of segments), and PASS requires ≥80% observed window, ≥80% valid window, ≥80% longest
+run, gap ≤5s, no new gap, valid spread/depth, delay ≤15s and no early SSE end. Fewer than
+two valid updates is NOT VERIFIED.

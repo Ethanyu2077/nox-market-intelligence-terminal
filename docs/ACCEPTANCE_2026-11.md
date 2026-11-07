@@ -124,3 +124,16 @@
 | Binance/Bybit/OKX L2 实机 | **NOT VERIFIED** | 探针本轮未达到连续性门槛 |
 | 断网重连、进程重启恢复、盘口抽样 | **NOT VERIFIED** | 未执行 |
 | Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | 无逐所历史序列 |
+
+
+## 2026-11 增补（验收完整性轮）
+
+| 项目 | 状态 | 证据 |
+| --- | --- | --- |
+| 进程重启判定（身份变化 + API 读回） | TESTED | 8 个确定性测试；`evaluateRestart` 纯函数 |
+| 进程重启真实执行 | **NOT VERIFIED** | 无 Timescale 实例与可控 API 重启环境 |
+| L2 连续性统计（最长连续/去重/心跳/Epoch） | TESTED | 5 个 Fixture 测试；`l2-analysis.mjs` |
+| L2 实机连续性 | **NOT VERIFIED** | 探针未取得两帧以上有效更新 |
+| 验收证据字段（时间/commit/环境/参数/证据路径） | IMPLEMENTED | runbook 记录要求 |
+| 冻结真实历史样本/SHA256、断网重连、抽样核对 | **NOT VERIFIED** | 缺授权/环境 |
+| Spot VD / Perp VD / CVD 完整历史 | **NOT VERIFIED** | 无逐所历史序列 |

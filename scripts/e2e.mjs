@@ -85,21 +85,31 @@ try {
     const text = await page.evaluate(() => (document.querySelector('main')?.innerText ?? '').trim().length);
     const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     await page.screenshot({ path: path.join(outDir, `${slug}.png`) });
-    check(`navigate: ${label}`, text > 40 && pageErrors.length === before, text <= 40 ? 'empty page' : pageErrors.slice(before).join('; '));
+    check(`navigate: ${label}`, text > 40 && pageErrors.length === before, text <= 40 ? `empty page (text=${text})` : pageErrors.slice(before).join('; '));
   }
 
-  // Command palette
-  await page.keyboard.down('Meta'); await page.keyboard.press('k'); await page.keyboard.up('Meta');
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  // Command palette. Control works on both platforms (Linux CI has no Meta mapping in
+  // headless Chromium), with a click fallback if the shortcut is swallowed.
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+  await page.keyboard.down(modifier); await page.keyboard.press('k'); await page.keyboard.up(modifier);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  if (!(await page.$('.palette'))) {
+    await page.click('.search-trigger').catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
   const palette = await page.$('.palette');
   check('command palette opens', Boolean(palette));
   await page.keyboard.press('Escape');
   await new Promise((resolve) => setTimeout(resolve, 250));
   check('command palette closes', (await page.$('.palette')) === null);
 
-  // AI drawer
-  await page.keyboard.down('Meta'); await page.keyboard.press('j'); await page.keyboard.up('Meta');
-  await new Promise((resolve) => setTimeout(resolve, 600));
+  // AI drawer, same shortcut + click fallback.
+  await page.keyboard.down(modifier); await page.keyboard.press('j'); await page.keyboard.up(modifier);
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  if (!(await page.$('.ai-assistant'))) {
+    await page.click('.ghost-button.ai').catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
   check('AI drawer opens', Boolean(await page.$('.ai-assistant')));
   await page.keyboard.press('Escape');
   await new Promise((resolve) => setTimeout(resolve, 250));

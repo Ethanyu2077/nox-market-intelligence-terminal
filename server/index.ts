@@ -186,7 +186,16 @@ app.post('/api/projects/:id/signals/refresh', safe(async (req, res) => {
   await signalRegistry.register(signalsFromSnapshots(project, await projectVenueSnapshots(project.markets)));
   res.json({ items: (await signalRegistry.list()).filter(s => s.projectId === project.id), publishingEnabled: false });
 }));
-app.get('/api/data-health', safe(async (_req, res) => { const started = Date.now(); await getInstruments(); res.json({ venue: 'binance', market: 'USDⓈ-M', status: 'live', latencyMs: Date.now() - started, checkedAt: Date.now(), source: 'fapi.binance.com' }); }));
+// Health probes report dependency state; they must not turn a venue outage into a 5xx.
+app.get('/api/data-health', async (_req, res) => {
+  const started = Date.now();
+  try {
+    await getInstruments();
+    res.json({ venue: 'binance', market: 'USDⓈ-M', status: 'live', latencyMs: Date.now() - started, checkedAt: Date.now(), source: 'fapi.binance.com' });
+  } catch (error) {
+    res.json({ venue: 'binance', market: 'USDⓈ-M', status: 'unavailable', latencyMs: Date.now() - started, checkedAt: Date.now(), source: 'fapi.binance.com', error: error instanceof Error ? error.message.slice(0, 200) : 'Upstream unavailable' });
+  }
+});
 app.get('/api/instruments', safe(async (req, res) => { const q = String(req.query.search ?? '').toUpperCase(); const exchange = exchangeSchema.catch('binance').parse(req.query.exchange) as ExchangeId; const items = (await getExchangeInstruments(exchange)).filter((i) => !q || i.nativeSymbol.includes(q) || i.base.includes(q)).slice(0, 50); res.json({ items, total: items.length, exchange, timestamp: Date.now() }); }));
 app.get('/api/projects', (_req, res) => res.json({ items: store.getProjects(true), selectedProjectId: store.getSelectedProjectId() }));
 // Hydrated quotes for every active project, so the watchlist is a price board and not a

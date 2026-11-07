@@ -149,3 +149,16 @@
 | Timescale 实库验收 | **NOT VERIFIED** | 无测试实例；验收接口还需 admin 会话 |
 | L2 实机连续性 | **NOT VERIFIED** | 未取得连续有效数据 |
 | 断网重连、冻结样本/SHA256、抽样核对、Spot/Perp VD/CVD | **NOT VERIFIED** | 缺环境/授权 |
+
+## 2026-11 增补（最终安全与 Gap 轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| 验收接口环境白名单 | TESTED | 仅 `NOX_ACCEPTANCE_MODE=1` 且 `NODE_ENV=test`；缺失/development/production 均 404 |
+| 验收接口路由级测试 | TESTED | 404×4、401、403×2、admin 200、非法 namespace 400、只读 acceptance 项目 |
+| L2 Gap 中断连续区间 | TESTED | gap 增加、live→resync、checksum failure 都立即打断；同 epoch 的 live 不能恢复 |
+| L2 Recovery 审计 | TESTED | 需新 Book Epoch + 连续更新；gapDetected/gapRecovered/resyncStarted/resyncCompleted 输出 |
+| Integrity 字段语义 | TESTED | integrity 来自盘口完整性，绝不复用 state；checksum-unchecked 不算 live |
+| Timescale 实库验收 | **NOT VERIFIED** | 无测试实例；脚本尚未携带 admin 会话 |
+| L2 实机连续性 | **NOT VERIFIED** | 未取得连续有效数据 |
+| 断网重连、冻结样本/SHA256、抽样核对、Spot/Perp VD/CVD | **NOT VERIFIED** | 缺环境/授权 |

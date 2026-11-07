@@ -142,6 +142,13 @@ async function buildScanner(limit: number): Promise<ScannerRow[]> {
   });
 }
 
+/** Lightweight close-price series for watchlist sparklines (no OI/trade fan-out). */
+export async function priceSparkline(symbol: string, interval = '1h', limit = 24): Promise<number[]> {
+  const encoded = encodeURIComponent(symbol.toUpperCase());
+  const klines = await getJson<Array<Array<string | number>>>(`/fapi/v1/klines?symbol=${encoded}&interval=${interval}&limit=${limit}`);
+  return klines.map((k) => Number(k[4])).filter((value) => Number.isFinite(value));
+}
+
 export async function marketSeries(symbol: string, interval = '5m', limit = 120): Promise<MarketSeries> {
   const encoded = encodeURIComponent(symbol.toUpperCase());
   const oiInterval = interval === '1m' ? '5m' : interval;

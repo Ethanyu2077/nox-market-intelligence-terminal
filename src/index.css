@@ -1,0 +1,8 @@
+/* Load order matters: legacy page styles first, then the design system that overrides
+   the shell and shared primitives. Page-specific sheets are imported by their components. */
+@import './styles.css';
+@import './sidebar.css';
+@import './refinement.css';
+@import './design/tokens.css';
+@import './design/shell.css';
+@import './design/pages.css';

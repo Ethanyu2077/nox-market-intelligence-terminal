@@ -121,6 +121,9 @@ export class AuthStore {
     });
     app.post('/api/auth/logout',(req,res)=>{const cookie=this.cookie(req);if(cookie)this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(cookie));res.clearCookie('nox_session',{path:'/'});res.json({ok:true});});
     app.use('/api',(req,res,next)=>{
+      // AI routes authenticate themselves: a browser-supplied key may be used anonymously
+      // (the caller pays), while the server key requires a session. See server/ai/routes.ts.
+      if(req.path.startsWith('/ai/')){next();return;}
       if(['GET','HEAD','OPTIONS'].includes(req.method)||(req.method==='POST'&&req.path==='/projects/discover')){next();return;}
       const user=this.user(req);if(!user){res.status(401).json({error:{message:'Sign in to change projects or settings'}});return;}
       const required=req.method==='DELETE'||req.path.startsWith('/settings')?'admin':'analyst';

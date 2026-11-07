@@ -18,6 +18,7 @@ import {BinanceExchangeService} from './binance-exchange.ts';
 import { analyzeResearch, READ_ONLY_TOOLS, signalsFromSnapshots } from './research.ts';
 import { SignalRegistry } from './signal-registry.ts';
 import { addAiHypotheses } from './research-ai.ts';
+import { installAiRoutes } from './ai/routes.ts';
 import { OrderFlowService } from './orderflow-service.ts';
 import { HistoryStore } from './history-store.ts';
 import { AuthStore, defaultAuthDirectory } from './auth.ts';
@@ -38,6 +39,7 @@ import {alignmentOutcomes} from './alignment-outcome.ts';
 import {projectDataCoverage} from './data-coverage.ts';
 import {venueCoverage} from './venue-coverage.ts';
 import {signalReadiness,weightedConsensus} from './research-readiness.ts';
+import { watchlistQuotes } from './watchlist.ts';
 
 const port = Number(process.env.PORT ?? 8787);
 const app = express();
@@ -69,9 +71,14 @@ app.use((req, res, next) => {
   next();
 });
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '160kb' }));
 const auth = new AuthStore(defaultAuthDirectory(), dataDirectory); await auth.init(); auth.install(app);
 installProviderSettings(app,auth,providerCredentials,key=>{coinglass=new CoinGlassService(new CoinGlassClient(key));});
+installAiRoutes(app, {
+  auth,
+  project: (id) => store.getProjects(true).find((item) => item.id === id),
+  evidence: async (project) => { const venues = await projectVenueSnapshots(project.markets); return { report: analyzeResearch(project, venues), venues }; },
+});
 collector.start();
 
 const exchangeSchema = z.enum(EXCHANGE_IDS);
@@ -161,6 +168,9 @@ app.post('/api/projects/:id/signals/refresh', safe(async (req, res) => {
 app.get('/api/data-health', safe(async (_req, res) => { const started = Date.now(); await getInstruments(); res.json({ venue: 'binance', market: 'USDⓈ-M', status: 'live', latencyMs: Date.now() - started, checkedAt: Date.now(), source: 'fapi.binance.com' }); }));
 app.get('/api/instruments', safe(async (req, res) => { const q = String(req.query.search ?? '').toUpperCase(); const exchange = exchangeSchema.catch('binance').parse(req.query.exchange) as ExchangeId; const items = (await getExchangeInstruments(exchange)).filter((i) => !q || i.nativeSymbol.includes(q) || i.base.includes(q)).slice(0, 50); res.json({ items, total: items.length, exchange, timestamp: Date.now() }); }));
 app.get('/api/projects', (_req, res) => res.json({ items: store.getProjects(true), selectedProjectId: store.getSelectedProjectId() }));
+// Hydrated quotes for every active project, so the watchlist is a price board and not a
+// list of dashes. Short server-side TTL; partial coverage is explicit per row.
+app.get('/api/watchlist/quotes', safe(async (_req, res) => res.json(await watchlistQuotes(store.getProjects(true)))));
 app.post('/api/projects/discover', safe(async (req, res) => { const body = z.object({ query: z.string().trim().min(1).max(100) }).parse(req.body); res.json(await discoverAcrossExchanges(body.query)); }));
 app.get('/api/projects/:id/venues', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await projectVenueSnapshots(project.markets)); }));
 app.get('/api/projects/:id/korean-spot',safe(async(req,res)=>{const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}res.json(await koreanSpot.project(project));}));

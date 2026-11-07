@@ -1,0 +1,145 @@
+/* Page-level primitives that replace the legacy "override war" in refinement.css. */
+
+.app-shell .page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin: 0 0 16px;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+}
+.app-shell .page-head > div:first-child { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.app-shell .page-head h1 { margin: 0; font: 600 18px/1.3 var(--ui-font); letter-spacing: -0.015em; }
+.app-shell .page-head p { margin: 0; max-width: 86ch; color: var(--muted); font: 12px/1.6 var(--ui-font); }
+.app-shell .page-head .primary-button, .app-shell .page-head .secondary-button { height: 32px; }
+.app-shell .page-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+.app-shell .secondary-button {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 11px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: transparent; color: var(--text-2); font-size: 12px; cursor: pointer;
+}
+.app-shell .secondary-button:hover { background: var(--surface-2); border-color: var(--line-strong); color: var(--text); }
+
+/* KPI strip: one bordered bar with dividers, not six floating cards. */
+.app-shell .kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0 !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.app-shell .kpi-strip .kpi {
+  min-height: 0 !important;
+  padding: 12px 14px !important;
+  border: 0 !important;
+  border-right: 1px solid var(--line) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  gap: 3px !important;
+}
+.app-shell .kpi-strip .kpi:last-child { border-right: 0 !important; }
+.app-shell .kpi-strip .kpi > span { font: 500 9.5px/1.3 var(--mono) !important; letter-spacing: 0.08em !important; text-transform: uppercase !important; color: var(--faint) !important; }
+.app-shell .kpi-strip .kpi strong { font: 500 17px/1.25 var(--num) !important; letter-spacing: -0.01em; color: var(--text); }
+.app-shell .kpi-strip .kpi small { font: 10px/1.35 var(--mono) !important; color: var(--muted) !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Panels */
+.app-shell .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.app-shell .panel-head { min-height: 40px; padding: 0 12px; gap: 10px; }
+.app-shell .panel-head strong { font: 500 12px/1.3 var(--ui-font) !important; letter-spacing: 0 !important; text-transform: none !important; color: var(--text); }
+.app-shell .panel-head :is(span, button) { font: 10px/1.4 var(--mono) !important; color: var(--muted); }
+
+.app-shell .error-banner {
+  margin: 10px 22px 0;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--down) 35%, transparent);
+  background: color-mix(in srgb, var(--down) 8%, var(--bg));
+  color: var(--down);
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.app-shell .error-banner div { display: flex; flex-direction: column; gap: 1px; }
+.app-shell .error-banner strong { font-size: 12px; }
+.app-shell .error-banner span { color: var(--muted); font-size: 11px; }
+.app-shell .error-banner button { margin-left: auto; height: 26px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--down) 40%, transparent); background: transparent; color: var(--down); border-radius: 4px; font-size: 11px; cursor: pointer; }
+
+/* Research workspace: the assistant needs the full panel body, no legacy padding. */
+.research-mosaic .mosaic-window-title,
+.research-mosaic .mosaic-window-toolbar { font: 500 11px/1.3 var(--ui-font) !important; text-transform: none !important; letter-spacing: 0 !important; }
+.research-mosaic .mosaic-window .mosaic-window-toolbar { height: 34px !important; background: var(--surface-2) !important; border-bottom: 1px solid var(--line); }
+.research-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.research-panel-tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+.research-panel-tabs button {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 10px;
+  border: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--muted); font-size: 11.5px; cursor: pointer;
+}
+.research-panel-tabs button.active { color: var(--text); border-bottom-color: var(--ai); }
+.research-ai-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.research-ai-host .ai-assistant { height: 100%; }
+.research-panel-host { height: 100%; min-height: 0; overflow: hidden; }
+.research-evidence { padding: 12px; overflow: auto; height: 100%; }
+.research-evidence .evidence-load { height: 28px; padding: 0 10px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text-2); border-radius: 4px; font-size: 11.5px; cursor: pointer; }
+.research-evidence h3 { margin: 16px 0 6px; font: 500 10px/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.research-evidence p { margin: 0 0 6px; font-size: 12px; line-height: 1.65; color: var(--text-2); }
+.research-evidence small { color: var(--faint); font: 10px var(--mono); }
+.research-error { color: var(--down); font-size: 11.5px; }
+.research-toolbar { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.research-toolbar > div { flex: 1; min-width: 240px; }
+.research-toolbar h1 { margin: 0 0 3px; font: 600 17px/1.3 var(--ui-font); }
+.research-toolbar p { margin: 0; color: var(--muted); font-size: 11.5px; }
+.research-toolbar button { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+.research-toolbar button:hover { color: var(--text); background: var(--surface-2); }
+
+/* Legacy page tables adopt the new density without touching each page. */
+.app-shell table th {
+  height: 30px !important;
+  padding: 0 10px !important;
+  background: var(--surface-2) !important;
+  color: var(--faint) !important;
+  font: 500 9.5px/1 var(--mono) !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+.app-shell table td {
+  height: 44px !important;
+  padding: 6px 10px !important;
+  font: 11.5px/1.4 var(--num) !important;
+  border-color: var(--line-soft) !important;
+}
+.app-shell tbody tr:hover { background: var(--surface-hover) !important; }
+.app-shell .table-foot { padding: 9px 12px; border-top: 1px solid var(--line); background: var(--surface); color: var(--faint); font: 10px/1.5 var(--mono); }
+
+/* Charts sit flush against their panel header. */
+.app-shell .chart-toolbar { border: 1px solid var(--line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; background: var(--surface-2); min-height: 38px; padding: 4px 10px; }
+.app-shell .chart-toolbar span { font: 9.5px var(--mono); color: var(--faint); }
+.app-shell .chart-toolbar button { height: 24px; border-radius: 3px; font-size: 10.5px; }
+.app-shell .chart-stack { border-radius: 0 0 var(--radius) var(--radius); }
+.app-shell .chart-label { background: var(--surface); }
+.app-shell .chart { background: var(--bg); }
+
+/* Settings pages keep their own rhythm but inherit type. */
+.app-shell .ops-panel h2 { font: 600 16px/1.4 var(--ui-font); margin: 26px 0 12px; }
+.app-shell .ops-panel p { font: 12px/1.7 var(--ui-font); }
+
+@media (max-width: 1180px) {
+  .app-shell .kpi-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .app-shell .kpi-strip .kpi:nth-child(3n) { border-right: 0 !important; }
+  .app-shell .kpi-strip .kpi:nth-child(-n + 3) { border-bottom: 1px solid var(--line) !important; }
+}
+@media (max-width: 720px) {
+  .app-shell .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-shell .kpi-strip .kpi { border-right: 1px solid var(--line) !important; }
+  .app-shell .kpi-strip .kpi:nth-child(2n) { border-right: 0 !important; }
+  .app-shell .kpi-strip .kpi:nth-child(-n + 4) { border-bottom: 1px solid var(--line) !important; }
+  .app-shell .page-head { flex-direction: column; align-items: stretch; }
+}

@@ -2,6 +2,22 @@
 
 For the current V2.2 incremental data/auth/regime architecture and its explicitly unverified production boundaries, see [V2_2_IMPLEMENTATION.md](V2_2_IMPLEMENTATION.md). This note retains the initial-stage architecture audit below.
 
+## AI analyst boundary (2026-11)
+
+```text
+venue adapters ──► research.ts (deterministic) ──┐
+project snapshots / coverage ────────────────────┴─► ai/prompt.ts  evidence packet (S1..Sn, capped)
+                                                            │
+                                    server/ai/deepseek.ts (SSE) ──► /api/ai/chat
+                                                            └─────► /api/ai/brief (JSON + citation gate)
+```
+
+The model is a reader, never a calculator: every numeric claim in the UI comes from the deterministic
+report, and the brief parser drops any citation id that was not in the packet it sent. Server-key calls
+require a session; browser-key calls are forwarded per request and never persisted. See
+[DEEPSEEK_INTEGRATION.md](DEEPSEEK_INTEGRATION.md). The UI shell (`src/shell/*`, `src/design/*`) keeps the
+instrument context, coverage and freshness visible on every project page.
+
 ## Audit result
 
 The repository contained only a new Git directory and no reusable application code. The initial slice therefore uses a TypeScript workspace while retaining established NOX dashboard conventions: dense information layout, compact sidebar/header, restrained neutral palette, monospaced market values, and explicit source/freshness labels.

@@ -1,5 +1,9 @@
 # NOX Market Intelligence Terminal
 
+Latest (2026-11): [terminal shell redesign](docs/TERMINAL_UI_2026-11.md) and the
+[DeepSeek research analyst](docs/DEEPSEEK_INTEGRATION.md). The watchlist is now a live price board,
+the market strip is persistent across pages, and ⌘K / ⌘J drive navigation and AI from the keyboard.
+
 New: [Upbit / Bithumb KRW spot discovery and quotes](KOREAN_SPOT.md), displayed separately from USDT derivatives.
 
 Current authentication: [SQLite storage and sign-in dialog](AUTH_SQLITE.md). Anonymous read-only access and mutation roles are preserved.
@@ -52,7 +56,9 @@ Independent, project-based crypto market monitoring for user-selected external t
 - R17 review fixes (2026-10-29): direction-adjusted cost/hit math, point-in-time OI/flow baselines, decision-availableAt for outcomes, withheld-aware watchlist, read-only research GET, NAV/position-flow entry.
 - Shared execution ledger (`shared/execution-ledger.ts`): fixed-base long/short P&L, fees, adverse slippage, settled funding cash, notional return vs margin ROI, equity curve and capital-capped allocation; golden fixtures are also consumed by the ORDER case Python backtest so formulas cannot diverge.
 - Timeframe freshness is interval-aware: one closed candle period plus a 5m collection lag (future timestamps are refused), instead of a fixed 15m threshold that made normal 1h/4h windows look stale.
-- Institutional terminal UI: grayscale-first shell, tabular monospace numbers, dense instrument-style tables/panels, a UTC+8 clock, light-theme contrast fixes, mobile topbar cleanup and compact provider/settings cards.
+- Institutional terminal UI: grouped navigation, a persistent market strip (instrument, last, 24H, OI, funding countdown, mark, coverage, timeframe), a command palette (⌘K), a status bar with identity/coverage/last tick, tabular monospace numbers, and a UTC+8 clock.
+- Live watchlist price board: every active project's primary feed is hydrated with price, 24H change, volume, OI, funding, a 24h sparkline and an explicit coverage state (`GET /api/watchlist/quotes`, 12s TTL). Missing values stay `null` and render as `—`.
+- DeepSeek research analyst: read-only, evidence-grounded, streaming chat plus a structured brief (observed / inferred / hypotheses with invalidation / risks / missing data), citation ids validated against the evidence packet, server-key mode for signed-in users and browser-local key mode for everyone else. See [DEEPSEEK_INTEGRATION.md](docs/DEEPSEEK_INTEGRATION.md).
 - UI hardening: locale-aware relative timestamps (no English leakage in zh), heartbeat events keep an idle-but-open stream from flipping to STALE, and cross-venue cards show coverage unavailable instead of fabricated 0/0 values.
 
 ## Run locally

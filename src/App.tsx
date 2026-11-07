@@ -1,12 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, Check, CheckCircle2, ChevronDown, Copy, Database, Edit3, FolderKanban, Gauge, Menu, Moon, Plus, RefreshCw, Search, Sun, Trash2, Waves, X } from 'lucide-react';
+import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Waves, X } from 'lucide-react';
 import type { CandlePoint, CvdPoint, ExchangeCapabilities, ExchangeSelection, LinePoint, MarketProject, MarketSeries, OiDeltaPoint, OnchainProjectSnapshot, Overview, PositionFlowSignal, ProjectDiscoveryResult, ProjectMarket, ProjectResearchContext, ProjectVenueResponse, VolumeFlowPoint } from '../shared/types';
 import type { VolumeBarsResponse, VolumeMatrixResponse, VolumeShareHistory } from '../shared/volume';
 import type { AlignmentHistoryResponse, AlignmentOutcomeResponse, TimeframeAlignmentResponse } from '../shared/timeframe';
 import { ChartModeSwitcher, TradingViewChartPanel, type ChartMode } from './TradingViewChart';
 import { ResearchWorkspace } from './ResearchWorkspace';
 import { OrderFlowPage } from './OrderFlowPage';
-import { AccessBar, CollectionPanel, DataCoveragePanel, VenueCoveragePanel } from './Operations';
+import { CollectionPanel, DataCoveragePanel, VenueCoveragePanel } from './Operations';
 import {EventStudyPage} from './EventStudyPage';
 import { RegimeV2Panel } from './RegimeV2Panel';
 import {BinanceWeb3Panel,Web3ConnectionStatus} from './BinanceWeb3Panel';
@@ -18,19 +18,33 @@ import { api, API_BASE } from './api';
 import { timeAgo } from './format';
 import { ResearchTerminal } from './ResearchTerminal';
 import type { BacktestResult } from '../shared/types';
+import { Sidebar, type NavGroup } from './shell/Sidebar';
+import { Topbar } from './shell/Topbar';
+import { MarketBar } from './shell/MarketBar';
+import { CommandPalette, type PaletteAction } from './shell/CommandPalette';
+import { useAuth } from './shell/useAuth';
+import { useWatchlistQuotes } from './shell/useWatchlistQuotes';
+import { Sparkline } from './shell/Sparkline';
+import { AiDrawer } from './ai/AiDrawer';
+import { AiSettingsCard } from './ai/AiSettingsCard';
+import type { ConnectionState } from './shell/labels';
 
 type Page = 'projects' | 'terminal' | 'overview' | 'structure' | 'positionFlow' | 'derivatives' | 'contribution' | 'crossExchange' | 'liquidity' | 'signals' | 'history' | 'settings' | 'research' | 'orderflow';
 type Interval = '1m' | '5m' | '15m' | '1h' | '4h';
-type ConnectionState = 'connecting' | 'live' | 'stale' | 'degraded';
 type Language = 'en' | 'zh';
 type Theme = 'dark' | 'light';
-const EXCHANGES: Array<{ id: ExchangeSelection; label: string }> = [
-  { id: 'aggregated', label: 'Aggregated' }, { id: 'binance', label: 'Binance' }, { id: 'bitget', label: 'Bitget' },
-  { id: 'bybit', label: 'Bybit' }, { id: 'okx', label: 'OKX' }, { id: 'gate', label: 'Gate' }, { id: 'kucoin', label: 'KuCoin' }, { id: 'mexc', label: 'MEXC' }
-];
 
 const ZH: Record<string, string> = {
   'Project research terminal': '项目研究总览',
+  'Research Terminal': '研究终端',
+  'Derivatives & Funding': '衍生品与资金费率',
+  'Venue Contribution': '交易所贡献',
+  'Cross-Venue': '跨所对比',
+  'Liquidity': '流动性',
+  'Order Flow': '订单流',
+  'Settings & Data': '设置与数据源',
+  'DeepSeek Analyst': 'DeepSeek 分析',
+  'TERMINAL': '终端', 'FLOW & VENUES': '资金流与场所', 'INTELLIGENCE': '情报',
   'Research Workspace': '研究工作区',
   'Research & Signals': '研究与信号',
   'Exchange': '交易所',
@@ -88,20 +102,43 @@ const UiContext = createContext<{ language: Language; t: (value: string) => stri
 function useUi() { return useContext(UiContext); }
 function useTimeAgo() { const { language } = useUi(); return useCallback((timestamp: number | null | undefined) => timeAgo(timestamp, language), [language]); }
 
-const NAV: Array<{ id: Page; label: string; icon: React.ReactNode; group?: string; phase?: string }> = [
-  { id: 'projects', label: 'Project Watchlist', icon: <FolderKanban size={18}/>, group: 'WATCHLIST' },
-  { id: 'terminal', label: 'Project research terminal', icon: <Gauge size={18}/>, group: 'PROJECT' },
-  { id: 'overview', label: 'Market Overview', icon: <Gauge size={18}/> },
-  { id: 'structure', label: 'Market Structure', icon: <BarChart3 size={18}/> },
-  { id: 'positionFlow', label: 'Position Flow', icon: <Activity size={18}/> },
-  { id: 'contribution', label: 'Exchange Contribution', icon: <Database size={18}/> },
-  { id: 'crossExchange', label: 'Cross-Exchange Analysis', icon: <ArrowUp size={18}/> },
-  { id: 'liquidity', label: 'Liquidity Intelligence', icon: <Waves size={18}/> },
-  { id: 'research', label: 'Research Workspace', icon: <Search size={18}/>, group: 'Research & Signals' },
-  { id: 'orderflow', label: 'Advanced Order Flow', icon: <Waves size={18}/> },
-  { id: 'signals', label: 'Signals & Alerts', icon: <AlertTriangle size={18}/> },
-  { id: 'history', label: 'Historical Analysis', icon: <Archive size={18}/> },
-  { id: 'settings', label: 'Settings / Data Sources', icon: <Database size={18}/>, group: 'SYSTEM' }
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: 'WATCHLIST',
+    items: [{ id: 'projects', label: 'Project Watchlist', icon: <FolderKanban size={15}/> }],
+  },
+  {
+    label: 'TERMINAL',
+    items: [
+      { id: 'terminal', label: 'Research Terminal', icon: <Gauge size={15}/> },
+      { id: 'overview', label: 'Market Overview', icon: <BarChart3 size={15}/> },
+      { id: 'structure', label: 'Market Structure', icon: <Activity size={15}/> },
+      { id: 'positionFlow', label: 'Position Flow', icon: <Waves size={15}/> },
+      { id: 'derivatives', label: 'Derivatives & Funding', icon: <BarChart3 size={15}/> },
+    ],
+  },
+  {
+    label: 'FLOW & VENUES',
+    items: [
+      { id: 'orderflow', label: 'Order Flow', icon: <Waves size={15}/> },
+      { id: 'contribution', label: 'Venue Contribution', icon: <Database size={15}/> },
+      { id: 'crossExchange', label: 'Cross-Venue', icon: <ArrowUp size={15}/> },
+      { id: 'liquidity', label: 'Liquidity', icon: <Waves size={15}/> },
+    ],
+  },
+  {
+    label: 'INTELLIGENCE',
+    items: [
+      { id: 'ai', label: 'DeepSeek Analyst', icon: <Search size={15}/> },
+      { id: 'research', label: 'Research Workspace', icon: <Search size={15}/> },
+      { id: 'signals', label: 'Signals & Alerts', icon: <AlertTriangle size={15}/> },
+      { id: 'history', label: 'Historical Analysis', icon: <Archive size={15}/> },
+    ],
+  },
+  {
+    label: 'SYSTEM',
+    items: [{ id: 'settings', label: 'Settings & Data', icon: <Database size={15}/> }],
+  },
 ];
 
 function signed(value: number | null | undefined, suffix = '%') {
@@ -162,10 +199,13 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [lastStreamEvent, setLastStreamEvent] = useState(0);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const lastTradeId = useRef<number | null>(null);
   const loadGeneration = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
-  const [mobileNav, setMobileNav] = useState(false);
+  const auth = useAuth();
   const selectedProject = useMemo(() => projects.find((project) => project.id === selectedProjectId && !project.archived) ?? null, [projects, selectedProjectId]);
   const t = useCallback((value: string) => translate(value, language), [language]);
   const localizedSeries = useMemo(() => language === 'zh' && series ? { ...series, positionFlow: { ...series.positionFlow, signals: series.positionFlow.signals.map((signal) => ({ ...signal, label: translate(signal.label, language) })) } } : series, [language, series]);
@@ -173,6 +213,8 @@ export default function App() {
   const activeMarket = exchange === 'aggregated' ? primaryMarket : selectedProject?.markets.find((market) => market.exchange === exchange && market.marketType === 'perpetual') ?? null;
   const analyticsMarket = activeMarket?.exchange === 'binance' ? activeMarket : selectedProject?.markets.find((market) => market.exchange === 'binance' && market.marketType === 'perpetual') ?? null;
   const symbol = analyticsMarket?.symbol ?? '';
+  const coverage = venueData ? { successful: venueData.aggregate.coverage.successful, requested: venueData.aggregate.coverage.requested } : null;
+  const pageLabel = t(NAV_GROUPS.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? 'Project Watchlist');
 
   const refreshProjects = useCallback(async (preferredId?: string) => {
     const response = await api<{ items: MarketProject[]; selectedProjectId: string | null }>('/projects');
@@ -198,7 +240,14 @@ export default function App() {
     if (symbol) requests.push(api<MarketSeries>(`/market/${symbol}/series?interval=${interval}`, { signal: controller.signal }));
     const [venues, nativeSeries] = await Promise.allSettled(requests);
     if (generation !== loadGeneration.current) return;
-    if (venues.status === 'fulfilled') { const data = venues.value as ProjectVenueResponse; setVenueData(data); setOverview(venueOverview(data, exchange, selectedProject)); }
+    if (venues.status === 'fulfilled') {
+      const data = venues.value as ProjectVenueResponse;
+      setVenueData(data);
+      setOverview(venueOverview(data, exchange, selectedProject));
+      // REST data arrived. Without a live socket this is polling, not a live feed; label it
+      // honestly instead of showing DEGRADED for a healthy 60s refresh.
+      setConnection((current) => current === 'live' ? current : 'polling');
+    }
     if (nativeSeries?.status === 'fulfilled') setSeries(nativeSeries.value as MarketSeries); else if (!symbol) setSeries(null);
     const failures = [venues, nativeSeries].filter((result) => result?.status === 'rejected') as PromiseRejectedResult[];
     if (failures.length) setError(`${requests.length - failures.length} of ${requests.length} selected-project datasets loaded; ${failures[0].reason instanceof Error ? failures[0].reason.message : 'an upstream request failed'}`);
@@ -242,6 +291,16 @@ export default function App() {
   useEffect(() => { localStorage.setItem('nox-language', language); document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'; }, [language]);
   useEffect(() => { localStorage.setItem('nox-theme', theme); document.documentElement.style.colorScheme = theme; }, [theme]);
 
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen((value) => !value); }
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j') { event.preventDefault(); setAiOpen((value) => !value); }
+      else if (event.key === 'Escape') { setPaletteOpen(false); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
   const selectProject = async (id: string) => {
     const project = projects.find((item) => item.id === id);
     // Invalidate every in-flight load for the previous project before switching the view.
@@ -254,73 +313,115 @@ export default function App() {
     if (status?.user && status.user.role !== 'viewer') await api('/projects/selection', { method: 'POST', body: JSON.stringify({ id }) });
   };
 
-  return <UiContext.Provider value={{ language, t }}><div className={`app-shell ${theme}`}>
-    <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
-      <div className="brand"><div className="brand-mark"><img src="/nox.png" alt="NOX Ventures"/></div><div className="brand-copy"><strong>NOX Ventures</strong><span>MARKET INTELLIGENCE</span></div><button className="mobile-close" onClick={() => setMobileNav(false)}><X size={18}/></button></div>
-      <nav>{NAV.map((item) => <div className="nav-entry" key={item.id}>{item.group && <div className="nav-label">{t(item.group)}</div>}<button className={page === item.id ? 'active' : ''} disabled={!selectedProject && item.id !== 'projects' && item.id !== 'settings'} onClick={() => { setPage(item.id); setMobileNav(false); }}><b className="nav-icon">{item.icon}</b><span>{t(item.label)}</span>{item.phase && <em>{item.phase}</em>}</button></div>)}</nav>
-      <div className="sidebar-foot"><div className="operator"><span>N</span><div><strong>NOX Intelligence</strong><small><i/> {language === 'zh' ? '公开数据 · 顶栏为实时状态' : 'Public data · live state in header'}</small></div></div></div>
-    </aside>
-    {mobileNav && <button className="scrim" onClick={() => setMobileNav(false)} aria-label="Close navigation"/>}
-    <main>
-      <Header page={page} projects={projects.filter((project) => !project.archived)} project={selectedProject} onProject={selectProject} onManage={() => setPage('projects')} interval={interval} onInterval={setIntervalValue} exchange={exchange} onExchange={setExchange} connection={connection} onMenu={() => setMobileNav(true)} onRefresh={() => load()} loading={loading} language={language} onLanguage={() => setLanguage((value) => value === 'en' ? 'zh' : 'en')} theme={theme} onTheme={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}/>
-      {error && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
-      <div className="page-content">
-        <AccessBar language={language}/>
-        {page === 'terminal' && selectedProject && <ResearchTerminal key={`${selectedProject.id}:${interval}`} project={selectedProject} series={localizedSeries} venues={venueData} language={language} interval={interval} kpis={<KpiStrip overview={overview}/>} exchange={exchange} onExchange={setExchange} onDetail={() => setPage('positionFlow')}/>}
-        {page === 'projects' && <ProjectsPage projects={projects} selectedProjectId={selectedProjectId} overview={overview} series={localizedSeries} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>} 
-        {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
-        {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language}/>} 
-        {page === 'contribution' && selectedProject && <ExchangeContributionPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/>} 
-        {page === 'crossExchange' && selectedProject && <><CrossExchangeAnalysisPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/><KoreanSpotPanel project={selectedProject} language={language}/><CoinGlassPanel project={selectedProject} language={language} onSettings={()=>setPage('settings')}/></>}
-        {page === 'positionFlow' && selectedProject && <PositionFlowPage overview={overview} series={localizedSeries} interval={interval}/>} 
-        {page === 'derivatives' && selectedProject && <DerivativesPage overview={overview} series={localizedSeries}/>} 
-        {page === 'liquidity' && selectedProject && <OnchainLiquidityPage project={selectedProject} interval={interval}/>} 
-        {page === 'settings' && <><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
-        {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}
-        {page === 'orderflow' && selectedProject && <OrderFlowPage key={selectedProject.id} project={selectedProject} series={localizedSeries} venues={venueData} interval={interval} onInterval={setIntervalValue} language={language} selection={exchange}/>}
-        {page === 'signals' && selectedProject && <RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/>}
-        {page === 'history' && selectedProject && <EventStudyPage key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval}/>}
+  const navigate = (id: string) => {
+    if (id === 'ai') { setAiOpen(true); setMobileNav(false); return; }
+    setPage(id as Page);
+    setMobileNav(false);
+  };
+
+  const groups: NavGroup[] = useMemo(() => NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.map((item) => ({
+      ...item,
+      label: t(item.label),
+      disabled: item.id !== 'projects' && item.id !== 'settings' && !selectedProject,
+    })),
+  })), [selectedProject, t]);
+
+  const actions: PaletteAction[] = useMemo(() => [
+    { id: 'ai', label: language === 'zh' ? '打开 DeepSeek 分析' : 'Open DeepSeek analyst', hint: '⌘J', run: () => setAiOpen(true) },
+    { id: 'refresh', label: language === 'zh' ? '刷新当前数据' : 'Refresh current data', hint: 'R', run: () => void load() },
+    { id: 'theme', label: language === 'zh' ? '切换主题' : 'Toggle theme', run: () => setTheme((value) => value === 'dark' ? 'light' : 'dark') },
+    { id: 'language', label: language === 'zh' ? 'Switch to English' : '切换中文', run: () => setLanguage((value) => value === 'en' ? 'zh' : 'en') },
+    { id: 'settings', label: language === 'zh' ? '设置与数据源' : 'Settings & data sources', run: () => setPage('settings') },
+  ], [language, load]);
+
+  return (
+    <UiContext.Provider value={{ language, t }}>
+      <div className={`app-shell shell ${theme}`}>
+        <Sidebar groups={groups} page={page} onNavigate={navigate} mobileOpen={mobileNav} onCloseMobile={() => setMobileNav(false)} connection={connection} projectCount={projects.filter((project) => !project.archived).length} language={language} />
+        {mobileNav && <button className="scrim" onClick={() => setMobileNav(false)} aria-label="Close navigation" />}
+        <div className="shell-main">
+          <Topbar
+            pageLabel={pageLabel}
+            projectName={selectedProject?.name ?? null}
+            onMenu={() => setMobileNav(true)}
+            onOpenPalette={() => setPaletteOpen(true)}
+            onOpenAi={() => setAiOpen(true)}
+            connection={connection}
+            language={language}
+            onLanguage={() => setLanguage((value) => value === 'en' ? 'zh' : 'en')}
+            theme={theme}
+            onTheme={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}
+            onRefresh={() => void load()}
+            loading={loading}
+            user={auth.user}
+            onSignOut={auth.signOut}
+          />
+          {selectedProject && page !== 'projects' && (
+            <MarketBar
+              project={selectedProject}
+              primary={primaryMarket}
+              overview={overview}
+              coverage={coverage}
+              exchange={exchange}
+              onExchange={setExchange}
+              interval={interval}
+              onInterval={setIntervalValue}
+              lastEvent={lastStreamEvent}
+              language={language}
+              onSwitchProject={() => setPaletteOpen(true)}
+            />
+          )}
+          {error && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
+          <main className="page-content">
+            {page === 'terminal' && selectedProject && <ResearchTerminal key={`${selectedProject.id}:${interval}`} project={selectedProject} series={localizedSeries} venues={venueData} language={language} interval={interval} kpis={<KpiStrip overview={overview}/>} exchange={exchange} onExchange={setExchange} onDetail={() => setPage('positionFlow')}/>}
+            {page === 'projects' && <ProjectsPage projects={projects} selectedProjectId={selectedProjectId} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>}
+            {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
+            {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language}/>}
+            {page === 'contribution' && selectedProject && <ExchangeContributionPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/>}
+            {page === 'crossExchange' && selectedProject && <><CrossExchangeAnalysisPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/><KoreanSpotPanel project={selectedProject} language={language}/><CoinGlassPanel project={selectedProject} language={language} onSettings={()=>setPage('settings')}/></>}
+            {page === 'positionFlow' && selectedProject && <PositionFlowPage overview={overview} series={localizedSeries} interval={interval}/>}
+            {page === 'derivatives' && selectedProject && <DerivativesPage overview={overview} series={localizedSeries}/>}
+            {page === 'liquidity' && selectedProject && <OnchainLiquidityPage project={selectedProject} interval={interval}/>}
+            {page === 'settings' && <><AiSettingsCard language={language} /><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
+            {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}
+            {page === 'orderflow' && selectedProject && <OrderFlowPage key={selectedProject.id} project={selectedProject} series={localizedSeries} venues={venueData} interval={interval} onInterval={setIntervalValue} language={language} selection={exchange}/>}
+            {page === 'signals' && selectedProject && <RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/>}
+            {page === 'history' && selectedProject && <EventStudyPage key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval}/>}
+          </main>
+          <footer className="statusbar">
+            <span className={auth.user ? 'sb-ok' : ''}><i className="sb-dot" />{auth.user ? `${auth.user.name} · ${auth.user.role}` : (language === 'zh' ? '只读访客' : 'READ-ONLY GUEST')}</span>
+            <span>{selectedProject ? `${selectedProject.name} · ${primaryMarket?.symbol ?? '—'}` : (language === 'zh' ? '未选择项目' : 'NO PROJECT')}</span>
+            <span>{coverage ? `${coverage.successful}/${coverage.requested} ${language === 'zh' ? '场所' : 'venues'}` : '—'}</span>
+            <span className="spacer" />
+            <span className="sb-warn">{error ? (language === 'zh' ? '部分数据缺失' : 'PARTIAL DATA') : (language === 'zh' ? '仅公开数据' : 'PUBLIC DATA ONLY')}</span>
+            <span>{language === 'zh' ? '最近事件' : 'last tick'} {lastStreamEvent ? timeAgo(lastStreamEvent, language) : '—'}</span>
+            <span>UTC+8 <UtcClock /></span>
+          </footer>
+        </div>
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} projects={projects} currentProjectId={selectedProjectId} onProject={(id) => { void selectProject(id); setPage('overview'); }} groups={groups} onPage={navigate} actions={actions} language={language} />
+        <AiDrawer open={aiOpen} project={selectedProject} language={language} onClose={() => setAiOpen(false)} onExpand={() => { setAiOpen(false); setPage('research'); }} />
       </div>
-      <footer><span>{selectedProject ? `${selectedProject.name.toUpperCase()} · ${primaryMarket?.symbol ?? t('NO PRIMARY MARKET')}` : t('NO PROJECT SELECTED')} · {t('PUBLIC MARKET DATA')}</span><span>{t('Last stream event')} {lastStreamEvent ? timeAgo(lastStreamEvent, language) : t('waiting')} · UTC</span></footer>
-    </main>
-  </div></UiContext.Provider>;
+    </UiContext.Provider>
+  );
 }
 
-function TerminalClock() {
+function UtcClock() {
   const [now, setNow] = useState(() => new Date());
-  useEffect(() => { const timer = setInterval(() => setNow(new Date()), 1_000); return () => clearInterval(timer); }, []);
-  const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(now);
-  return <div className="terminal-clock" title="Asia/Shanghai (UTC+8)"><span>UTC+8</span><strong>{time}</strong></div>;
+  useEffect(() => { const timer = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(timer); }, []);
+  return <>{new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(now)}</>;
 }
 
-function Header({ page, projects, project, onProject, onManage, interval, onInterval, exchange, onExchange, connection, onMenu, onRefresh, loading, language, onLanguage, theme, onTheme }: { page: Page; projects: MarketProject[]; project: MarketProject | null; onProject: (id: string) => void | Promise<void>; onManage: () => void; interval: Interval; onInterval: (i: Interval) => void; exchange: ExchangeSelection; onExchange: (exchange: ExchangeSelection) => void; connection: ConnectionState; onMenu: () => void; onRefresh: () => void; loading: boolean; language: Language; onLanguage: () => void; theme: Theme; onTheme: () => void }) {
-  const { t } = useUi();
-  const [open, setOpen] = useState(false);
-  const primary = project?.markets.find((market) => market.id === project.primaryMarketId);
-  const pageLabel = t(NAV.find((item) => item.id === page)?.label ?? 'Project Monitor');
-  return <header className="topbar">
-    <button className="menu-button" onClick={onMenu} aria-label={language === 'zh' ? '打开导航' : 'Open navigation'}><Menu size={19}/></button>
-    <div className="crumb">{t('Intelligence')} / <b>{pageLabel}</b></div>
-    <div className="project-selector">
-      <button className="project-selector-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open}><FolderKanban size={15}/><div><span>{t('PROJECT')}</span><strong>{project?.name ?? t('Select a project')}</strong></div>{primary && <em>{primary.symbol}</em>}<ChevronDown size={13}/></button>
-      {open && <div className="project-selector-menu">{projects.map((item) => { const market = item.markets.find((candidate) => candidate.id === item.primaryMarketId); return <button key={item.id} className={item.id === project?.id ? 'active' : ''} onClick={() => { void onProject(item.id); setOpen(false); }}><span>{item.tokenSymbol.slice(0, 2)}</span><div><strong>{item.name}</strong><small>{market?.symbol ?? t('No primary market')} · {item.markets.length} {t('markets')}</small></div>{item.id === project?.id && <Check size={14}/>}</button>; })}<button className="manage-projects" onClick={() => { onManage(); setOpen(false); }}><Plus size={13}/>{t('Manage projects')}</button></div>}
-    </div>
-    <label className="exchange-selector"><span>{t('Exchange')}</span><select value={exchange} onChange={(event) => onExchange(event.target.value as ExchangeSelection)}>{EXCHANGES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-    <div className="venue-pill">{exchange.toUpperCase()} <span>{primary ? `${primary.marketType.toUpperCase()} · ${primary.quote}` : 'SELECTED MARKETS ONLY'}</span></div>
-    <div className="intervals">{(['1m', '5m', '15m', '1h', '4h'] as Interval[]).map((i) => <button key={i} className={interval === i ? 'active' : ''} onClick={() => onInterval(i)}>{i.toUpperCase()}</button>)}</div>
-    <TerminalClock/>
-    <div className={`connection ${connection}`}><i/>{t(connection === 'live' ? 'LIVE' : connection.toUpperCase())}</div>
-    <button className="icon-button" onClick={onRefresh} aria-label={t('Refresh')} title={t('Refresh')}><RefreshCw size={16} className={loading ? 'spin' : ''}/></button>
-    <button className="icon-button" onClick={onTheme} aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} title={theme === 'dark' ? (language === 'zh' ? '切换浅色' : 'Light theme') : (language === 'zh' ? '切换深色' : 'Dark theme')}>{theme === 'dark' ? <Sun size={16}/> : <Moon size={16}/>}</button>
-    <button className="language-button" onClick={onLanguage} aria-label={language === 'en' ? '切换中文' : 'Switch to English'} title={language === 'en' ? '切换中文' : 'Switch to English'}>{language === 'en' ? '中' : 'EN'}</button>
-  </header>;
-}
-
-function ProjectsPage({ projects, selectedProjectId, overview, series, onRefresh, onSelect }: { projects: MarketProject[]; selectedProjectId: string | null; overview: Overview | null; series: MarketSeries | null; onRefresh: (preferredId?: string) => Promise<MarketProject[]>; onSelect: (id: string) => void }) {
+function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { projects: MarketProject[]; selectedProjectId: string | null; onRefresh: (preferredId?: string) => Promise<MarketProject[]>; onSelect: (id: string) => void }) {
   const { language, t } = useUi();
+  const zh = language === 'zh';
   const [editor, setEditor] = useState<MarketProject | 'new' | null>(null);
   const [removeId, setRemoveId] = useState<string | null>(null);
-  const ordered = [...projects].sort((a, b) => a.order - b.order);
+  const [filter, setFilter] = useState<'active' | 'all'>('active');
+  const quotes = useWatchlistQuotes();
+  const quoteFor = (id: string) => quotes.items.find((item) => item.projectId === id) ?? null;
+  const ordered = [...projects].sort((a, b) => a.order - b.order).filter((project) => filter === 'all' || !project.archived);
   const update = async (id: string, body: object) => { await api(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) }); await onRefresh(); };
   const move = async (id: string, direction: -1 | 1) => {
     const index = ordered.findIndex((project) => project.id === id); const next = index + direction;
@@ -329,14 +430,117 @@ function ProjectsPage({ projects, selectedProjectId, overview, series, onRefresh
     await api('/projects/reorder', { method: 'POST', body: JSON.stringify({ ids }) }); await onRefresh();
   };
   const remove = async (id: string) => { await api(`/projects/${id}`, { method: 'DELETE' }); setRemoveId(null); await onRefresh(); };
-  return <>
-    <PageHead eyebrow="CUSTOM PROJECT MONITORING" title="Project Watchlist" detail="Only selected projects are monitored. Confirm token identity and markets before enabling collection." right={<button className="primary-button" onClick={() => setEditor('new')}><Plus size={14}/> {t('Add project')}</button>}/>
-    {!projects.length && !editor && <section className="project-onboarding panel"><FolderKanban size={27}/><strong>{t('No default markets')}</strong><p>{language === 'zh' ? '添加代币符号或合约地址。NOX 会先发现支持的 Binance 现货与 USDT-M 永续市场，再启动高频数据采集。' : 'Add a token symbol or contract address. NOX will discover supported Binance Spot and USDT-M perpetual markets before any high-frequency collection starts.'}</p><button className="primary-button" onClick={() => setEditor('new')}><Plus size={14}/> {t('Create first project')}</button></section>}
-    {!!projects.length && <section className="panel projects-panel"><PanelHead title="Monitoring projects" meta={`${projects.filter((project) => !project.archived).length} active · ${projects.filter((project) => project.archived).length} archived`}/><div className="table-wrap project-watch-table"><table><thead><tr>{['Project','Market mapping','Current price','24H change','Volume','Open interest','OI delta','Funding','Structure','Alerts','Manage'].map((heading) => <th key={heading}>{t(heading)}</th>)}</tr></thead><tbody>{ordered.map((project, index) => { const primary = project.markets.find((market) => market.id === project.primaryMarketId); const active = project.id === selectedProjectId; const latestOi = active ? series?.positionFlow.oiDelta.at(-1) : null; const hypothesizedSignals = active ? series?.positionFlow.signals.filter((signal) => signal.status === 'hypothesis') ?? [] : [];
-    const withheldSignalCount = active ? (series?.positionFlow.signals.length ?? 0) - hypothesizedSignals.length : 0;
-    const latestSignal = hypothesizedSignals[0] ?? null; return <tr key={project.id} className={`${project.archived ? 'archived' : ''} ${active ? 'selected' : ''}`}><td><button className="project-cell" disabled={project.archived} onClick={() => onSelect(project.id)}><span>{project.tokenSymbol.slice(0,2)}</span><div><strong>{project.name}</strong><small>{project.tokenSymbol} · {project.archived ? (language === 'zh' ? '已归档' : 'ARCHIVED') : active ? (language === 'zh' ? '已选择' : 'SELECTED') : (language === 'zh' ? '监控中' : 'MONITORING')}</small></div></button></td><td><strong>{primary?.symbol ?? (language === 'zh' ? '无主数据源' : 'No primary feed')}</strong><small>{project.markets.length} {language === 'zh' ? '个交易对' : 'pairs'} · {new Set(project.markets.map(market=>market.exchange)).size} {language === 'zh' ? '家交易所' : 'venues'}</small></td><td>{active ? formatPrice(overview?.price) : '—'}</td><td className={active && (overview?.change24hPct ?? 0) >= 0 ? 'positive' : active ? 'negative' : ''}>{active && overview ? signed(overview.change24hPct) : '—'}</td><td>{active ? formatCompact(overview?.volume24hUsd, true) : '—'}<small>{t(active ? '24H notional' : 'Load on select')}</small></td><td>{active ? formatCompact(overview?.oiUsd, true) : '—'}<small>{active ? `${formatCompact(overview?.oiBase)} ${language === 'zh' ? '代币' : 'base'}` : t('Load on select')}</small></td><td className={(latestOi?.deltaUsd ?? 0) >= 0 ? 'positive' : 'negative'}>{latestOi ? formatCompact(latestOi.deltaUsd, true) : '—'}<small>{latestOi ? signed(latestOi.pctUsd) : t('No active sample')}</small></td><td className={active && (overview?.fundingRate ?? 0) >= 0 ? 'positive' : active ? 'negative' : ''}>{active && overview ? signedRate(overview.fundingRate) : '—'}</td><td><span className="structure-tag">{latestSignal?.label ?? t(active ? 'No active signal' : 'Idle')}</span></td><td>{active ? `${hypothesizedSignals.length}${withheldSignalCount ? ` (+${withheldSignalCount} withheld)` : ''}` : '—'}</td><td><div className="project-actions"><button onClick={() => void move(project.id, -1)} disabled={index === 0} aria-label={`Move ${project.name} up`}><ArrowUp size={12}/></button><button onClick={() => void move(project.id, 1)} disabled={index === ordered.length - 1} aria-label={`Move ${project.name} down`}><ArrowDown size={12}/></button><button onClick={() => setEditor(project)} aria-label={`Edit ${project.name}`}><Edit3 size={12}/></button><button onClick={() => void update(project.id, { archived: !project.archived })} aria-label={`${project.archived ? 'Restore' : 'Archive'} ${project.name}`}><Archive size={12}/></button><button className="danger" onClick={() => setRemoveId(project.id)} aria-label={`Remove ${project.name}`}><Trash2 size={12}/></button></div>{removeId === project.id && <div className="remove-confirm"><span>{language === 'zh' ? '删除此项目及其监控偏好？' : 'Remove this project and its monitoring preferences?'}</span><button onClick={() => void remove(project.id)}>{language === 'zh' ? '确认删除' : 'Confirm remove'}</button><button onClick={() => setRemoveId(null)}>{t('Cancel')}</button></div>}</td></tr>; })}</tbody></table></div><div className="table-foot">{language === 'zh' ? '后台采集由各项目的 Active / Standard / Paused 模式控制；在设置 / 数据源中调整。' : 'Background collection follows the Active / Standard / Paused mode of each project. Configure it in Settings / Data Sources.'}</div></section>}
-    {editor && <ProjectEditor project={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (project) => { await onRefresh(project.id); setEditor(null); onSelect(project.id); }}/>} 
-  </>;
+  const live = quotes.items.filter((item) => item.quality === 'live').length;
+
+  return (
+    <>
+      <div className="watchlist-head">
+        <div className="watchlist-title">
+          <h1>{t('Project Watchlist')}</h1>
+          <p>{zh ? '每个项目只采集你确认过的市场。价格每 15 秒刷新；缺失值显示为「—」而不是 0。' : 'Only confirmed markets are monitored. Quotes refresh every 15s; missing values render as “—” and never as zero.'}</p>
+        </div>
+        <div className="watchlist-actions">
+          <div className="segmented" role="group" aria-label={zh ? '项目筛选' : 'Project filter'}>
+            <button className={filter === 'active' ? 'active' : ''} onClick={() => setFilter('active')}>{zh ? '监控中' : 'Active'} {projects.filter((project) => !project.archived).length}</button>
+            <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>{zh ? '全部' : 'All'} {projects.length}</button>
+          </div>
+          <button className="ghost-button" onClick={() => void quotes.reload()} title={zh ? '刷新报价' : 'Refresh quotes'}><RefreshCw size={13} />{zh ? '刷新' : 'Refresh'}</button>
+          <button className="primary-button" onClick={() => setEditor('new')}><Plus size={14} />{zh ? '添加项目' : 'Add project'}</button>
+        </div>
+      </div>
+
+      {!projects.length && !editor && (
+        <section className="project-onboarding panel">
+          <FolderKanban size={26} />
+          <strong>{t('No default markets')}</strong>
+          <p>{zh ? '添加代币符号或合约地址。NOX 会先发现支持的现货与 USDT 永续市场，确认身份后再开始采集。' : 'Add a token symbol or contract address. NOX discovers supported spot and USDT perpetual markets, then starts collection only after you confirm the identity.'}</p>
+          <button className="primary-button" onClick={() => setEditor('new')}><Plus size={14} />{t('Create first project')}</button>
+        </section>
+      )}
+
+      {!!projects.length && (
+        <section className="watchlist">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t('Project')}</th>
+                  <th>{t('Market mapping')}</th>
+                  <th>{t('Current price')}</th>
+                  <th>{t('24H change')}</th>
+                  <th>{t('Volume')}</th>
+                  <th>{t('Open interest')}</th>
+                  <th>{t('Funding')}</th>
+                  <th>{zh ? '24H 走势' : '24H trend'}</th>
+                  <th>{zh ? '状态' : 'Status'}</th>
+                  <th aria-label={t('Manage')} />
+                </tr>
+              </thead>
+              <tbody>
+                {ordered.map((project, index) => {
+                  const primary = project.markets.find((market) => market.id === project.primaryMarketId);
+                  const quote = quoteFor(project.id);
+                  const active = project.id === selectedProjectId;
+                  const change = quote?.change24hPct ?? null;
+                  return (
+                    <tr key={project.id} className={`${active ? 'selected' : ''} ${project.archived ? 'archived' : ''}`} onClick={() => { if (!project.archived) onSelect(project.id); }}>
+                      <td>
+                        <div className="wl-project">
+                          <span className="wl-mark">{project.tokenSymbol.slice(0, 2)}</span>
+                          <div className="wl-project-copy">
+                            <strong>{project.name}</strong>
+                            <small>{project.tokenSymbol} · {project.archived ? (zh ? '已归档' : 'ARCHIVED') : active ? (zh ? '当前' : 'SELECTED') : `${project.markets.length} ${zh ? '个市场' : 'markets'}`}</small>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="wl-market">
+                          <strong>{primary?.symbol ?? '—'}</strong>
+                          <small>{primary ? `${primary.exchange.toUpperCase()} · ${primary.marketType === 'perpetual' ? 'PERP' : 'SPOT'}` : (zh ? '无主数据源' : 'NO PRIMARY')}</small>
+                        </div>
+                      </td>
+                      <td className="wl-num">{quote?.price == null ? (quote?.error ? <span title={quote.error}>—</span> : '—') : formatPrice(quote.price)}</td>
+                      <td className={`wl-num ${change == null ? '' : change >= 0 ? 'up' : 'down'}`}>{change == null ? '—' : signed(change)}</td>
+                      <td className="wl-num">{formatCompact(quote?.volume24hUsd, true)}</td>
+                      <td className="wl-num">{formatCompact(quote?.oiUsd, true)}<span className="wl-sub">{quote?.fundingRate != null ? '' : ''}</span></td>
+                      <td className="wl-num">{quote?.fundingRate == null ? '—' : signedRate(quote.fundingRate)}</td>
+                      <td><Sparkline values={quote?.sparkline ?? null} /></td>
+                      <td><span className={`wl-tag ${project.archived ? '' : quote?.quality ?? 'stale'}`}>{project.archived ? (zh ? '归档' : 'ARCH') : quote == null ? '…' : quote.quality.toUpperCase()}</span></td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <div className="wl-actions">
+                          <button onClick={() => void move(project.id, -1)} disabled={index === 0} aria-label={`Move ${project.name} up`}><ArrowUp size={12} /></button>
+                          <button onClick={() => void move(project.id, 1)} disabled={index === ordered.length - 1} aria-label={`Move ${project.name} down`}><ArrowDown size={12} /></button>
+                          <button onClick={() => setEditor(project)} aria-label={`Edit ${project.name}`}><Edit3 size={12} /></button>
+                          <button onClick={() => void update(project.id, { archived: !project.archived })} aria-label={`${project.archived ? 'Restore' : 'Archive'} ${project.name}`}><Archive size={12} /></button>
+                          <button className="danger" onClick={() => setRemoveId(project.id)} aria-label={`Remove ${project.name}`}><Trash2 size={12} /></button>
+                        </div>
+                        {removeId === project.id && (
+                          <div className="remove-confirm">
+                            <span>{zh ? '删除此项目及其监控偏好？' : 'Remove this project and its monitoring preferences?'}</span>
+                            <button onClick={() => void remove(project.id)}>{zh ? '确认删除' : 'Confirm'}</button>
+                            <button onClick={() => setRemoveId(null)}>{t('Cancel')}</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="watchlist-foot">
+            <span>{live}/{quotes.items.length} {zh ? '实时' : 'live'}</span>
+            <span>{zh ? '更新于' : 'updated'} {quotes.asOf ? timeAgo(quotes.asOf, language) : '—'}</span>
+            {quotes.error && <span className="sb-warn">{quotes.error}</span>}
+            <span className="spacer" />
+            <span>{zh ? '后台采集跟随各项目的 Active / Standard / Paused 设置' : 'Collection follows each project’s Active / Standard / Paused setting'}</span>
+          </div>
+        </section>
+      )}
+
+      {editor && <ProjectEditor project={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (project) => { await onRefresh(project.id); setEditor(null); onSelect(project.id); }} />}
+    </>
+  );
 }
 
 function ProjectEditor({ project, onClose, onSaved }: { project: MarketProject | null; onClose: () => void; onSaved: (project: MarketProject) => void | Promise<void> }) {

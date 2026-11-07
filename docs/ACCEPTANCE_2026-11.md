@@ -35,3 +35,24 @@
 | 关闭/暂停时桶处理 | PASS | `flush()` 将未完成桶写入审计记录（`incomplete-bucket`） |
 | 真实历史冻结样本复现 | **NOT VERIFIED** | 本机没有可授权的真实历史导出；现有回归全部为确定性合成 fixture，不得冒充真实复现 |
 | Cross-Exchange Evidence Panel UI | **NOT IMPLEMENTED** | 本轮只完成分析层；面板仍待开发 |
+
+
+## Phase D — 2026-11 增补（研究验证轮）
+
+| 项目 | 结果 | 说明 |
+| --- | --- | --- |
+| Fold Outcome Boundary | PASS | Pair 记录 eventTime/availableAt/decisionTime/outcomeTime；FoldResult 记录 outcomeCutoff/censored/purgedTrain/每折基线；交叉测试边界的样本被剔除 |
+| 多因子历史输入（OI/D.A/Basis/Depth） | PASS | 统一 1m/5m/15m/1h；Depth 仅取 researchUsable 的 L2 桶；缺失因子返回 unavailable |
+| Spot VD / Perp VD / CVD | **NOT VERIFIED** | Journal 没有逐所可比的 spot/perp 主动成交与 CVD 序列；未用其他指标推算冒充 |
+| Collector 生命周期与 Health | PASS | Active↔Paused、删除/切换释放 feed、写入失败重试、未完成桶审计、/api/operations.l2Collection |
+| Cross-Exchange Evidence Panel | PASS（UI） | 真实接口、无 mock；OOS 恒为 NOT VERIFIED |
+| 真实历史冻结样本 + SHA256 | **NOT VERIFIED** | 无可授权的真实导出；合成 fixture 不作为复现证据 |
+| Binance 连续 L2 实机 | **NOT VERIFIED** | 本机到 fapi REST 间歇阻断 |
+| 断网/重连、Timescale 写入查询、进程重启恢复、盘口抽样核对 | **NOT VERIFIED** | 需要可中断网络、Timescale 实例与冻结样本集 |
+
+### 未能完成项所需环境
+
+- Binance L2：可访问 `fapi.binance.com` 的稳定网络。
+- 断网重连：可控网络中断（或 tc/netem）。
+- Timescale：一个可丢弃的 PostgreSQL+Timescale 实例与 `DATABASE_URL`。
+- 冻结复现：经授权的真实历史导出（含 event/received/available 时间）+ SHA256 清单。

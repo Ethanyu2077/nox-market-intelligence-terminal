@@ -214,6 +214,8 @@ export default function App() {
   const analyticsMarket = activeMarket?.exchange === 'binance' ? activeMarket : selectedProject?.markets.find((market) => market.exchange === 'binance' && market.marketType === 'perpetual') ?? null;
   const symbol = analyticsMarket?.symbol ?? '';
   const coverage = venueData ? { successful: venueData.aggregate.coverage.successful, requested: venueData.aggregate.coverage.requested } : null;
+  // On the watchlist the transport is REST polling by definition; never show a socket state there.
+  const displayConnection: ConnectionState = page === 'projects' ? 'polling' : connection;
   const pageLabel = t(NAV_GROUPS.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? 'Project Watchlist');
 
   const refreshProjects = useCallback(async (preferredId?: string) => {
@@ -258,6 +260,9 @@ export default function App() {
   useEffect(() => () => { loadGeneration.current += 1; loadAbort.current?.abort(); }, []);
   useEffect(() => { if (!symbol) return; const timer = setInterval(() => { void load(true); }, 60_000); return () => clearInterval(timer); }, [symbol, load]);
   useEffect(() => {
+    // The watchlist page has no instrument view; opening a venue socket there only burns
+    // connections and produces misleading "degraded" transport labels.
+    if (page === 'projects') { setConnection('polling'); return; }
     if (!activeMarket || !selectedProject?.monitoring.streamingEnabled) { setConnection('stale'); return; }
     const streamVenue = activeMarket.exchange;
     // The SSE payload is one venue's feed. It may feed a single-venue view and the native
@@ -286,7 +291,7 @@ export default function App() {
     events.addEventListener('connection', connectionListener as EventListener); events.addEventListener('market', marketListener as EventListener); events.addEventListener('heartbeat', heartbeatListener as EventListener);
     events.onerror = () => setConnection('stale');
     return () => { lastTradeId.current = null; events.close(); };
-  }, [activeMarket, exchange, interval, selectedProject?.monitoring.streamingEnabled]);
+  }, [activeMarket, exchange, interval, page, selectedProject?.monitoring.streamingEnabled]);
   useEffect(() => { const timer = setInterval(() => setConnection((s) => lastStreamEvent && Date.now() - lastStreamEvent > 20_000 ? 'stale' : s), 5_000); return () => clearInterval(timer); }, [lastStreamEvent]);
   useEffect(() => { localStorage.setItem('nox-language', language); document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'; }, [language]);
   useEffect(() => { localStorage.setItem('nox-theme', theme); document.documentElement.style.colorScheme = theme; }, [theme]);
@@ -339,7 +344,7 @@ export default function App() {
   return (
     <UiContext.Provider value={{ language, t }}>
       <div className={`app-shell shell ${theme}`}>
-        <Sidebar groups={groups} page={page} onNavigate={navigate} mobileOpen={mobileNav} onCloseMobile={() => setMobileNav(false)} connection={connection} projectCount={projects.filter((project) => !project.archived).length} language={language} />
+        <Sidebar groups={groups} page={page} onNavigate={navigate} mobileOpen={mobileNav} onCloseMobile={() => setMobileNav(false)} connection={displayConnection} projectCount={projects.filter((project) => !project.archived).length} language={language} />
         {mobileNav && <button className="scrim" onClick={() => setMobileNav(false)} aria-label="Close navigation" />}
         <div className="shell-main">
           <Topbar
@@ -348,7 +353,7 @@ export default function App() {
             onMenu={() => setMobileNav(true)}
             onOpenPalette={() => setPaletteOpen(true)}
             onOpenAi={() => setAiOpen(true)}
-            connection={connection}
+            connection={displayConnection}
             language={language}
             onLanguage={() => setLanguage((value) => value === 'en' ? 'zh' : 'en')}
             theme={theme}

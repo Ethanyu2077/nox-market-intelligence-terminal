@@ -347,6 +347,24 @@
 .primary-button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .primary-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.watchlist-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.wl-search { display: flex; align-items: center; gap: 7px; height: 30px; flex: 1 1 240px; max-width: 380px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--faint); }
+.wl-search:focus-within { border-color: var(--line-strong); color: var(--muted); }
+.wl-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12px; }
+.wl-sort { display: flex; align-items: center; gap: 6px; color: var(--faint); font: 10px var(--mono); text-transform: uppercase; }
+.wl-sort select { height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-2); font-size: 11.5px; }
+.wl-dir { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--radius-sm); background: transparent; color: var(--muted); cursor: pointer; }
+.wl-dir:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+.wl-dir:disabled { opacity: .35; cursor: not-allowed; }
+.wl-count { margin-left: auto; color: var(--faint); font: 10px var(--mono); }
+.wl-alert { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 0 5px; height: 19px; border-radius: 3px; border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); color: var(--warn); font: 9.5px var(--mono); vertical-align: middle; }
+
 .watchlist {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -428,6 +446,8 @@
   .marketbar { padding: 0 10px; }
   .app-shell.shell .statusbar { display: none; }
   .watchlist-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .wl-search { max-width: none; }
+  .wl-count { display: none; }
   .watchlist-title h1 { font-size: 18px; }
   .watchlist-actions { justify-content: flex-start; }
   .watchlist-actions .primary-button { margin-left: auto; }

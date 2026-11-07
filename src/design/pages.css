@@ -162,6 +162,14 @@
 .alerts-events article small { color: var(--muted); font: 10px var(--mono); overflow-wrap: anywhere; }
 .alert-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-top: 5px; flex: 0 0 auto; }
 
+/* Stacked research layout for phones */
+.research-stack { display: flex; flex-direction: column; gap: 10px; }
+.research-stack-panel { overflow: hidden; }
+.research-stack-head { display: flex; align-items: center; height: 36px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.research-stack-head strong { font: 500 11.5px var(--ui-font); color: var(--text); }
+.research-stack-panel > .research-panel-body { max-height: 380px; overflow: auto; }
+.research-stack-panel.research > .research-panel-host { height: 560px; }
+
 /* Render-error containment */
 .error-boundary {
   display: flex;

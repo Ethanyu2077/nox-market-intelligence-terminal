@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Waves, X } from 'lucide-react';
+import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, Bell, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Waves, X } from 'lucide-react';
 import type { CandlePoint, CvdPoint, ExchangeCapabilities, ExchangeSelection, LinePoint, MarketProject, MarketSeries, OiDeltaPoint, OnchainProjectSnapshot, Overview, PositionFlowSignal, ProjectDiscoveryResult, ProjectMarket, ProjectResearchContext, ProjectVenueResponse, VolumeFlowPoint } from '../shared/types';
 import type { VolumeBarsResponse, VolumeMatrixResponse, VolumeShareHistory } from '../shared/volume';
 import type { AlignmentHistoryResponse, AlignmentOutcomeResponse, TimeframeAlignmentResponse } from '../shared/timeframe';
@@ -75,7 +75,7 @@ const ZH: Record<string, string> = {
   'PUBLIC MARKET DATA': '公开市场数据', 'NO PROJECT SELECTED': '未选择项目', 'NO PRIMARY MARKET': '无主市场', 'Last stream event': '最近数据事件', 'waiting': '等待中',
   'NEW MONITORING PROJECT': '新建监控项目', 'Discover token markets': '发现代币市场', 'Token symbol or contract address': '代币符号或合约地址',
   'Search markets': '搜索市场', 'Cancel': '取消', 'Create project': '创建项目', 'Edit monitoring project': '编辑监控项目', 'Save changes': '保存更改',
-  'Observed': '已观测', 'Signals': '信号', 'Price': '价格', 'Taker buy / sell': '主动买入 / 卖出', 'Volume delta': '成交量差',
+  'Observed': '已观测', 'Awaiting source': '等待数据源', 'Signals': '信号', 'Price': '价格', 'Taker buy / sell': '主动买入 / 卖出', 'Volume delta': '成交量差',
   'Cumulative volume delta': '累计成交量差', 'Base quantity': '代币数量', 'Current rate': '当前费率', 'Next settlement': '下次结算',
   'Supporting evidence': '支持证据', 'Counterevidence / limits': '反向证据 / 限制',
   'Potential Long Build-up': '潜在多头建仓', 'Potential Short Build-up': '潜在空头建仓', 'Potential Long Liquidation': '潜在多头清算',
@@ -445,17 +445,72 @@ function UtcClock() {
   return <>{new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(now)}</>;
 }
 
+type WatchlistSort = 'manual' | 'name' | 'change' | 'volume' | 'oi' | 'funding';
+const WATCHLIST_SORT_KEY = 'nox.watchlist.sort.v1';
+
+function readWatchlistPrefs(): { sort: WatchlistSort; desc: boolean } {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WATCHLIST_SORT_KEY) ?? 'null') as { sort?: WatchlistSort; desc?: boolean } | null;
+    const sort = raw?.sort && ['manual', 'name', 'change', 'volume', 'oi', 'funding'].includes(raw.sort) ? raw.sort : 'manual';
+    return { sort, desc: raw?.desc ?? sort !== 'name' };
+  } catch { return { sort: 'manual', desc: true }; }
+}
+
+/** Nulls always sort last: an unavailable quote is not a zero. */
+function compareWatchlist(sort: WatchlistSort, aName: string, bName: string, a: ReturnType<typeof useWatchlistQuotes>['items'][number] | null, b: ReturnType<typeof useWatchlistQuotes>['items'][number] | null, desc: boolean): number {
+  if (sort === 'name') return aName.localeCompare(bName) * (desc ? -1 : 1);
+  const pick = (row: typeof a): number | null => row == null ? null : sort === 'change' ? row.change24hPct : sort === 'volume' ? row.volume24hUsd : sort === 'oi' ? row.oiUsd : row.fundingRate;
+  const av = pick(a), bv = pick(b);
+  if (av == null && bv == null) return aName.localeCompare(bName);
+  if (av == null) return 1;
+  if (bv == null) return -1;
+  return desc ? bv - av : av - bv;
+}
+
 function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { projects: MarketProject[]; selectedProjectId: string | null; onRefresh: (preferredId?: string) => Promise<MarketProject[]>; onSelect: (id: string) => void }) {
   const { language, t } = useUi();
   const zh = language === 'zh';
   const [editor, setEditor] = useState<MarketProject | 'new' | null>(null);
   const [removeId, setRemoveId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'active' | 'all'>('active');
+  const [query, setQuery] = useState('');
+  const [prefs, setPrefs] = useState(readWatchlistPrefs);
+  const [alertRules, setAlertRules] = useState<Record<string, number>>({});
   const quotes = useWatchlistQuotes();
   const quoteFor = (id: string) => quotes.items.find((item) => item.projectId === id) ?? null;
-  const ordered = [...projects].sort((a, b) => a.order - b.order).filter((project) => filter === 'all' || !project.archived);
+  const { sort, desc } = prefs;
+
+  useEffect(() => { try { localStorage.setItem(WATCHLIST_SORT_KEY, JSON.stringify(prefs)); } catch { /* storage disabled */ } }, [prefs]);
+  useEffect(() => {
+    let active = true;
+    void fetch('/api/alerts/status', { headers: { Accept: 'application/json' } })
+      .then((response) => response.json())
+      .then((body: { rules?: Array<{ symbol: string; enabled: boolean }> }) => {
+        if (!active) return;
+        const map: Record<string, number> = {};
+        for (const rule of body.rules ?? []) if (rule.enabled) map[rule.symbol] = (map[rule.symbol] ?? 0) + 1;
+        setAlertRules(map);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  const needle = query.trim().toLowerCase();
+  const filtered = [...projects].sort((a, b) => a.order - b.order)
+    .filter((project) => filter === 'all' || !project.archived)
+    .filter((project) => {
+      if (!needle) return true;
+      const primary = project.markets.find((market) => market.id === project.primaryMarketId);
+      return `${project.name} ${project.tokenSymbol} ${primary?.symbol ?? ''} ${project.markets.map((market) => market.exchange).join(' ')}`.toLowerCase().includes(needle);
+    });
+  const ordered = useMemo(() => sort === 'manual'
+    ? filtered
+    : [...filtered].sort((a, b) => compareWatchlist(sort, a.name, b.name, quoteFor(a.id), quoteFor(b.id), desc)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtered, sort, desc, quotes.items]);
   const update = async (id: string, body: object) => { await api(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) }); await onRefresh(); };
   const move = async (id: string, direction: -1 | 1) => {
+    if (sort !== 'manual' || needle) return;
     const index = ordered.findIndex((project) => project.id === id); const next = index + direction;
     if (next < 0 || next >= ordered.length) return;
     const ids = ordered.map((project) => project.id); [ids[index], ids[next]] = [ids[next], ids[index]];
@@ -479,6 +534,22 @@ function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { pr
           <button className="ghost-button" onClick={() => void quotes.reload()} title={zh ? '刷新报价' : 'Refresh quotes'}><RefreshCw size={13} />{zh ? '刷新' : 'Refresh'}</button>
           <button className="primary-button" onClick={() => setEditor('new')}><Plus size={14} />{zh ? '添加项目' : 'Add project'}</button>
         </div>
+      </div>
+
+      <div className="watchlist-toolbar">
+        <label className="wl-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? '搜索项目、交易对或交易所…' : 'Search project, pair or venue…'} aria-label={zh ? '搜索项目' : 'Search projects'} /></label>
+        <label className="wl-sort">{zh ? '排序' : 'Sort'}
+          <select value={sort} onChange={(event) => { const next = event.target.value as WatchlistSort; setPrefs({ sort: next, desc: next !== 'name' }); }}>
+            <option value="manual">{zh ? '手动顺序' : 'Manual'}</option>
+            <option value="name">{zh ? '名称' : 'Name'}</option>
+            <option value="change">{zh ? '24H 涨跌' : '24h change'}</option>
+            <option value="volume">{zh ? '24H 成交' : '24h volume'}</option>
+            <option value="oi">{zh ? '持仓量' : 'Open interest'}</option>
+            <option value="funding">{zh ? '资金费率' : 'Funding'}</option>
+          </select>
+        </label>
+        <button className="wl-dir" onClick={() => setPrefs((current) => ({ ...current, desc: !current.desc }))} disabled={sort === 'manual'} title={desc ? (zh ? '降序' : 'Descending') : (zh ? '升序' : 'Ascending')} aria-label={zh ? '切换排序方向' : 'Toggle sort direction'}>{desc ? <ArrowDown size={13} /> : <ArrowUp size={13} />}</button>
+        <span className="wl-count">{filtered.length}/{projects.length} {zh ? '个项目' : 'projects'}</span>
       </div>
 
       {!projects.length && !editor && (
@@ -537,11 +608,14 @@ function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { pr
                       <td className="wl-num">{formatCompact(quote?.oiUsd, true)}<span className="wl-sub">{quote?.fundingRate != null ? '' : ''}</span></td>
                       <td className="wl-num">{quote?.fundingRate == null ? '—' : signedRate(quote.fundingRate)}</td>
                       <td><Sparkline values={quote?.sparkline ?? null} /></td>
-                      <td><span className={`wl-tag ${project.archived ? '' : quote?.quality ?? 'stale'}`}>{project.archived ? (zh ? '归档' : 'ARCH') : quote == null ? '…' : quote.quality.toUpperCase()}</span></td>
+                      <td>
+                        <span className={`wl-tag ${project.archived ? '' : quote?.quality ?? 'stale'}`}>{project.archived ? (zh ? '归档' : 'ARCH') : quote == null ? '…' : quote.quality.toUpperCase()}</span>
+                        {primary && alertRules[primary.symbol] ? <span className="wl-alert" title={`${alertRules[primary.symbol]} ${zh ? '条告警规则' : 'alert rule(s)'}`}><Bell size={10} />{alertRules[primary.symbol]}</span> : null}
+                      </td>
                       <td onClick={(event) => event.stopPropagation()}>
                         <div className="wl-actions">
-                          <button onClick={() => void move(project.id, -1)} disabled={index === 0} aria-label={`Move ${project.name} up`}><ArrowUp size={12} /></button>
-                          <button onClick={() => void move(project.id, 1)} disabled={index === ordered.length - 1} aria-label={`Move ${project.name} down`}><ArrowDown size={12} /></button>
+                          <button onClick={() => void move(project.id, -1)} disabled={sort !== 'manual' || !!needle || index === 0} aria-label={`Move ${project.name} up`}><ArrowUp size={12} /></button>
+                          <button onClick={() => void move(project.id, 1)} disabled={sort !== 'manual' || !!needle || index === ordered.length - 1} aria-label={`Move ${project.name} down`}><ArrowDown size={12} /></button>
                           <button onClick={() => setEditor(project)} aria-label={`Edit ${project.name}`}><Edit3 size={12} /></button>
                           <button onClick={() => void update(project.id, { archived: !project.archived })} aria-label={`${project.archived ? 'Restore' : 'Archive'} ${project.name}`}><Archive size={12} /></button>
                           <button className="danger" onClick={() => setRemoveId(project.id)} aria-label={`Remove ${project.name}`}><Trash2 size={12} /></button>
@@ -740,7 +814,8 @@ function StructurePage({ overview, series, interval, onInterval, project, theme,
   const primary = project.markets.find((market) => market.id === project.primaryMarketId) ?? project.markets.find((market) => market.marketType === 'perpetual');
   useEffect(() => { setMode(localStorage.getItem(storageKey) === 'tradingview' ? 'tradingview' : 'nox'); }, [storageKey]);
   const changeMode = (nextMode: ChartMode) => { setMode(nextMode); localStorage.setItem(storageKey, nextMode); };
-  return <><PageHead eyebrow="FLAGSHIP ANALYSIS" title={`${series?.symbol ?? primary?.symbol ?? 'Market'} structure`} detail="Synchronized price, volume, open interest and futures CVD. Move across any panel to inspect the same event time." right={<div className="provenance"><i/><span>{mode === 'nox' ? (series?.source ?? 'Awaiting source') : 'TradingView public widget'}</span></div>}/>
+  const { t } = useUi();
+  return <><PageHead eyebrow="FLAGSHIP ANALYSIS" title={`${series?.symbol ?? primary?.symbol ?? 'Market'} ${language === 'zh' ? '结构分析' : 'structure'}`} detail={language === 'zh' ? '同步的价格、成交量、持仓量与合约 CVD；在任一图上移动即可检视同一事件时间。' : 'Synchronized price, volume, open interest and futures CVD. Move across any panel to inspect the same event time.'} right={<div className="provenance"><i/><span>{mode === 'nox' ? (series?.source ?? t('Awaiting source')) : 'TradingView public widget'}</span></div>}/>
     <ChartModeSwitcher mode={mode} onChange={changeMode} language={language}/>
     {mode === 'nox' ? <NOXMarketStructureChart overview={overview} series={series} interval={interval}/> : <TradingViewChartPanel market={primary} interval={interval} onInterval={onInterval} theme={theme} language={language}/>} 
     <TimeframeAlignmentPanel project={project}/>
@@ -749,19 +824,20 @@ function StructurePage({ overview, series, interval, onInterval, project, theme,
 }
 
 function NOXMarketStructureChart({ overview, series, interval }: { overview: Overview | null; series: MarketSeries | null; interval: Interval }) { const timeAgo = useTimeAgo();
+  const { language } = useUi(); const zh = language === 'zh';
   const [cursor, setCursor] = useState<number | null>(null); const points = series?.candles ?? [];
   return <>
-    <div className="chart-toolbar"><div><span>Mode</span><button className="active">Observed</button><button disabled>Regime overlay · P2</button></div><div className="coverage"><span>CVD coverage</span><strong>{series?.coverage.tradeCount ?? 0} aggregate trades</strong><em>{series?.coverage.cvdFrom ? new Date(series.coverage.cvdFrom).toLocaleTimeString() : 'unavailable'}</em></div></div>
+    <div className="chart-toolbar"><div><span>{zh ? '模式' : 'Mode'}</span><button className="active">{zh ? '已观测' : 'Observed'}</button><button disabled>{zh ? '状态叠加 · 二期' : 'Regime overlay · P2'}</button></div><div className="coverage"><span>{zh ? 'CVD 覆盖' : 'CVD coverage'}</span><strong>{series?.coverage.tradeCount ?? 0} {zh ? '笔聚合成交' : 'aggregate trades'}</strong><em>{series?.coverage.cvdFrom ? new Date(series.coverage.cvdFrom).toLocaleTimeString() : (zh ? '不可用' : 'unavailable')}</em></div></div>
     <section className="chart-stack panel">
-      <PanelHead title="Price & volume" meta={`${interval.toUpperCase()} candles · USDT per base · ${series?.source?.replace(/ REST.*$/, '') ?? 'awaiting series'}`} action={overview ? `Mark ${formatPrice(overview.markPrice)}` : undefined}/>
+      <PanelHead title={zh ? '价格与成交量' : 'Price & volume'} meta={`${interval.toUpperCase()} ${zh ? 'K 线' : 'candles'} · USDT ${zh ? '每基础币' : 'per base'} · ${series?.source?.replace(/ REST.*$/, '') ?? (zh ? '等待序列' : 'awaiting series')}`} action={overview ? `${zh ? '标记价' : 'Mark'} ${formatPrice(overview.markPrice)}` : undefined}/>
       <CandleChart points={points} cursor={cursor} onCursor={setCursor}/>
       <div className="chart-divider"/>
-      <ChartLabel title="Open interest" meta={series && !series.oiBase.length ? series.coverage.oiSource : 'Base quantity — not USD notional'} current={formatCompact(series?.oiBase.at(-1)?.value)}/>
+      <ChartLabel title={zh ? '持仓量' : 'Open interest'} meta={series && !series.oiBase.length ? series.coverage.oiSource : (zh ? '基础币数量 — 不是 USD 名义值' : 'Base quantity — not USD notional')} current={formatCompact(series?.oiBase.at(-1)?.value)}/>
       <LineChart points={series?.oiBase ?? []} cursor={cursor} onCursor={setCursor} color="#b9c3ca" height={145}/>
       <div className="chart-divider"/>
-      <ChartLabel title="Futures CVD" meta="Aggressor buy notional − aggressor sell notional · baseline reset at fetched window" current={formatCompact(series?.cvd.at(-1)?.value, true)}/>
+      <ChartLabel title={zh ? '合约 CVD' : 'Futures CVD'} meta={zh ? '主动买入名义 − 主动卖出名义 · 以抓取窗口为基准重置' : 'Aggressor buy notional − aggressor sell notional · baseline reset at fetched window'} current={formatCompact(series?.cvd.at(-1)?.value, true)}/>
       <LineChart points={series?.cvd ?? []} cursor={cursor} onCursor={setCursor} color="#54c9a8" baseline height={155}/>
-      <div className="chart-foot"><span>{series?.coverage.cvdMethod}</span><span>Updated {series ? timeAgo(series.eventTime) : '—'}</span></div>
+      <div className="chart-foot"><span>{series?.coverage.cvdMethod}</span><span>{zh ? '更新' : 'Updated'} {series ? timeAgo(series.eventTime) : '—'}</span></div>
     </section>
   </>;
 }
@@ -776,7 +852,7 @@ const FLOW_INDICATORS = [
 type FlowIndicator = typeof FLOW_INDICATORS[number][0];
 
 function PositionFlowPage({ overview, series, interval }: { overview: Overview | null; series: MarketSeries | null; interval: Interval }) { const timeAgo = useTimeAgo();
-  const { t } = useUi();
+  const { t, language } = useUi();
   const flow = series?.positionFlow;
   const [cursor, setCursor] = useState<number | null>(null);
   const [oiUnit, setOiUnit] = useState<'base' | 'usd'>('base');
@@ -792,7 +868,7 @@ function PositionFlowPage({ overview, series, interval }: { overview: Overview |
   const hypothesized = signals.filter((signal) => signal.status === 'hypothesis');
   const withheldCount = signals.length - hypothesized.length;
   return <>
-    <PageHead eyebrow="POSITION FLOW INTELLIGENCE" title={`${series?.symbol ?? 'Market'} derivatives flow`} detail="Observed price, OI and aggressor flow stay separate; classifications are probabilistic and include counterevidence." right={<div className="provenance"><i/><span>{series?.source ?? 'Awaiting source'}</span></div>}/>
+    <PageHead eyebrow="POSITION FLOW INTELLIGENCE" title={`${series?.symbol ?? 'Market'} ${language === 'zh' ? '衍生品资金流' : 'derivatives flow'}`} detail={language === 'zh' ? '价格、OI 与主动成交分别展示；分类是带反证的概率性推断。' : 'Observed price, OI and aggressor flow stay separate; classifications are probabilistic and include counterevidence.'} right={<div className="provenance"><i/><span>{series?.source ?? t('Awaiting source')}</span></div>}/>
     <section className="flow-summary">
       <MetricCard label="Open interest" value={oiUnit === 'base' ? formatCompact(overview?.oiBase) : formatCompact(overview?.oiUsd, true)} detail={`${oiUnit === 'base' ? 'base quantity' : 'mark-price notional'} · ${flow?.oiInterval?.toUpperCase() ?? '—'} source`}/>
       <MetricCard label="Latest OI delta" value={latestOiDelta ? formatCompact(oiUnit === 'base' ? latestOiDelta.deltaBase : latestOiDelta.deltaUsd, oiUnit === 'usd') : '—'} detail={latestOiDelta ? `${signed(oiUnit === 'base' ? latestOiDelta.pctBase : latestOiDelta.pctUsd)} · score ${latestOiDelta.robustScore.toFixed(2)}` : 'Awaiting history'} tone={(latestOiDelta?.deltaBase ?? 0) >= 0 ? 'positive' : 'negative'}/>
@@ -888,7 +964,7 @@ function LedgerScenario({ result }: { result: BacktestResult }) {
   </div>;
 }
 
-function ChartEmpty() { return <div className="chart-empty"><Activity size={20}/><span>Series unavailable from the venue</span></div>; }
+function ChartEmpty() { const { language } = useUi(); return <div className="chart-empty"><Activity size={20}/><span>{language === 'zh' ? '该场所暂无可用的历史序列' : 'Series unavailable from the venue'}</span></div>; }
 function ChartLabel({ title, meta, current }: { title: string; meta: string; current: string }) { const { t } = useUi(); return <div className="chart-label"><div><strong>{t(title)}</strong><span>{t(meta)}</span></div><em>{current}</em></div>; }
 
 function VolumeMatrixPanel({ project }: { project: MarketProject }) { const timeAgo = useTimeAgo();

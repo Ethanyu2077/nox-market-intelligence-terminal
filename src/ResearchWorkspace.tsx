@@ -27,6 +27,14 @@ export function ResearchWorkspace({ project, data, chart, language }: { project:
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const [now, setNow] = useState(Date.now());
+  // Mosaic drag/dock is unusable on touch; below 860px the same panels stack instead.
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 860px)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 860px)');
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
 
   const titles: Record<Panel, string> = {
     chart: zh ? '同步市场图表' : 'Synchronized market charts',
@@ -115,6 +123,16 @@ export function ResearchWorkspace({ project, data, chart, language }: { project:
         <button onClick={() => changeLayout(INITIAL)}>{zh ? '重置布局' : 'Reset layout'}</button>
       </header>
       {error && <p role="alert" className="research-error">{error}</p>}
+      {narrow ? (
+        <div className="research-stack">
+          {PANELS.map((id) => (
+            <section className={`panel research-stack-panel ${id}`} key={id}>
+              <header className="research-stack-head"><strong>{titles[id]}</strong></header>
+              <div className={id === 'research' ? 'research-panel-host' : 'research-panel-body'}>{body(id)}</div>
+            </section>
+          ))}
+        </div>
+      ) : (
       <div className="research-mosaic">
         <Mosaic<Panel>
           value={layout}
@@ -126,6 +144,7 @@ export function ResearchWorkspace({ project, data, chart, language }: { project:
           )}
         />
       </div>
+      )}
       {palette && (
         <div className="research-palette-backdrop" onClick={() => setPalette(false)}>
           <div role="dialog" aria-modal="true" aria-label={zh ? '工作区命令' : 'Workspace commands'} className="research-palette" onClick={(event) => event.stopPropagation()}>

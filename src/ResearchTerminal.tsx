@@ -32,16 +32,18 @@ export function ResearchTerminal({ project, series, venues, language, interval, 
   const cvd = series?.cvd.map(p => ({ time: p.time, value: p.complete ? p.value : null })) ?? [];
   const choose = (s: PositionFlowSignal) => { setSelected(s.id); setCursor(s.time); workbench.current?.scrollIntoView({ block: 'start', behavior: 'auto' }); };
   const valid = signals.filter(s => s.status === 'hypothesis').length;
-  const hasNativeMarket = project.markets.some(market => market.exchange === 'binance' && market.marketType === 'perpetual');
+  // Aster exposes the same candle/aggTrade shapes as Binance, so both can drive the native charts.
+  const nativeMarket = project.markets.find(market => (market.exchange === 'binance' || market.exchange === 'aster') && market.marketType === 'perpetual');
+  const hasNativeMarket = Boolean(nativeMarket);
   return <div className="research-terminal">
     <div className="terminal-heading"><div><span><Activity size={14}/>{text('项目研究总览', 'Project research terminal')}</span><h1>{project.name}<small>{project.tokenSymbol}</small></h1></div><button onClick={onDetail}>{text('详细仓位资金流', 'Detailed position flow')}<ArrowRight size={14}/></button></div>
     {kpis}
     <div className="terminal-workbench" ref={workbench}>
       <section className="terminal-analysis panel" aria-label={text('同步分析图', 'Synchronized analytical charts')}>
-        <header className="terminal-section-head"><div><strong>{text('同步市场结构', 'Synchronized market structure')}</strong><small>{series?.symbol ?? '—'} · Binance · {interval.toUpperCase()} · UTC</small></div><span>{cursor == null ? text('移动查看 / 点击事件定位', 'Hover to inspect / select an event') : stamp(cursor)}</span></header>
+        <header className="terminal-section-head"><div><strong>{text('同步市场结构', 'Synchronized market structure')}</strong><small>{series?.symbol ?? '—'} · {series?.source?.replace(/ REST.*$/, '') ?? nativeMarket?.exchange.toUpperCase() ?? '—'} · {interval.toUpperCase()} · UTC</small></div><span>{cursor == null ? text('移动查看 / 点击事件定位', 'Hover to inspect / select an event') : stamp(cursor)}</span></header>
         <div className="terminal-indicators">{(Object.keys(panels) as Array<keyof typeof panels>).map(key => <button key={key} aria-pressed={panels[key]} onClick={() => setPanels(old => ({ ...old, [key]: !old[key] }))}>{({ oi: 'OI', oiDelta: 'OI Δ', delta: 'Volume Δ', cvd: 'CVD' })[key]}</button>)}</div>
         <div className="terminal-chart-body">
-          {!hasNativeMarket ? <div className="terminal-empty">{text('此项目未选择 Binance 永续市场，原生同步图不可用。下方仍展示已选场所数据。', 'No Binance perpetual is selected for this project. Native synchronized charts are unavailable; selected-venue snapshots remain below.')}</div> : <>
+          {!hasNativeMarket ? <div className="terminal-empty">{text('此项目未选择 Binance / Aster 永续市场，原生同步图不可用。下方仍展示已选场所数据。', 'No Binance or Aster perpetual is selected for this project. Native synchronized charts are unavailable; selected-venue snapshots remain below.')}</div> : <>
           <TerminalPrice candles={candles} domain={domain} cursor={cursor} onCursor={setCursor} label={text('价格 / 成交量', 'Price / volume')}/>
           {panels.oi && <TerminalPlot title={`${text('持仓量 · 基础币', 'Open interest · base')} · ${series?.positionFlow.oiInterval.toUpperCase() ?? '—'}`} points={oi} domain={domain} cursor={cursor} onCursor={setCursor} maxGap={oiStep * 1.5}/>}
           {panels.oiDelta && <TerminalPlot title={`${text('OI 变化 · 基础币', 'OI delta · base')} · ${series?.positionFlow.oiInterval.toUpperCase() ?? '—'}`} points={oiDelta} histogram domain={domain} cursor={cursor} onCursor={setCursor} maxGap={oiStep * 1.5}/>}
@@ -50,7 +52,7 @@ export function ResearchTerminal({ project, series, venues, language, interval, 
           </>}
         </div>
         <div className="terminal-axis"><span>{start ? stamp(start) : '—'}</span><span>{end > 1 ? stamp(end) : '—'}</span></div>
-        <p className="terminal-source-note">{text('原生图表仅使用已选 Binance 永续主源，不是跨所聚合。OI 保留原始采样时间；CVD 仅覆盖返回成交带，缺口不补零。', 'Native charts use the selected Binance perpetual feed, not a cross-venue aggregate. OI retains native timestamps. CVD covers the returned tape only; gaps are not zero-filled.')}</p>
+        <p className="terminal-source-note">{text('原生图表仅使用所选单一交易所的永续主源，不是跨所聚合；Aster 未提供历史 OI，因此其 OI 面板为空。CVD 仅覆盖返回成交带，缺口不补零。', 'Native charts use one selected perpetual feed, not a cross-venue aggregate. Aster has no historical OI, so its OI panel is empty. CVD covers the returned tape only; gaps are not zero-filled.')}</p>
       </section>
       <aside className="terminal-context">
         <section className="panel terminal-quality"><header className="terminal-section-head"><strong><ShieldCheck size={15}/>{text('数据与证据', 'Data & evidence')}</strong></header><dl>

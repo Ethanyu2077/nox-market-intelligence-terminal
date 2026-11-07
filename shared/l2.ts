@@ -72,6 +72,11 @@ export interface L2BucketMetric {
   /** Positive = net depth withdrawn. Attribution is net-of-fills-unknown. */
   liquidityWithdrawalPct: number | null;
   attribution: 'net-of-fills-not-separated';
+  /** Raw bucket vs research-usable: stale/resyncing/unverified books are kept for audit only. */
+  researchUsable: boolean;
+  exclusionReasons: string[];
+  maxSampleGapMs: number | null;
+  staleSkipped: number;
   integrity: L2Snapshot['integrity'];
   verified: boolean;
   sequenceLast: number | null;

@@ -46,3 +46,33 @@ test('collector only samples Active projects and persists completed buckets', as
   assert.equal(appended[0].kind, 'l2');
   collector.stop();
 });
+
+test('unverified or stale books are stored for audit but are not research-usable', () => {
+  const samples = [snapshot({ verified: false, integrity: 'checksum-unchecked' }), snapshot({ state: 'stale' }), snapshot({ integrity: 'gap' })];
+  const bucket = aggregateBucket('p1', 'binance', 'BTCUSDT', samples, 5_000, 1_000, 1_000, 6_000);
+  assert.equal(bucket.researchUsable, false);
+  assert.ok(bucket.exclusionReasons.includes('unverified-book'));
+  assert.ok(bucket.exclusionReasons.includes('non-live-state'));
+  assert.ok(bucket.exclusionReasons.includes('integrity-not-ok'));
+  assert.ok(bucket.samples === 3, 'raw samples are preserved for the audit trail');
+});
+
+test('an unchanged book is not counted twice as a fresh sample', async () => {
+  const appended: Array<{ payload: unknown }> = [];
+  const collector = new L2Collector(() => [project('active')], {} as never, {
+    intervalMs: 1_000,
+    buckets: [1_000],
+    acquire: () => ({ release: () => undefined, snapshot: () => snapshot() }),
+    append: async (event) => { appended.push({ payload: event.payload }); },
+  });
+  await collector.tick(1_000);
+  await collector.tick(1_400);
+  await collector.tick(2_000);
+  assert.equal(appended.length, 1);
+  const bucket = appended[0].payload as { samples: number; staleSkipped: number; researchUsable: boolean; exclusionReasons: string[] };
+  assert.equal(bucket.samples, 1, 'the repeated sequence is not a second observation');
+  assert.ok(bucket.staleSkipped >= 1);
+  assert.equal(bucket.researchUsable, false);
+  assert.ok(bucket.exclusionReasons.includes('stale-sequence-skipped'));
+  collector.stop();
+});

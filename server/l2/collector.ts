@@ -19,7 +19,7 @@ import { acquireL2 } from './feed.ts';
 const VENUES = new Set(['binance', 'bybit', 'okx']);
 const INTEGRITY_RANK: Record<L2Snapshot['integrity'], number> = { ok: 0, 'checksum-unchecked': 1, 'checksum-failed': 2, gap: 3, unknown: 4 };
 
-export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'], symbol: string, samples: L2Snapshot[], bucketMs: number, bucketStart: number, intervalMs: number, receivedAt: number): L2BucketMetric {
+export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'], symbol: string, samples: L2Snapshot[], bucketMs: number, bucketStart: number, intervalMs: number, receivedAt: number, staleSkipped = 0): L2BucketMetric {
   const first = samples[0], last = samples[samples.length - 1];
   const mean = (pick: (row: L2Snapshot) => number | null): number | null => {
     const values = samples.map(pick).filter((value): value is number => value != null && Number.isFinite(value));
@@ -33,6 +33,18 @@ export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'
   const bidChange = depthChange((row) => row.bidDepthUsd);
   const askChange = depthChange((row) => row.askDepthUsd);
   const withdrawal = bidChange == null || askChange == null ? null : -(bidChange + askChange) / 2;
+  const reasons: string[] = [];
+  if (samples.some((row) => row.state !== 'live')) reasons.push('non-live-state');
+  if (samples.some((row) => !row.verified)) reasons.push('unverified-book');
+  if (samples.some((row) => row.integrity !== 'ok')) reasons.push('integrity-not-ok');
+  const coveragePct = Math.min(100, samples.length / Math.max(1, Math.round(bucketMs / intervalMs)) * 100);
+  if (coveragePct < 80) reasons.push('low-coverage');
+  if (staleSkipped > 0) reasons.push('stale-sequence-skipped');
+  let maxGap: number | null = null;
+  for (let index = 1; index < samples.length; index += 1) {
+    const gap = samples[index].lastMessageAt != null && samples[index - 1].lastMessageAt != null ? (samples[index].lastMessageAt as number) - (samples[index - 1].lastMessageAt as number) : null;
+    if (gap != null) maxGap = maxGap == null ? gap : Math.max(maxGap, gap);
+  }
   return {
     projectId,
     venue,
@@ -41,7 +53,7 @@ export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'
     bucketStart,
     samples: samples.length,
     expectedSamples: Math.max(1, Math.round(bucketMs / intervalMs)),
-    coveragePct: Math.min(100, samples.length / Math.max(1, Math.round(bucketMs / intervalMs)) * 100),
+    coveragePct,
     spreadBps: mean((row) => row.spreadBps),
     bidDepthUsd: mean((row) => row.bidDepthUsd),
     askDepthUsd: mean((row) => row.askDepthUsd),
@@ -50,6 +62,10 @@ export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'
     askDepthChangePct: askChange,
     liquidityWithdrawalPct: withdrawal,
     attribution: 'net-of-fills-not-separated',
+    researchUsable: reasons.length === 0,
+    exclusionReasons: reasons,
+    maxSampleGapMs: maxGap,
+    staleSkipped,
     integrity: samples.reduce<L2Snapshot['integrity']>((worst, row) => INTEGRITY_RANK[row.integrity] > INTEGRITY_RANK[worst] ? row.integrity : worst, 'ok'),
     verified: samples.every((row) => row.verified),
     sequenceLast: last?.sequence.last ?? null,
@@ -60,7 +76,7 @@ export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'
   };
 }
 
-interface BucketState { start: number; samples: L2Snapshot[] }
+interface BucketState { start: number; samples: L2Snapshot[]; staleSkipped: number }
 interface FeedHandle { release: () => void; snapshot: () => L2Snapshot }
 
 export interface L2CollectorDeps {
@@ -74,6 +90,7 @@ export class L2Collector {
   private timer: NodeJS.Timeout | null = null;
   private feeds = new Map<string, FeedHandle>();
   private buckets = new Map<string, BucketState>();
+  private lastSequence = new Map<string, number>();
   private readonly acquire: NonNullable<L2CollectorDeps['acquire']>;
   private readonly append: NonNullable<L2CollectorDeps['append']>;
   private readonly intervalMs: number;
@@ -122,23 +139,28 @@ export class L2Collector {
         let snapshot: L2Snapshot;
         try { snapshot = feed.snapshot(); } catch { continue; }
         if (snapshot.state === 'unavailable' || snapshot.sequence.last == null) continue;
+        // Never reuse an unchanged book as a fresh observation.
+        const previousSequence = this.lastSequence.get(key);
+        const advanced = previousSequence == null || snapshot.sequence.last > previousSequence;
+        if (advanced) this.lastSequence.set(key, snapshot.sequence.last);
         for (const bucketMs of this.bucketSizes) {
           const bucketKey = `${key}:${bucketMs}`;
           let bucket = this.buckets.get(bucketKey);
           const start = Math.floor(now / bucketMs) * bucketMs;
           if (!bucket || bucket.start !== start) {
-            if (bucket && bucket.samples.length) persisted.push(aggregateBucket(project.id, market.exchange as L2BucketMetric['venue'], market.symbol, bucket.samples, bucketMs, bucket.start, this.intervalMs, now));
-            bucket = { start, samples: [] };
+            if (bucket && bucket.samples.length) persisted.push(aggregateBucket(project.id, market.exchange as L2BucketMetric['venue'], market.symbol, bucket.samples, bucketMs, bucket.start, this.intervalMs, now, bucket.staleSkipped));
+            bucket = { start, samples: [], staleSkipped: 0 };
             this.buckets.set(bucketKey, bucket);
           }
-          bucket.samples = [...bucket.samples, snapshot].slice(-Math.round(bucketMs / this.intervalMs));
+          if (advanced) bucket.samples = [...bucket.samples, snapshot].slice(-Math.round(bucketMs / this.intervalMs));
+          else bucket.staleSkipped += 1;
         }
       }
     }
 
     // Release feeds for projects/markets that stopped being active.
     for (const [key, feed] of this.feeds) {
-      if (!wanted.has(key)) { feed.release(); this.feeds.delete(key); }
+      if (!wanted.has(key)) { feed.release(); this.feeds.delete(key); this.lastSequence.delete(key); }
     }
 
     for (const metric of persisted) {

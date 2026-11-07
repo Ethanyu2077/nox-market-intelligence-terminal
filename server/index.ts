@@ -186,7 +186,7 @@ app.get('/api/projects/:id/research/leadlag', safe(async (req, res) => {
 app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
-  const factor = z.enum(['oi_change', 'spot_volume_delta', 'perp_volume_delta', 'cvd_divergence', 'funding_basis', 'depth_change']).parse(req.query.factor);
+  const factor = z.enum(['oi_level', 'oi_delta', 'spot_volume_delta', 'perp_volume_delta', 'cvd_divergence', 'funding_basis', 'depth_change']).parse(req.query.factor);
   const page = await history.page(project.id, { kind: 'snapshot', limit: 1_000 });
   res.json(buildFactorEvidence(factor, factorSamplesFromSnapshots(page.items)));
 }));
@@ -196,7 +196,12 @@ app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const bucketMs = z.coerce.number().int().refine((value) => [1_000, 5_000, 60_000].includes(value), 'bucket must be 1000, 5000 or 60000').parse(req.query.bucket ?? 5_000);
   const limit = z.coerce.number().int().min(1).max(1_000).parse(req.query.limit ?? 200);
   const page = await history.page(project.id, { kind: 'l2', limit: 1_000 });
-  res.json({ items: page.items.map((item) => item.payload).filter((payload): payload is { bucketMs: number } => Boolean(payload && typeof payload === 'object' && 'bucketMs' in payload)).filter((payload) => payload.bucketMs === bucketMs).slice(-limit), bucketMs });
+  const includeUnusable = req.query.includeUnusable === '1';
+  const items = page.items.map((item) => item.payload)
+    .filter((payload): payload is { bucketMs: number; researchUsable?: boolean } => Boolean(payload && typeof payload === 'object' && 'bucketMs' in payload))
+    .filter((payload) => payload.bucketMs === bucketMs && (includeUnusable || payload.researchUsable !== false))
+    .slice(-limit);
+  res.json({ items, bucketMs, includeUnusable });
 }));
 app.get('/api/projects/:id/signal-lab', safe(async (req, res) => {
   const query = z.object({ horizon: z.coerce.number().int().min(5).max(1440).default(60), costBps: z.coerce.number().min(0).max(1000).default(10), asOf: z.coerce.number().finite().min(1e12).optional() }).parse(req.query);

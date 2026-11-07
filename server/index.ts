@@ -48,6 +48,7 @@ import { capabilityRegistry } from './capability-registry.ts';
 import { acquireL2 } from './l2/feed.ts';
 import { analyzeLeadLag } from './leadlag.ts';
 import { L2Collector } from './l2/collector.ts';
+import { buildFactorEvidence, factorSamplesFromSnapshots } from './crossfactor.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
 import { AlertService } from './alert-service.ts';
 import { enabledCcxtVenues, resolveCcxtConfig } from './ccxt/config.ts';
@@ -179,6 +180,15 @@ app.get('/api/projects/:id/research/leadlag', safe(async (req, res) => {
     samplesB: (samples.get(body.venueB) ?? []).sort((a, b) => a.time - b.time),
   }, { ...(body.windowMs ? { windowMs: body.windowMs } : {}), ...(body.horizonMs ? { horizonMs: body.horizonMs } : {}), ...(body.maxDelayMs != null ? { maxDelayMs: body.maxDelayMs } : {}), ...(body.costBpsPerSide != null ? { costBpsPerSide: body.costBpsPerSide } : {}) });
   res.json(report);
+}));
+// Read-only multi-factor evidence. Factors without comparable, aligned data return
+// unavailable instead of a fabricated number.
+app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
+  const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
+  if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
+  const factor = z.enum(['oi_change', 'spot_volume_delta', 'perp_volume_delta', 'cvd_divergence', 'funding_basis', 'depth_change']).parse(req.query.factor);
+  const page = await history.page(project.id, { kind: 'snapshot', limit: 1_000 });
+  res.json(buildFactorEvidence(factor, factorSamplesFromSnapshots(page.items)));
 }));
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));

@@ -47,6 +47,11 @@ export interface FactorEvidence {
   /** Every valid venue combination, each tested in both directions. */
   pairs: FactorPair[];
   transform: 'relative' | 'difference';
+  dataWindow: { start: number | null; end: number | null; bucketMs: number };
+  /** True when the journal scan hit its limit or a cursor remains. */
+  partial: boolean;
+  missingWindows: number;
+  excludedSamples: number;
   hypothesesTested: number;
   bonferroniAlpha: number;
   leader: string | null;

@@ -55,6 +55,8 @@ export interface FoldResult {
   testSamples: number;
   /** Test decisions dropped because their forward outcome crossed testEnd. */
   censored: number;
+  /** Censored specifically because the outcome existed but was received after the cutoff. */
+  censoredLate: number;
   /** Test decisions dropped because a common baseline input was missing. */
   excludedNoMomentum: number;
   /** Lag selected on this fold's training data only. */
@@ -81,6 +83,7 @@ export interface LeadLagReport {
     excludedNoPrior: number;
     excludedDelayed: number;
     censored: number;
+    censoredLate: number;
     effectiveSamples: number | null;
   };
   lags: LagScore[];

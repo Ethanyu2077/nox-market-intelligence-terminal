@@ -137,3 +137,14 @@ test('depth change only uses research-usable L2 buckets and is never called a ca
   assert.equal(samples[0].value, 12);
   assert.equal(samples[0].unit, 'pct');
 });
+
+test('journal quality is carried into coverage instead of a forced 100%', () => {
+  const samples = factorSamplesFromSnapshots([
+    { ingestTime: T0 + 1_000, quality: 'stale', payload: { snapshots: [{ exchange: 'binance', price: 100, markPrice: 100.1, oiBase: 5_000, fundingRate: 0.0001, eventTime: T0 }] } },
+    { ingestTime: T0 + 61_000, quality: 'live', payload: { snapshots: [{ exchange: 'binance', price: 101, markPrice: 101.2, oiBase: 5_500, fundingRate: 0.0001, eventTime: T0 + 60_000 }] } },
+  ]);
+  assert.equal(samples.find((sample) => sample.time === T0)?.coveragePct, 0);
+  assert.equal(samples.find((sample) => sample.time === T0 + 60_000)?.coveragePct, 100);
+  const report = buildFactorEvidence('oi_level', [...samples, ...samples.map((sample) => ({ ...sample, venue: 'bybit' }))], { minSamples: 1 });
+  assert.equal(report.venues.find((venue) => venue.venue === 'binance')?.coveragePct, 50);
+});

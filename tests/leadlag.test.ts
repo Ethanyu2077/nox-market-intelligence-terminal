@@ -68,3 +68,44 @@ test('insufficient samples withhold any edge claim', () => {
   assert.ok(['insufficient', 'descriptive'].includes(report.verdict));
   assert.ok(report.notes.some((note) => /Insufficient out-of-sample/.test(note)));
 });
+
+test('outcomes that happened in time but arrived after the cutoff are censored', () => {
+  const rows = (delayMs: number) => {
+    const a: PriceSample[] = [], b: PriceSample[] = [];
+    let priceA = 100, priceB = 100;
+    for (let i = 0; i < 400; i += 1) {
+      const time = 1_700_000_000_000 + i * 60_000;
+      priceA *= 1 + Math.sin(i / 4) * 0.001;
+      priceB *= 1 + Math.sin((i - 1) / 4) * 0.001;
+      a.push({ venue: 'a', time, receivedAt: time + delayMs, availableAt: time + delayMs, price: priceA });
+      b.push({ venue: 'b', time, receivedAt: time + delayMs, availableAt: time + delayMs, price: priceB });
+    }
+    return { a, b };
+  };
+  const { a, b } = rows(15 * 60_000);
+  const report = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: a, samplesB: b }, { minSamples: 10, horizonMs: 5 * 60_000, folds: 4, maxDelayMs: 20 * 60_000, bootstrapRounds: 20 });
+  assert.ok(report.coverage.censored > 0, 'boundary censoring must be recorded');
+  assert.ok(report.coverage.censoredLate > 0, 'late-arriving outcomes are a distinct censoring reason');
+  assert.equal(report.outOfSample.samples, 0, 'no unavailable outcome enters the OOS statistics');
+  assert.equal(report.verdict, 'insufficient');
+  assert.equal(report.folds.reduce((sum, fold) => sum + fold.censoredLate, 0), report.coverage.censoredLate);
+});
+
+test('duplicate and out-of-order samples do not change the research result', () => {
+  const { a, b } = synthetic(240);
+  const clean = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: a, samplesB: b }, { minSamples: 10, bootstrapRounds: 20, folds: 2 });
+  const shuffled = [...a].reverse().concat([...a.slice(0, 5), ...a.slice(0, 5)]);
+  const shuffledB = [...b].reverse().concat(b.slice(0, 3));
+  const report = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: shuffled, samplesB: shuffledB }, { minSamples: 10, bootstrapRounds: 20, folds: 2 });
+  assert.equal(report.outOfSample.samples, clean.outOfSample.samples);
+  assert.equal(report.coverage.censored, clean.coverage.censored);
+  assert.equal(report.folds.length, clean.folds.length);
+});
+
+test('a delayed venue is not usable before its values arrive', () => {
+  const { a, b } = synthetic(240);
+  const lateA = a.map((sample) => ({ ...sample, availableAt: sample.time + 20 * 60_000 }));
+  const clean = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: a, samplesB: b }, { minSamples: 10, bootstrapRounds: 10, folds: 2 });
+  const delayed = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: lateA, samplesB: b }, { minSamples: 10, bootstrapRounds: 10, folds: 2 });
+  assert.ok(delayed.coverage.paired <= clean.coverage.paired, 'delayed lead data cannot increase usable decisions');
+});

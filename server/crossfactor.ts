@@ -134,8 +134,11 @@ export function buildFactorEvidence(factor: CrossFactorId, samples: FactorSample
   ];
   const relevant = samples.filter((sample) => sample.factor === factor && sample.value != null && Number.isFinite(sample.value));
   const base = { factor, notes, transform };
+  const allTimes = relevant.map((sample) => sample.time);
+  const window = { start: allTimes.length ? Math.min(...allTimes) : null, end: allTimes.length ? Math.max(...allTimes) : null, bucketMs: 0 };
   const empty = (reasons: string[], unit = 'unknown'): FactorEvidence => ({
     ...base, unit, comparable: false, reasons, venues: [], directions: [], pairs: [],
+    dataWindow: window, partial: false, missingWindows: 0, excludedSamples: samples.length - relevant.length,
     hypothesesTested: 0, bonferroniAlpha: 0.05, leader: null, follower: null, lagMs: null, correlation: null,
     samples: 0, counterEvidence: [], verdict: 'unavailable',
   });
@@ -149,11 +152,23 @@ export function buildFactorEvidence(factor: CrossFactorId, samples: FactorSample
   const venues = [...byVenue.entries()].map(([venue, rows]) => {
     const sorted = [...rows].sort((a, b) => a.time - b.time);
     let gaps = 0;
-    for (let index = 1; index < sorted.length; index += 1) if (sorted[index].time - sorted[index - 1].time > options.maxGapMs) gaps += 1;
+    const intervals: number[] = [];
+    for (let index = 1; index < sorted.length; index += 1) {
+      const delta = sorted[index].time - sorted[index - 1].time;
+      intervals.push(delta);
+      if (delta > options.maxGapMs) gaps += 1;
+    }
+    const medianInterval = intervals.length ? [...intervals].sort((a, b) => a - b)[Math.floor(intervals.length / 2)] : null;
+    const span = sorted.length > 1 ? sorted[sorted.length - 1].time - sorted[0].time : 0;
+    // Coverage is observed density (rows / expected cadence) multiplied by declared quality,
+    // never an unconditional 100.
+    const expected = medianInterval && span > 0 ? span / medianInterval + 1 : sorted.length;
+    const density = Math.min(100, sorted.length / Math.max(1, expected) * 100);
+    const quality = sorted.reduce((sum, row) => sum + row.coveragePct, 0) / sorted.length;
     return {
       venue,
       rows: sorted.map((row) => ({ time: row.time, availableAt: row.availableAt, value: row.value as number })),
-      coveragePct: sorted.reduce((sum, row) => sum + row.coveragePct, 0) / sorted.length,
+      coveragePct: density * quality / 100,
       gaps,
       latest: sorted.at(-1)?.value ?? null,
     };
@@ -209,10 +224,15 @@ export function buildFactorEvidence(factor: CrossFactorId, samples: FactorSample
   if (hypothesesTested > 1) counterEvidence.push(`${hypothesesTested} pair/direction/lag hypotheses were tested; treat the best as exploratory`);
   const verdict: FactorEvidence['verdict'] = !top ? 'insufficient' : top.verdict;
 
+  const missingWindows = venues.reduce((sum, venue) => sum + venue.gaps, 0);
   return {
     ...base,
     unit: units[0],
     comparable: true,
+    dataWindow: window,
+    partial: false,
+    missingWindows,
+    excludedSamples: samples.length - relevant.length,
     reasons: [],
     venues: summary,
     directions: top?.directions ?? [],
@@ -266,22 +286,23 @@ export function resampleFactorSamples(samples: FactorSample[], bucketMs: number)
 export function factorSamplesFromL2(entries: Array<{ ingestTime: number; payload: unknown }>): FactorSample[] {
   const samples: FactorSample[] = [];
   for (const entry of entries) {
-    const row = entry.payload as { venue?: string; bucketStart?: number; bucketMs?: number; liquidityWithdrawalPct?: number | null; researchUsable?: boolean };
+    const row = entry.payload as { venue?: string; bucketStart?: number; bucketMs?: number; liquidityWithdrawalPct?: number | null; researchUsable?: boolean; coveragePct?: number };
     if (row.researchUsable !== true || row.liquidityWithdrawalPct == null || !row.venue || row.bucketStart == null) continue;
-    samples.push({ venue: row.venue, factor: 'depth_change', time: row.bucketStart, availableAt: entry.ingestTime, value: row.liquidityWithdrawalPct, unit: 'pct', coveragePct: 100 });
+    samples.push({ venue: row.venue, factor: 'depth_change', time: row.bucketStart, availableAt: entry.ingestTime, value: row.liquidityWithdrawalPct, unit: 'pct', coveragePct: row.coveragePct ?? 100 });
   }
   return samples;
 }
 
 /** Extract comparable factor samples from the local snapshot journal. */
-export function factorSamplesFromSnapshots(entries: Array<{ ingestTime: number; payload: unknown }>): FactorSample[] {
-  const byVenue = new Map<string, Array<{ time: number; availableAt: number; oiBase: number; price: number | null; markPrice: number | null }>>();
+export function factorSamplesFromSnapshots(entries: Array<{ ingestTime: number; quality?: string; payload: unknown }>): FactorSample[] {
+  const byVenue = new Map<string, Array<{ time: number; availableAt: number; oiBase: number; price: number | null; markPrice: number | null; coverage: number }>>();
+  const coverageOf = (entry: { quality?: string }) => entry.quality && entry.quality !== 'live' ? 0 : 100;
   for (const entry of entries) {
     const payload = entry.payload as { snapshots?: Array<{ exchange: string; price: number | null; markPrice: number | null; oiBase: number | null; eventTime: number }> };
     for (const row of payload?.snapshots ?? []) {
       if (row.oiBase == null || !row.eventTime) continue;
       const rows = byVenue.get(row.exchange) ?? [];
-      rows.push({ time: row.eventTime, availableAt: entry.ingestTime, oiBase: row.oiBase, price: row.price, markPrice: row.markPrice });
+      rows.push({ time: row.eventTime, availableAt: entry.ingestTime, oiBase: row.oiBase, price: row.price, markPrice: row.markPrice, coverage: coverageOf(entry as { quality?: string }) });
       byVenue.set(row.exchange, rows);
     }
   }
@@ -292,13 +313,13 @@ export function factorSamplesFromSnapshots(entries: Array<{ ingestTime: number; 
     const sorted = [...rows].sort((left, right) => left.time - right.time);
     for (let index = 0; index < sorted.length; index += 1) {
       const row = sorted[index];
-      samples.push({ venue, factor: 'oi_level', time: row.time, availableAt: row.availableAt, value: row.oiBase, unit: 'base', coveragePct: 100 });
+      samples.push({ venue, factor: 'oi_level', time: row.time, availableAt: row.availableAt, value: row.oiBase, unit: 'base', coveragePct: row.coverage });
       const previous = sorted[index - 1];
       if (previous && row.time > previous.time && row.time - previous.time <= 600_000 && previous.oiBase > 0) {
-        samples.push({ venue, factor: 'oi_delta', time: row.time, availableAt: row.availableAt, value: (row.oiBase - previous.oiBase) / previous.oiBase * 100, unit: 'pct', coveragePct: 100 });
+        samples.push({ venue, factor: 'oi_delta', time: row.time, availableAt: row.availableAt, value: (row.oiBase - previous.oiBase) / previous.oiBase * 100, unit: 'pct', coveragePct: row.coverage });
       }
       if (row.markPrice != null && row.price != null && row.price > 0) {
-        samples.push({ venue, factor: 'funding_basis', time: row.time, availableAt: row.availableAt, value: (row.markPrice - row.price) / row.price * 10_000, unit: 'bps', coveragePct: 100 });
+        samples.push({ venue, factor: 'funding_basis', time: row.time, availableAt: row.availableAt, value: (row.markPrice - row.price) / row.price * 10_000, unit: 'bps', coveragePct: row.coverage });
       }
     }
   }

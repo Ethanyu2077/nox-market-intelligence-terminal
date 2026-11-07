@@ -189,14 +189,21 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
   const factor = z.enum(['oi_level', 'oi_delta', 'spot_volume_delta', 'perp_volume_delta', 'cvd_divergence', 'funding_basis', 'depth_change']).parse(req.query.factor);
   const timeframe = z.enum(['1m', '5m', '15m', '1h']).default('5m').parse(req.query.timeframe);
+  const start = z.coerce.number().int().optional().parse(req.query.start);
+  const end = z.coerce.number().int().optional().parse(req.query.end);
+  const asOf = z.coerce.number().int().optional().parse(req.query.asOf);
+  const limit = z.coerce.number().int().min(1).max(2_000).default(2_000).parse(req.query.limit);
+  const query = { kind: 'snapshot' as const, from: start, to: end, asOf, limit };
   const [snapshots, l2] = await Promise.all([
-    history.page(project.id, { kind: 'snapshot', limit: 2_000 }),
-    history.page(project.id, { kind: 'l2', limit: 2_000 }),
+    history.page(project.id, query),
+    history.page(project.id, { ...query, kind: 'l2' as const }),
   ]);
   const raw = [...factorSamplesFromSnapshots(snapshots.items), ...factorSamplesFromL2(l2.items)].filter((sample) => sample.factor === factor);
   // Factors that need per-venue spot/perp/cvd series not present in the journal stay empty
   // and therefore return `unavailable` rather than an inferred value.
-  res.json(buildFactorEvidence(factor, resampleFactorSamples(raw, FACTOR_TIMEFRAMES[timeframe])));
+  const report = buildFactorEvidence(factor, resampleFactorSamples(raw, FACTOR_TIMEFRAMES[timeframe]));
+  const partial = Boolean(snapshots.nextCursor || l2.nextCursor);
+  res.json({ ...report, partial, cursor: snapshots.nextCursor ?? null, dataWindow: { ...report.dataWindow, bucketMs: FACTOR_TIMEFRAMES[timeframe] } });
 }));
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));

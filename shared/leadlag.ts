@@ -27,6 +27,7 @@ export interface LeadLagOptions {
   costBpsPerSide: number;
   bootstrapRounds: number;
   folds: number;
+  maxEntryStalenessMs: number;
 }
 
 export interface LagScore {
@@ -100,6 +101,8 @@ export interface LeadLagReport {
     meanNetPct: number | null;
     reason: string | null;
     assumptions: string[];
+    exclusions: { noEntry: number; sameQuote: number; staleEntry: number; staleOutcome: number };
+    costs: { feesBps: number; spreadBps: number | null; slippageBps: number | null; fundingBps: number | null; latencyMs: number | null; source: 'assumption' | 'unavailable' };
   };
   verdict: 'insufficient' | 'descriptive' | 'promising-not-tradable';
   notes: string[];

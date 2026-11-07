@@ -131,5 +131,21 @@ test('execution is unavailable when there is no distinct quote after the decisio
   const report = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: a, samplesB: b }, { minSamples: 10, horizonMs: 60_000, bootstrapRounds: 20, folds: 2 });
   assert.equal(report.executionScenario.available, false);
   assert.equal(report.executionScenario.samples, 0);
-  assert.match(report.executionScenario.reason ?? '', /No distinct entry quote/);
+  assert.match(report.executionScenario.reason ?? '', /No executable quote/);
+});
+
+test('a stale entry quote is excluded from the execution scenario', () => {
+  const a: PriceSample[] = [], b: PriceSample[] = [];
+  let priceA = 100, priceB = 100;
+  for (let i = 0; i < 180; i += 1) {
+    const time = 1_700_000_000_000 + i * 60_000;
+    a.push({ venue: 'a', time, availableAt: time, price: priceA });
+    b.push({ venue: 'b', time, availableAt: time, price: priceB });
+    priceA *= 1.003; priceB *= 1.002;
+  }
+  const report = analyzeLeadLag({ venueA: 'a', venueB: 'b', samplesA: a, samplesB: b }, { minSamples: 10, horizonMs: 600_000, windowMs: 60_000, bootstrapRounds: 20, folds: 2, maxEntryStalenessMs: 30_000 });
+  assert.equal(report.executionScenario.available, false);
+  assert.ok(report.executionScenario.exclusions.staleEntry > 0);
+  assert.equal(report.executionScenario.costs.spreadBps, null, 'unmodelled costs stay explicitly null');
+  assert.equal(report.executionScenario.costs.source, 'assumption');
 });

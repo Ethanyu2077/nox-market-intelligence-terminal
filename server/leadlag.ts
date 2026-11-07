@@ -24,6 +24,7 @@ export const DEFAULT_LEADLAG_OPTIONS: LeadLagOptions = {
   costBpsPerSide: 5,
   bootstrapRounds: 200,
   folds: 4,
+  maxEntryStalenessMs: 60_000,
 };
 
 interface Pair {
@@ -316,7 +317,15 @@ export function analyzeLeadLag(input: LeadLagInput, overrides: Partial<LeadLagOp
   // observed forward price. If entry and outcome are the same observation the scenario is
   // degenerate and excluded (no tradeable quote after the signal).
   const executionCost = (options.costBpsPerSide * 2) / 10_000;
-  const executable = oosPairs.filter((pair) => pair.entryReturn != null && pair.entryTime != null && pair.entryTime < pair.outcomeTime);
+  const exclusions = { noEntry: 0, sameQuote: 0, staleEntry: 0, staleOutcome: 0 };
+  const executable: Pair[] = [];
+  for (const pair of oosPairs) {
+    if (pair.entryTime == null || pair.entryPrice == null) { exclusions.noEntry += 1; continue; }
+    if (pair.entryTime === pair.outcomeTime) { exclusions.sameQuote += 1; continue; }
+    if (pair.entryTime - pair.decisionTime > options.maxEntryStalenessMs) { exclusions.staleEntry += 1; continue; }
+    if (pair.outcomeAvailableAt - pair.decisionTime > options.horizonMs + options.maxDelayMs) { exclusions.staleOutcome += 1; continue; }
+    executable.push(pair);
+  }
   const executionReturns = executable.map((pair) => Math.sign(pair.leadReturn) * (pair.entryReturn as number) - executionCost);
   const executionStats = stats(executionReturns);
   const executionScenario: LeadLagReport['executionScenario'] = {
@@ -324,8 +333,10 @@ export function analyzeLeadLag(input: LeadLagInput, overrides: Partial<LeadLagOp
     samples: executable.length,
     hitRate: executionStats.hitRate,
     meanNetPct: executionStats.meanNetPct,
-    reason: executable.length ? null : 'No distinct entry quote after the decision; execution return is unavailable',
-    assumptions: ['Fees applied per side from costBpsPerSide; spread, slippage, funding and latency are NOT modelled.', 'Entry uses the first quote observed after the decision time, never a pre-signal price.'],
+    reason: executable.length ? null : 'No executable quote after the decision (missing, stale, same as outcome, or unavailable exit)',
+    assumptions: ['Fees applied per side from costBpsPerSide; spread, slippage, funding and latency are NOT modelled.', 'Entry uses the first quote observed after the decision time, never a pre-signal price.', 'Exit must be available within the horizon plus max receive delay.'],
+    exclusions,
+    costs: { feesBps: options.costBpsPerSide * 2, spreadBps: null, slippageBps: null, fundingBps: null, latencyMs: null, source: 'assumption' },
   };
   const notes: string[] = [];
   if (!enough) notes.push(`Insufficient out-of-sample evidence: ${oos.samples} OOS samples (minimum ${options.minSamples}) across ${folds.filter((fold) => fold.testSamples > 0).length} folds. No edge is claimed.`);

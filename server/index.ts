@@ -197,10 +197,10 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
   const start = z.coerce.number().int().optional().parse(req.query.start);
   const end = z.coerce.number().int().optional().parse(req.query.end);
   const asOf = z.coerce.number().int().optional().parse(req.query.asOf);
-  const limit = z.coerce.number().int().min(1).max(2_000).default(1_000).parse(req.query.limit);
+  const limit = z.coerce.number().int().min(1).max(2_000).default(500).parse(req.query.limit);
   const snapshotCursor = z.string().optional().parse(req.query.snapshotCursor);
   const l2Cursor = z.string().optional().parse(req.query.l2Cursor);
-  const scanBase = { from: start, to: end, asOf, limit, maxPages: 5, maxRecords: 5_000, timeoutMs: 5_000 };
+  const scanBase = { from: start, to: end, asOf, limit, maxPages: 2, maxRecords: 2_000, timeoutMs: 3_000 };
   const [snapshots, l2] = await Promise.all([
     scanHistory(history, project.id, { ...scanBase, kind: 'snapshot', cursor: snapshotCursor }),
     scanHistory(history, project.id, { ...scanBase, kind: 'l2', cursor: l2Cursor }),

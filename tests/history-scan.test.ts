@@ -71,3 +71,12 @@ test('snapshot and L2 cursors are independent and truncation is reported', async
   assert.equal(snap.truncated, true);
   assert.equal(depth.truncated, true);
 });
+
+test('a hanging page is bounded by the scan timeout', async () => {
+  const hanging = { page: () => new Promise<never>(() => undefined) };
+  const started = Date.now();
+  const result = await scanHistory(hanging as never, 'p1', { kind: 'snapshot', limit: 100, maxPages: 3, maxRecords: 100, timeoutMs: 200 });
+  assert.equal(result.truncated, true);
+  assert.equal(result.reason, 'timeout');
+  assert.ok(Date.now() - started < 2_000, 'the scan returns instead of hanging');
+});

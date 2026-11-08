@@ -34,14 +34,24 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
 
   useEffect(() => {
     const controller = new AbortController();
+    let timedOut = false;
     const lookbackMs = { '6h': 21_600_000, '24h': 86_400_000, '7d': 604_800_000, '30d': 2_592_000_000 }[lookback];
+    // The interactive panel must not hang on a slow research query (the deployed API can
+    // exceed the proxy timeout); abort after 20s and show an explicit error.
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 20_000);
     setLoading(true);
     fetch(`/api/projects/${project.id}/research/cross-factor?factor=${factor}&timeframe=${timeframe}&start=${Date.now() - lookbackMs}`, { signal: controller.signal })
-      .then(async (response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return await response.json() as FactorEvidence; })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json().catch(() => { throw new Error('Invalid research response'); }) as Promise<FactorEvidence>;
+      })
       .then((payload) => { setReport(payload); setError(''); setSelected(payload.pairs?.[0]?.venues.join('→') ?? null); setPairFilter('all'); })
-      .catch((cause) => { if ((cause as Error).name !== 'AbortError') setError(cause instanceof Error ? cause.message : 'Request failed'); })
-      .finally(() => setLoading(false));
-    return () => controller.abort();
+      .catch((cause) => {
+        if (controller.signal.aborted && !timedOut) return; // component unmount
+        setError(timedOut ? 'Research request timed out; try a shorter lookback' : cause instanceof Error ? cause.message : 'Request failed');
+      })
+      .finally(() => { clearTimeout(timer); setLoading(false); });
+    return () => { clearTimeout(timer); controller.abort(); };
   }, [project.id, factor, timeframe, lookback]);
 
   const venueCoverage = new Map((report?.venues ?? []).map((venue) => [venue.venue, venue.coveragePct]));
@@ -53,7 +63,7 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
       ? Math.abs(right.correlation ?? 0) - Math.abs(left.correlation ?? 0)
       : sort === 'lag' ? (right.lagMs ?? -1) - (left.lagMs ?? -1) : right.samples - left.samples);
   const pair = visiblePairs.find((item) => item.venues.join('→') === selected) ?? visiblePairs[0] ?? null;
-  const status = report == null ? 'Unavailable' : !report.comparable ? (report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable') : report.verdict === 'descriptive' ? 'Descriptive' : report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable';
+  const status = loading ? 'Loading' : report == null ? 'Unavailable' : !report.comparable ? (report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable') : report.verdict === 'descriptive' ? 'Descriptive' : report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable';
 
   return (
     <section className="panel cx-panel">

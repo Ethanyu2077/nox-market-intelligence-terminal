@@ -26,6 +26,13 @@ export interface ScanResult {
 
 type Pager = { page: (projectId: string, query: HistoryQuery) => Promise<{ items: HistoryEvent[]; nextCursor: string | null }> };
 
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('history page timeout')), ms)),
+  ]);
+}
+
 export async function scanHistory(store: Pager, projectId: string, options: ScanOptions): Promise<ScanResult> {
   const now = options.now ?? Date.now;
   const started = now();
@@ -40,9 +47,17 @@ export async function scanHistory(store: Pager, projectId: string, options: Scan
   while (true) {
     if (pages >= options.maxPages) { reason = 'max-pages'; break; }
     if (now() - started > options.timeoutMs) { reason = 'timeout'; break; }
-    const page = await store.page(projectId, {
-      kind: options.kind, from: options.from, to: options.to, asOf: options.asOf, cursor: cursor ?? undefined, limit: options.limit,
-    });
+    let page;
+    try {
+      // Bound the page call itself: a hung journal/DB query must not hold the HTTP request
+      // past the proxy timeout. On timeout we return what has been scanned so far.
+      page = await withTimeout(store.page(projectId, {
+        kind: options.kind, from: options.from, to: options.to, asOf: options.asOf, cursor: cursor ?? undefined, limit: options.limit,
+      }), Math.max(1_000, Math.min(options.timeoutMs, Math.max(1_000, options.timeoutMs - (now() - started)))));
+    } catch (error) {
+      reason = error instanceof Error && /timeout/.test(error.message) ? 'timeout' : null;
+      break;
+    }
     // Consume the WHOLE page. Stopping mid-page and returning that page's next cursor
     // would silently skip the remaining records; maxRecords is a soft bound of one page.
     for (const item of page.items) {

@@ -203,3 +203,18 @@
 | 冻结数据集 + SHA256 | **NOT IMPLEMENTED** | 依赖真实采集 |
 | 两次研究复现 | **NOT IMPLEMENTED** | 同上 |
 | 24 小时 soak | **NOT VERIFIED** | 30 分钟尚未通过 |
+
+## 2026-11 增补（研究查询可靠性轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| 历史扫描中断分类 | TESTED | timeout / query-error / invalid-cursor / cancelled / max-pages / max-records；任何中断 truncated=true，保留已扫描数据 |
+| 异常不泄露 | TESTED | query-error 仅返回分类，不含 SQL/连接信息 |
+| 异步完整研究任务 | TESTED | 独立 Snapshot/L2 cursor、按 id 去重、固定 asOf、页级超时 |
+| 任务状态与取消 | TESTED | QUEUED/RUNNING/COMPLETED/PARTIAL/FAILED/CANCELLED；取消后无报告 |
+| 资源限制 | TESTED | 并发上限、maxRecords、maxRuntime 可配置（NOX_RESEARCH_*） |
+| 大历史扫描 | TESTED | 12,500 事件完成；Snapshot/L2 独立分页 |
+| Evidence Panel 集成 | IMPLEMENTED | Full research 按钮、轮询进度、取消、显式 Load report、PARTIAL 标记 |
+| 真正取消 DB 查询 | **NOT IMPLEMENTED** | HistoryStore 不支持 AbortSignal，只能页间取消；已记录为限制 |
+| 真实 TimescaleDB 性能/恢复 | **NOT VERIFIED** | 无实例 |
+| 三所真实 L2 | **NOT VERIFIED** | 未执行 |

@@ -142,3 +142,16 @@ two valid updates is NOT VERIFIED.
   connected `current_database()`, which must look disposable. URL matching alone is rejected.
 - L2 JSON report fields (recovery, gap, resync, status) come from the same analyzer decision;
   `state=live` or `integrity=ok` alone never implies recovery.
+
+## Updates (research query reliability)
+
+- `scanHistory` classifies interruptions (timeout/query-error/invalid-cursor/cancelled/
+  max-pages/max-records); all set `truncated=true` and keep partial rows. Driver errors are
+  sanitized to `query-error`.
+- Full-history research runs as an async job (`POST /api/projects/:id/research/jobs`) with
+  independent snapshot/L2 cursors, id dedupe, fixed `asOf`, page bounds, concurrency and
+  runtime limits (`NOX_RESEARCH_MAX_JOBS`, `_MAX_RECORDS`, `_TIMEOUT_MS`, `_PAGE_LIMIT`,
+  `_PAGE_TIMEOUT_MS`). Statuses are QUEUED/RUNNING/COMPLETED/PARTIAL/FAILED/CANCELLED and
+  PARTIAL always carries a truncation reason.
+- LIMITATION: HistoryStore has no AbortSignal, so cancellation happens between pages; an
+  in-flight database query is not aborted. This is not a substitute for DB-side cancellation.

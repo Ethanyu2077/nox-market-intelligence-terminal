@@ -78,3 +78,30 @@ test('cancellation stops the job and never produces a report', async () => {
   assert.equal(done?.status, 'CANCELLED');
   assert.equal(done?.report, null);
 });
+
+test('scans 10,000+ events and reports an exact count', async () => {
+  const manager = new ResearchJobManager(store(pages(250, 50)) as never, { ...baseLimits, maxRecords: 20_000 });
+  const { job } = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  const done = await manager.wait(job.id);
+  assert.equal(done?.status, 'COMPLETED');
+  assert.equal(done?.progress.scanned, 12_500);
+});
+
+test('snapshot and L2 paginate independently with separate cursors', async () => {
+  const snapshotPages = pages(4, 10, 'snapshot');
+  const l2Pages = pages(3, 10, 'l2').map((rows) => rows.map((row) => ({ ...row, id: `l2-${row.id}`, payload: { venue: 'binance', bucketStart: 1_700_000_000_000, liquidityWithdrawalPct: 1, researchUsable: true } })));
+  const branch = {
+    page: async (_project: string, query: { kind: string; cursor?: string }) => {
+      const data = query.kind === 'l2' ? l2Pages : snapshotPages;
+      const index = query.cursor ? Number(query.cursor) : 0;
+      return { items: data[index] ?? [], nextCursor: index + 1 < data.length ? String(index + 1) : null };
+    },
+  };
+  const manager = new ResearchJobManager(branch as never, baseLimits);
+  const { job } = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  const done = await manager.wait(job.id);
+  assert.equal(done?.status, 'COMPLETED');
+  assert.equal(done?.progress.scanned, 70);
+  assert.equal(done?.progress.snapshotDone, true);
+  assert.equal(done?.progress.l2Done, true);
+});

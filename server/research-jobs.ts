@@ -46,6 +46,8 @@ export class ResearchJobManager {
 
   get(id: string): ResearchJob | null { return this.jobs.get(id)?.job ?? null; }
 
+  size(): number { return this.jobs.size; }
+
   create(projectId: string, params: { factor: string; timeframe: string; start?: number | null; end?: number | null; asOf?: number }): { job: ResearchJob; duplicate: boolean } {
     const active = [...this.jobs.values()].find((record) => record.job.projectId === projectId
       && ['QUEUED', 'RUNNING'].includes(record.job.status)
@@ -121,7 +123,9 @@ export class ResearchJobManager {
           if (kind === 'snapshot') job.progress.snapshotCursor = cursor; else job.progress.l2Cursor = cursor;
           job.progress.scanned = events.size;
           job.updatedAt = Date.now();
-          if (scan.reason === 'max-pages') { done = !cursor; continue; }
+          // A page-sized scan reports max-pages/max-records even when the cursor proves
+          // the page was fully consumed; only a bounded page without a cursor truncates.
+          if (scan.reason === 'max-pages' || scan.reason === 'max-records') { done = !cursor; continue; }
           if (scan.reason) { reason = scan.reason; if (scan.reason === 'query-error') { job.status = 'FAILED'; job.error = 'Historical query failed'; return; } break; }
           done = !cursor;
         }

@@ -81,6 +81,7 @@ try {
   await page.setRequestInterception(true);
   page.on('request', (request) => {
     const url = new URL(request.url());
+    if (url.pathname.endsWith('/research/jobs')) return request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }) });
     if (!url.pathname.endsWith('/research/cross-factor')) return request.continue();
     mode = url.searchParams.get('mode') ?? mode;
     if (mode === 'fail') return request.respond({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'fixture failure' } }) });

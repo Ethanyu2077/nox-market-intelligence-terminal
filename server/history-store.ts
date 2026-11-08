@@ -38,6 +38,8 @@ export interface HistoryQuery {
   marketKey?: string;
   limit?: number;
   cursor?: string;
+  /** Cooperative cancellation for long queries; DB-side via pg_cancel_backend. */
+  signal?: AbortSignal;
 }
 interface Position {
   time: number;
@@ -295,8 +297,32 @@ export class HistoryStore {
     }
     return [...samples.values()].sort((a,b)=>a.eventTime-b.eventTime);
   }
+  /** Runs one query on a dedicated connection and cancels it in PostgreSQL on abort. */
+  private async queryWithCancel(text: string, values: unknown[], signal?: AbortSignal) {
+    if (!this.pool) throw new Error('database unavailable');
+    if (!signal) return this.pool.query(text, values);
+    if (signal.aborted) throw new Error('cancelled');
+    const client = await this.pool.connect();
+    const processId = (client as unknown as { processID?: number }).processID;
+    const onAbort = () => {
+      if (!processId) return;
+      // Cancel the server-side statement instead of merely dropping the promise.
+      void this.pool?.query('SELECT pg_cancel_backend($1)', [processId]).catch(() => undefined);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    const statementTimeout = Math.max(1_000, Number(process.env.NOX_DB_STATEMENT_TIMEOUT_MS ?? 10_000));
+    try {
+      await client.query(`SET statement_timeout = ${Math.round(statementTimeout)}`);
+      return await client.query(text, values);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+      client.release();
+    }
+  }
+
   async page(projectId: string, query: HistoryQuery) {
     await this.queue;
+    if (query.signal?.aborted) throw new Error('cancelled');
     const cursor = decode(query.cursor),
       asOf = query.asOf ?? cursor?.asOf ?? Date.now(),
       from = query.from ?? 0,
@@ -319,7 +345,7 @@ export class HistoryStore {
     if (this.connected && this.pool) {
       try {
         const payload=query.priceOnly&&query.kind==='snapshot'?"jsonb_build_object('price',e.payload->'price')":query.summarizeRegime?`CASE WHEN e.source='nox.regime.v2' THEN jsonb_set(e.payload,'{venues}',(SELECT coalesce(jsonb_agg((v #- '{input,snapshots}' #- '{input,perpBuckets}' #- '{input,spotBuckets}') || jsonb_build_object('inputSnapshotCount',coalesce(jsonb_array_length(v #> '{input,snapshots}'),0))),'[]'::jsonb) FROM jsonb_array_elements(e.payload->'venues') AS x(v))) ELSE e.payload END`:'e.payload';
-        const result = await this.pool.query(
+        const result = await this.queryWithCancel(
           `SELECT e.id,e.kind,e.market_key AS "marketKey",e.project_id AS "projectId",extract(epoch from e.event_time)*1000 AS "eventTime",extract(epoch from e.ingest_time)*1000 AS "ingestTime",e.source,e.quality,${payload} AS payload
         FROM nox_history_events e WHERE e.kind=$1 AND e.event_time >= $2 AND e.event_time <= $3 AND e.ingest_time <= $4
         AND ($5::text IS NULL OR e.market_key=$5) AND (e.project_id=$6 OR (e.project_id IS NULL AND EXISTS (SELECT 1 FROM nox_project_market_links l WHERE l.project_id=$6 AND l.market_key=e.market_key AND e.ingest_time >= l.valid_from AND (l.valid_to IS NULL OR e.ingest_time < l.valid_to))))
@@ -338,6 +364,7 @@ export class HistoryStore {
             query.source??null,
             query.regimeInterval??null,
           ],
+          query.signal,
         );
         rows = result.rows.map((r) => ({
           ...r,

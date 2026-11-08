@@ -51,6 +51,7 @@ import { L2Collector } from './l2/collector.ts';
 import { buildFactorEvidence, factorSamplesFromL2, factorSamplesFromSnapshots, resampleFactorSamples, FACTOR_TIMEFRAMES } from './crossfactor.ts';
 import { scanHistory } from './history-scan.ts';
 import { ResearchJobManager } from './research-jobs.ts';
+import { apiNotFound } from './api-not-found.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
 import { registerAcceptanceRoute } from './acceptance-route.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
@@ -507,6 +508,9 @@ app.patch('/api/alerts/rules/:id', safe(async (req, res) => {
 app.delete('/api/alerts/rules/:id', safe(async (req, res) => { await store.removeAlert(String(req.params.id)); res.status(204).end(); }));
 app.post('/api/alerts/evaluate', safe(async (_req, res) => { res.json(await alerts.evaluate()); }));
 app.post('/api/alerts/events/clear', safe(async (_req, res) => { await alerts.clearEvents(); res.json(alerts.status()); }));
+
+// Register before the SPA fallback: an unknown API route must be JSON 404, never HTML 200.
+app.use('/api', apiNotFound);
 
 if (process.env.NODE_ENV === 'production') {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');

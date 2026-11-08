@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { FactorEvidence } from '../shared/crossfactor';
+import type { ResearchJob } from '../shared/research-job';
 import type { MarketProject } from '../shared/types';
 
 const FACTORS = [
@@ -31,6 +32,8 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [job, setJob] = useState<ResearchJob | null>(null);
+  const [jobBusy, setJobBusy] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -62,6 +65,46 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
     .sort((left, right) => sort === 'correlation'
       ? Math.abs(right.correlation ?? 0) - Math.abs(left.correlation ?? 0)
       : sort === 'lag' ? (right.lagMs ?? -1) - (left.lagMs ?? -1) : right.samples - left.samples);
+  // Poll only while the job is queued/running; a finished job never auto-replaces the
+  // preview — the operator must explicitly load its report.
+  useEffect(() => {
+    if (!job || !['QUEUED', 'RUNNING'].includes(job.status)) return;
+    const timer = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/projects/${project.id}/research/jobs/${job.id}`);
+        if (!response.ok) return;
+        const payload = await response.json() as { job: ResearchJob };
+        setJob(payload.job);
+      } catch { /* keep polling */ }
+    }, 1_500);
+    return () => clearInterval(timer);
+  }, [job, project.id]);
+
+  const startJob = async () => {
+    const lookbackMs = { '6h': 21_600_000, '24h': 86_400_000, '7d': 604_800_000, '30d': 2_592_000_000 }[lookback];
+    setJobBusy(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/research/jobs`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ factor, timeframe, start: Date.now() - lookbackMs }),
+      });
+      if (!response.ok) throw new Error(response.status === 401 ? 'Sign in to run a full research job' : `HTTP ${response.status}`);
+      const payload = await response.json() as { job: ResearchJob };
+      setJob(payload.job);
+      setError('');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not start research job'); }
+    finally { setJobBusy(false); }
+  };
+
+  const cancelJob = async () => {
+    if (!job) return;
+    setJobBusy(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/research/jobs/${job.id}`, { method: 'DELETE' });
+      if (response.ok) setJob((await response.json() as { job: ResearchJob }).job);
+    } finally { setJobBusy(false); }
+  };
+
   const pair = visiblePairs.find((item) => item.venues.join('→') === selected) ?? visiblePairs[0] ?? null;
   const status = loading ? 'Loading' : report == null ? 'Unavailable' : !report.comparable ? (report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable') : report.verdict === 'descriptive' ? 'Descriptive' : report.verdict === 'insufficient' ? 'Insufficient' : 'Unavailable';
 
@@ -78,11 +121,25 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
         <label>{zh ? '组合' : 'Pair'}<select value={pairFilter} onChange={(event) => { setPairFilter(event.target.value); setSelected(event.target.value === 'all' ? null : event.target.value); }}><option value="all">{zh ? '全部' : 'All'}</option>{(report?.pairs ?? []).map((item) => <option key={item.venues.join('→')} value={item.venues.join('→')}>{item.venues.join(' / ')}</option>)}</select></label>
         <label>{zh ? '最低覆盖' : 'Min coverage'}<select value={minCoverage} onChange={(event) => setMinCoverage(Number(event.target.value))}>{[0, 50, 80].map((item) => <option key={item} value={item}>{item}%</option>)}</select></label>
         <label>{zh ? '排序' : 'Sort'}<select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="samples">{zh ? '样本' : 'Samples'}</option><option value="correlation">{zh ? '相关' : 'Correlation'}</option><option value="lag">Lag</option></select></label>
-        <span className="cx-meta">{loading ? (zh ? '读取中…' : 'Loading…') : report ? `${report.venues.length} ${zh ? '个交易所' : 'venues'} · ${report.hypothesesTested} ${zh ? '个假设' : 'hypotheses'}${report.partial ? ' · PARTIAL' : ''}` : '—'}</span>
+        <span className="cx-meta">{loading ? (zh ? '读取中…' : 'Loading…') : report ? `${zh ? '快速预览' : 'Quick preview'} · ${report.venues.length} ${zh ? '个交易所' : 'venues'} · ${report.hypothesesTested} ${zh ? '个假设' : 'hypotheses'}${report.partial ? ' · PARTIAL' : ''}` : '—'}</span>
+        <button className="secondary-button" onClick={() => void startJob()} disabled={jobBusy || Boolean(job && ['QUEUED', 'RUNNING'].includes(job.status))}>{zh ? '完整研究' : 'Full research'}</button>
       </div>
       {error && <p className="alerts-error" role="alert">{error}</p>}
       {report && !report.comparable && (
         <div className="cx-empty"><strong>{zh ? '不可比 / 不可用' : 'Not comparable / unavailable'}</strong><ul>{report.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></div>
+      )}
+      {job && (
+        <div className="cx-job">
+          <span className={`cx-status ${job.status.toLowerCase()}`}>{job.status}</span>
+          <span>{zh ? '已扫描' : 'scanned'} {job.progress.scanned}</span>
+          <span>snapshot {job.progress.snapshotDone ? 'done' : job.progress.snapshotCursor ?? 'pending'} · L2 {job.progress.l2Done ? 'done' : job.progress.l2Cursor ?? 'pending'}</span>
+          {job.truncationReason && <span>PARTIAL · {job.truncationReason}</span>}
+          {job.error && <span className="cx-error-text">{job.error}</span>}
+          {['QUEUED', 'RUNNING'].includes(job.status) && <button onClick={() => void cancelJob()} disabled={jobBusy}>{zh ? '取消' : 'Cancel'}</button>}
+          {['COMPLETED', 'PARTIAL'].includes(job.status) && job.report != null && (
+            <button onClick={() => { const loaded = job.report as FactorEvidence; setReport(loaded); setSelected(loaded.pairs?.[0]?.venues.join('→') ?? null); }}>{zh ? '载入报告' : 'Load report'}</button>
+          )}
+        </div>
       )}
       {report && report.comparable && (
         <>

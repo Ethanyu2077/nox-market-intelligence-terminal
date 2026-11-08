@@ -300,3 +300,8 @@
 .cx-columns h4 { font: 10px var(--mono); color: var(--faint); text-transform: uppercase; margin: 0; }
 .cx-note { margin-top: 12px; color: var(--faint); font-size: 11px; line-height: 1.6; }
 @media (max-width: 860px) { .cx-columns { grid-template-columns: 1fr; } }
+
+/* Research job row */
+.cx-job { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); font: 10px var(--mono); color: var(--muted); }
+.cx-job button { background: var(--surface-2); border: 1px solid var(--line); color: var(--text); border-radius: 3px; padding: 3px 8px; font: 10px var(--mono); cursor: pointer; }
+.cx-error-text { color: var(--warn); }

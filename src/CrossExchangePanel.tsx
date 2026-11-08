@@ -80,6 +80,20 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
     return () => clearInterval(timer);
   }, [job, project.id]);
 
+  // Restore persisted jobs after an API restart (INTERRUPTED stays visibly interrupted).
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/projects/${project.id}/research/jobs`)
+      .then((response) => response.ok ? response.json() as Promise<{ items?: ResearchJob[] }> : null)
+      .then((payload) => {
+        if (!active || !payload?.items?.length) return;
+        const latest = [...payload.items].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        setJob(latest);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [project.id]);
+
   const startJob = async () => {
     const lookbackMs = { '6h': 21_600_000, '24h': 86_400_000, '7d': 604_800_000, '30d': 2_592_000_000 }[lookback];
     setJobBusy(true);
@@ -136,7 +150,7 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
           {job.truncationReason && <span>PARTIAL · {job.truncationReason}</span>}
           {job.error && <span className="cx-error-text">{job.error}</span>}
           {['QUEUED', 'RUNNING'].includes(job.status) && <button onClick={() => void cancelJob()} disabled={jobBusy}>{zh ? '取消' : 'Cancel'}</button>}
-          {['COMPLETED', 'PARTIAL'].includes(job.status) && job.report != null && (
+          {['COMPLETED', 'PARTIAL', 'INTERRUPTED'].includes(job.status) && job.report != null && (
             <button onClick={() => { const loaded = job.report as FactorEvidence; setReport(loaded); setSelected(loaded.pairs?.[0]?.venues.join('→') ?? null); }}>{zh ? '载入报告' : 'Load report'}</button>
           )}
         </div>

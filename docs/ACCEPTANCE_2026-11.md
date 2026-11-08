@@ -218,3 +218,17 @@
 | 真正取消 DB 查询 | **NOT IMPLEMENTED** | HistoryStore 不支持 AbortSignal，只能页间取消；已记录为限制 |
 | 真实 TimescaleDB 性能/恢复 | **NOT VERIFIED** | 无实例 |
 | 三所真实 L2 | **NOT VERIFIED** | 未执行 |
+
+## 2026-11 增补（任务可靠性轮）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| AbortSignal → DB 查询 | IMPLEMENTED | 独占连接 + statement_timeout；abort 时 `pg_cancel_backend(processID)` |
+| 取消状态区分 | TESTED | cancelled / query-error / timeout / max-records / report-too-large 分开 |
+| 查询取消回归 | TESTED | 信号传播、扫描取消、错误分类；真实 PostgreSQL 取消 **NOT VERIFIED** |
+| 完整参数指纹 | TESTED | project+factor+timeframe+start+end+asOf；不同窗口/AsOf 不复用 |
+| 任务持久化 | TESTED | `<data>/research-jobs.json` 原子写；重启恢复报告 |
+| 重启语义 | TESTED | 持久化的 RUNNING/QUEUED → INTERRUPTED，不伪装运行 |
+| TTL / 保留上限 / 报告大小 | TESTED | 终态任务按 TTL 与数量清理；运行中不清理；超大报告 PARTIAL |
+| Evidence Panel 恢复 | IMPLEMENTED | 重新加载持久化任务，展示 INTERRUPTED，需显式载入报告 |
+| 真实 TimescaleDB 取消/恢复 | **NOT VERIFIED** | 无实例，未做数据库级验证 |

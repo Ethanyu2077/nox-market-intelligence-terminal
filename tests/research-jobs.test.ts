@@ -3,7 +3,10 @@ import test from 'node:test';
 import type { HistoryEvent } from '../shared/history.ts';
 import { ResearchJobManager, type ResearchJobLimits } from '../server/research-jobs.ts';
 
-const baseLimits: ResearchJobLimits = { maxConcurrent: 2, maxRecords: 100_000, maxRuntimeMs: 30_000, pageLimit: 50, pageTimeoutMs: 1_000 };
+const baseLimits: ResearchJobLimits = {
+  maxConcurrent: 2, maxRecords: 100_000, maxRuntimeMs: 30_000, pageLimit: 50, pageTimeoutMs: 1_000,
+  terminalTtlMs: 86_400_000, maxRetained: 100, maxReportBytes: 2_000_000,
+};
 
 function pages(count: number, perPage: number, kind: HistoryEvent['kind'] = 'snapshot', duplicateEvery = 0): HistoryEvent[][] {
   const out: HistoryEvent[][] = [];
@@ -104,4 +107,73 @@ test('snapshot and L2 paginate independently with separate cursors', async () =>
   assert.equal(done?.progress.scanned, 70);
   assert.equal(done?.progress.snapshotDone, true);
   assert.equal(done?.progress.l2Done, true);
+});
+
+test('fingerprint includes the window and asOf, and identical parameters are reused', async () => {
+  const manager = new ResearchJobManager(store(pages(10, 10)) as never, { ...baseLimits, maxConcurrent: 5 });
+  const first = manager.create('p1', { factor: 'oi_level', timeframe: '5m', start: 1000, end: 2000, asOf: 5000 });
+  const same = manager.create('p1', { factor: 'oi_level', timeframe: '5m', start: 1000, end: 2000, asOf: 5000 });
+  const otherStart = manager.create('p1', { factor: 'oi_level', timeframe: '5m', start: 1500, end: 2000, asOf: 5000 });
+  const otherAsOf = manager.create('p1', { factor: 'oi_level', timeframe: '5m', start: 1000, end: 2000, asOf: 6000 });
+  assert.equal(same.duplicate, true);
+  assert.equal(same.job.id, first.job.id);
+  assert.notEqual(otherStart.job.id, first.job.id);
+  assert.notEqual(otherAsOf.job.id, first.job.id);
+  assert.notEqual(otherStart.job.fingerprint, first.job.fingerprint);
+});
+
+test('completed jobs and reports survive a manager restart', async () => {
+  const { mkdtemp } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'nox-jobs-'));
+  const first = new ResearchJobManager(store(pages(10, 10)) as never, baseLimits, { dataDirectory: dir });
+  const { job } = first.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  const done = await first.wait(job.id);
+  assert.equal(done?.status, 'COMPLETED');
+  await first.flush();
+  const reopened = await ResearchJobManager.open(store(pages(0, 0)) as never, baseLimits, { dataDirectory: dir });
+  const restored = reopened.get(job.id);
+  assert.equal(restored?.status, 'COMPLETED');
+  assert.equal((restored?.report as { researchComplete: boolean }).researchComplete, true);
+  reopened.close();
+});
+
+test('unfinished persisted jobs become INTERRUPTED on restart', async () => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'nox-jobs-'));
+  await writeFile(path.join(dir, 'research-jobs.json'), JSON.stringify({ version: 1, jobs: [{ id: 'job_x', projectId: 'p1', factor: 'oi_level', timeframe: '5m', fingerprint: 'f', status: 'RUNNING', createdAt: 1, updatedAt: 1, asOf: 1, start: null, end: null, progress: { scanned: 5, snapshotCursor: 'c', l2Cursor: null, snapshotDone: false, l2Done: false }, report: null, error: null, truncationReason: null }] }));
+  const manager = await ResearchJobManager.open(store(pages(0, 0)) as never, baseLimits, { dataDirectory: dir });
+  assert.equal(manager.get('job_x')?.status, 'INTERRUPTED');
+  manager.close();
+});
+
+test('terminal TTL removes old jobs but keeps fresh ones', async () => {
+  const manager = new ResearchJobManager(store(pages(3, 5)) as never, { ...baseLimits, terminalTtlMs: 1_000 });
+  const { job } = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  await manager.wait(job.id);
+  assert.equal(manager.get(job.id)?.status, 'COMPLETED');
+  manager.prune(Date.now() + 5_000);
+  assert.equal(manager.get(job.id), null);
+});
+
+test('an oversized report becomes PARTIAL with report-too-large', async () => {
+  const manager = new ResearchJobManager(store(pages(5, 10)) as never, { ...baseLimits, maxReportBytes: 50 });
+  const { job } = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  const done = await manager.wait(job.id);
+  assert.equal(done?.status, 'PARTIAL');
+  assert.equal(done?.truncationReason, 'report-too-large');
+});
+
+test('cancellation propagates the abort signal to the page query', async () => {
+  let seen: AbortSignal | undefined;
+  const slow = { page: async (_project: string, query: { signal?: AbortSignal }) => { seen = query.signal; await new Promise((resolve) => setTimeout(resolve, 40)); return { items: [], nextCursor: null }; } };
+  const manager = new ResearchJobManager(slow as never, baseLimits);
+  const { job } = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  manager.cancel(job.id);
+  await manager.wait(job.id);
+  assert.equal(seen?.aborted, true);
 });

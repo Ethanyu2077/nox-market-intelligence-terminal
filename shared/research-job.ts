@@ -1,5 +1,5 @@
 /** Asynchronous full-history research job. */
-export type ResearchJobStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED';
+export type ResearchJobStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED' | 'INTERRUPTED';
 
 export interface ResearchJobProgress {
   scanned: number;
@@ -14,6 +14,8 @@ export interface ResearchJob {
   projectId: string;
   factor: string;
   timeframe: string;
+  /** Stable hash of project + factor + timeframe + start + end + asOf. */
+  fingerprint: string;
   status: ResearchJobStatus;
   createdAt: number;
   updatedAt: number;

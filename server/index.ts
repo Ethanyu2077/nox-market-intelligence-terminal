@@ -89,7 +89,7 @@ app.use((req, res, next) => {
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
 app.use(express.json({ limit: '160kb' }));
 const PROCESS_STARTED_AT = Date.now();
-const researchJobs = new ResearchJobManager(history as never);
+const researchJobs = await ResearchJobManager.open(history as never, undefined, { dataDirectory });
 const l2Collector = new L2Collector(() => store.getProjects(true), history);
 l2Collector.start();
 const alerts = new AlertService(dataDirectory, () => store.getAlerts(), () => store.getProjects(true));
@@ -527,6 +527,6 @@ const server = app.listen(port, '127.0.0.1', () => console.log(`NOX API listenin
   }
 }
 let shuttingDown = false;
-const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; try { await l2Collector.flush(); } catch { /* audit flush best effort */ } l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
+const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; try { await l2Collector.flush(); } catch { /* audit flush best effort */ } researchJobs.close(); l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

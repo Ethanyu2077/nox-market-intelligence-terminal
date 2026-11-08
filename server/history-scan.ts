@@ -13,6 +13,7 @@ export interface ScanOptions {
   maxRecords: number;
   timeoutMs: number;
   now?: () => number;
+  signal?: AbortSignal;
 }
 
 export interface ScanResult {
@@ -21,7 +22,7 @@ export interface ScanResult {
   scanned: number;
   duplicates: number;
   truncated: boolean;
-  reason: 'max-pages' | 'max-records' | 'timeout' | null;
+  reason: 'max-pages' | 'max-records' | 'timeout' | 'query-error' | 'invalid-cursor' | 'cancelled' | null;
 }
 
 type Pager = { page: (projectId: string, query: HistoryQuery) => Promise<{ items: HistoryEvent[]; nextCursor: string | null }> };
@@ -45,6 +46,7 @@ export async function scanHistory(store: Pager, projectId: string, options: Scan
   let reason: ScanResult['reason'] = null;
 
   while (true) {
+    if (options.signal?.aborted) { reason = 'cancelled'; break; }
     if (pages >= options.maxPages) { reason = 'max-pages'; break; }
     if (now() - started > options.timeoutMs) { reason = 'timeout'; break; }
     let page;
@@ -55,7 +57,12 @@ export async function scanHistory(store: Pager, projectId: string, options: Scan
         kind: options.kind, from: options.from, to: options.to, asOf: options.asOf, cursor: cursor ?? undefined, limit: options.limit,
       }), Math.max(1_000, Math.min(options.timeoutMs, Math.max(1_000, options.timeoutMs - (now() - started)))));
     } catch (error) {
-      reason = error instanceof Error && /timeout/.test(error.message) ? 'timeout' : null;
+      // Never look like a clean end. Classify without leaking SQL, connection strings or
+      // driver internals to the caller.
+      const message = error instanceof Error ? error.message : '';
+      if (/timeout/i.test(message)) reason = 'timeout';
+      else if (/cursor/i.test(message)) reason = 'invalid-cursor';
+      else reason = 'query-error';
       break;
     }
     // Consume the WHOLE page. Stopping mid-page and returning that page's next cursor

@@ -80,3 +80,35 @@ test('a hanging page is bounded by the scan timeout', async () => {
   assert.equal(result.reason, 'timeout');
   assert.ok(Date.now() - started < 2_000, 'the scan returns instead of hanging');
 });
+
+test('a database error is query-error, truncated and keeps partial data', async () => {
+  const pages = [{ items: [event('a', 10)], nextCursor: 'c1' }];
+  let calls = 0;
+  const store = {
+    page: async () => {
+      calls += 1;
+      if (calls === 1) return pages[0];
+      throw new Error('connect ECONNREFUSED 10.0.0.1:5432');
+    },
+  };
+  const result = await scanHistory(store as never, 'p1', { kind: 'snapshot', limit: 1, maxPages: 5, maxRecords: 100, timeoutMs: 5_000 });
+  assert.equal(result.reason, 'query-error');
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.items.map((item) => item.id), ['a']);
+  assert.equal(JSON.stringify(result).includes('ECONNREFUSED'), false, 'no driver details leak');
+});
+
+test('an invalid cursor is classified and cannot look like completion', async () => {
+  const store = { page: async () => { throw new Error('Invalid historical cursor cutoff'); } };
+  const result = await scanHistory(store as never, 'p1', { kind: 'snapshot', cursor: 'bad', limit: 10, maxPages: 3, maxRecords: 10, timeoutMs: 1_000 });
+  assert.equal(result.reason, 'invalid-cursor');
+  assert.equal(result.truncated, true);
+});
+
+test('cancellation stops the scan and marks it truncated', async () => {
+  const controller = new AbortController();
+  const store = { page: async () => { controller.abort(); return { items: [event('a', 1)], nextCursor: 'c1' }; } };
+  const result = await scanHistory(store as never, 'p1', { kind: 'snapshot', limit: 1, maxPages: 5, maxRecords: 100, timeoutMs: 5_000, signal: controller.signal });
+  assert.equal(result.reason, 'cancelled');
+  assert.equal(result.truncated, true);
+});

@@ -50,6 +50,7 @@ import { analyzeLeadLag } from './leadlag.ts';
 import { L2Collector } from './l2/collector.ts';
 import { buildFactorEvidence, factorSamplesFromL2, factorSamplesFromSnapshots, resampleFactorSamples, FACTOR_TIMEFRAMES } from './crossfactor.ts';
 import { scanHistory } from './history-scan.ts';
+import { ResearchJobManager } from './research-jobs.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
 import { registerAcceptanceRoute } from './acceptance-route.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
@@ -88,6 +89,7 @@ app.use((req, res, next) => {
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
 app.use(express.json({ limit: '160kb' }));
 const PROCESS_STARTED_AT = Date.now();
+const researchJobs = new ResearchJobManager(history as never);
 const l2Collector = new L2Collector(() => store.getProjects(true), history);
 l2Collector.start();
 const alerts = new AlertService(dataDirectory, () => store.getAlerts(), () => store.getProjects(true));
@@ -242,6 +244,36 @@ registerAcceptanceRoute(app, {
   user: (req) => auth.user(req as never),
   page: (projectId, query) => history.page(projectId, query),
 });
+// Full-history research jobs: bounded pages, independent cursors, explicit PARTIAL.
+const researchJobBody = z.object({
+  factor: z.enum(['oi_level', 'oi_delta', 'spot_volume_delta', 'perp_volume_delta', 'cvd_divergence', 'funding_basis', 'depth_change']),
+  timeframe: z.enum(['1m', '5m', '15m', '1h']),
+  start: z.coerce.number().int().optional(),
+  end: z.coerce.number().int().optional(),
+  asOf: z.coerce.number().int().optional(),
+});
+app.post('/api/projects/:id/research/jobs', safe(async (req, res) => {
+  const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
+  if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
+  const body = researchJobBody.parse(req.body);
+  const { job, duplicate } = researchJobs.create(project.id, body);
+  res.status(duplicate ? 200 : 202).json({ job, duplicate });
+}));
+app.get('/api/projects/:id/research/jobs', safe(async (req, res) => {
+  const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
+  if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
+  res.json({ items: researchJobs.list(project.id) });
+}));
+app.get('/api/projects/:id/research/jobs/:jobId', safe(async (req, res) => {
+  const job = researchJobs.get(String(req.params.jobId));
+  if (!job || job.projectId !== String(req.params.id)) { res.status(404).json({ error: { message: 'Job not found' } }); return; }
+  res.json({ job });
+}));
+app.delete('/api/projects/:id/research/jobs/:jobId', safe(async (req, res) => {
+  const job = researchJobs.cancel(String(req.params.jobId));
+  if (!job || job.projectId !== String(req.params.id)) { res.status(404).json({ error: { message: 'Job not found' } }); return; }
+  res.json({ job });
+}));
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }

@@ -26,3 +26,10 @@ export async function writeCheckpointAtomic(file, data) {
   await writeFile(temp, JSON.stringify(data, null, 2), { mode: 0o600 });
   await rename(temp, file);
 }
+
+/** Deterministic JSON for payload comparison (jsonb reorders keys). */
+export function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value ?? null);
+}

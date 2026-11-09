@@ -4,7 +4,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error plain ESM migration tooling
-import { evaluateTarget, reconcileIds, readCheckpoint, writeCheckpointAtomic } from '../scripts/migration/lib/migration-safety.mjs';
+import { canonicalJson, evaluateTarget, reconcileIds, readCheckpoint, writeCheckpointAtomic } from '../scripts/migration/lib/migration-safety.mjs';
 
 test('target identity requires explicit target, expected and matching database', () => {
   assert.equal(evaluateTarget({ target: 'test', expectedDb: 'nox_test', actualDb: 'nox_test' }).ok, true);
@@ -37,4 +37,9 @@ test('checkpoint writes are atomic and readable', async () => {
   await writeCheckpointAtomic(file, { version: 1, files: { a: { lines: 20 } } });
   assert.equal((await readCheckpoint(file)).files.a.lines, 20);
   assert.equal((await readFile(file, 'utf8')).includes('tmp'), false);
+});
+
+test('canonical JSON ignores key order for payload comparison', () => {
+  assert.equal(canonicalJson({ b: 1, a: [2, { d: 4, c: 3 }] }), canonicalJson({ a: [2, { c: 3, d: 4 }], b: 1 }));
+  assert.notEqual(canonicalJson({ a: 1 }), canonicalJson({ a: 2 }));
 });

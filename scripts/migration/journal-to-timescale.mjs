@@ -15,7 +15,7 @@ import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
-import { evaluateTarget, reconcileIds, readCheckpoint, writeCheckpointAtomic } from './lib/migration-safety.mjs';
+import { canonicalJson, evaluateTarget, reconcileIds, readCheckpoint, writeCheckpointAtomic } from './lib/migration-safety.mjs';
 
 const args = new Map(process.argv.slice(2).map((arg) => { const [key, ...rest] = arg.replace(/^--/, '').split('='); return [key, rest.join('=') || '1']; }));
 const dataDir = args.get('data-dir') ?? 'data';
@@ -78,7 +78,7 @@ for (const file of sourceFiles) {
   }
   const skipLines = resume?.lines ?? 0;
   let lineNo = 0, lines = 0, malformed = 0, duplicates = 0, inserted = 0, seen = new Set(), batch = [], batchLineNo = skipLines;
-  let missing = 0;
+  let missing = 0, payloadMismatch = 0;
   const flush = async () => {
     if (!pool || !batch.length) { batch = []; return; }
     const params = batch.flatMap((event) => [event.id, event.kind, event.marketKey, event.projectId, new Date(event.eventTime), new Date(event.ingestTime), event.source, event.quality, event.payload]);
@@ -90,6 +90,11 @@ for (const file of sourceFiles) {
     const found = await pool.query('SELECT e.id FROM nox_history_events e JOIN unnest($1::timestamptz[], $2::text[]) AS x(event_time,id) ON e.event_time=x.event_time AND e.id=x.id', [times, ids]);
     const reconciled = reconcileIds(ids, found.rows.map((row) => row.id));
     missing += reconciled.missing;
+    if (batch.length) {
+      const sample = batch[0];
+      const stored = await pool.query('SELECT payload FROM nox_history_events WHERE event_time=$1 AND id=$2', [new Date(sample.eventTime), sample.id]);
+      if (stored.rowCount && canonicalJson(stored.rows[0].payload) !== canonicalJson(sample.payload)) payloadMismatch += 1;
+    }
     batch = [];
     // Per-batch checkpoint: only after the transaction committed and was verified.
     const next = checkpoint ?? { version: 2, committed: 0, files: {} };
@@ -119,8 +124,9 @@ for (const file of sourceFiles) {
   // Source must be unchanged after reading; otherwise the migration is invalid.
   const after = await sha256File(path.join(journalDir, file));
   const changed = after !== sourceMeta[file].sha256;
-  report.files.push({ file, sha256: sourceMeta[file].sha256, lines, malformed, duplicates, inserted, missing, sourceChanged: changed, resumedFromLine: skipLines });
+  report.files.push({ file, sha256: sourceMeta[file].sha256, lines, malformed, duplicates, inserted, missing, payloadMismatch, sourceChanged: changed, resumedFromLine: skipLines });
   report.totals.sourceRecords += lines; report.totals.inserted += inserted; report.totals.duplicates += duplicates; report.totals.malformed += malformed; report.totals.missing += missing;
+  report.totals.payloadMismatch = (report.totals.payloadMismatch ?? 0) + payloadMismatch;
   if (changed) { report.status = 'FAILED'; report.reason = `source changed during migration: ${file}`; break; }
 }
 
@@ -129,6 +135,15 @@ if (pool) {
   report.databaseRows = count.rows[0].n;
   await pool.end();
 }
-if (report.status !== 'FAILED') report.status = report.totals.malformed === 0 && report.totals.missing === 0 ? (apply ? 'APPLIED' : 'INSPECTED') : 'PARTIAL';
+report.reconciliation = {
+  sourceRecords: report.totals.sourceRecords, targetRows: report.databaseRows ?? null,
+  inserted: report.totals.inserted, duplicates: report.totals.duplicates, malformed: report.totals.malformed,
+  missingEventIds: report.totals.missing, payloadMismatch: report.totals.payloadMismatch ?? 0,
+  eventRange: { from: report.timeRange.eventFrom, to: report.timeRange.eventTo },
+  ingestRange: { from: report.timeRange.ingestFrom, to: report.timeRange.ingestTo },
+  sourceSha256: Object.fromEntries(Object.entries(sourceMeta).map(([file, meta]) => [file, meta.sha256])),
+  commitSha,
+};
+if (report.status !== 'FAILED') report.status = report.totals.malformed === 0 && report.totals.missing === 0 && (report.totals.payloadMismatch ?? 0) === 0 ? (apply ? 'APPLIED' : 'INSPECTED') : 'PARTIAL';
 if (snapshotDir) report.snapshotDir = snapshotDir;
 console.log(JSON.stringify(report, null, 2));

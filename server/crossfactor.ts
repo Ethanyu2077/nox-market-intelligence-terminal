@@ -327,12 +327,23 @@ export function factorSamplesFromSnapshots(entries: Array<{ ingestTime: number; 
   const byVenue = new Map<string, Array<{ time: number; availableAt: number; oiBase: number; price: number | null; markPrice: number | null; coverage: number }>>();
   const coverageOf = (entry: { quality?: string }) => entry.quality && entry.quality !== 'live' ? 0 : 100;
   for (const entry of entries) {
-    const payload = entry.payload as { snapshots?: Array<{ exchange: string; price: number | null; markPrice: number | null; oiBase: number | null; eventTime: number }> };
-    for (const row of payload?.snapshots ?? []) {
-      if (row.oiBase == null || !row.eventTime) continue;
-      const rows = byVenue.get(row.exchange) ?? [];
-      rows.push({ time: row.eventTime, availableAt: entry.ingestTime, oiBase: row.oiBase, price: row.price, markPrice: row.markPrice, coverage: coverageOf(entry as { quality?: string }) });
-      byVenue.set(row.exchange, rows);
+    // The live collector writes one event per venue (`payload` is a single snapshot),
+    // while project-venue responses carry `{ snapshots: [...] }`. Accept both shapes;
+    // otherwise historical factors are silently empty despite a populated journal.
+    const payload = entry.payload as {
+      snapshots?: Array<{ exchange: string; price: number | null; markPrice: number | null; oiBase: number | null; eventTime: number }>;
+      exchange?: string; eventTime?: number; price?: number | null; markPrice?: number | null; oiBase?: number | null;
+    };
+    const rows = Array.isArray(payload?.snapshots)
+      ? payload.snapshots
+      : payload && typeof payload.exchange === 'string' && typeof payload.eventTime === 'number'
+        ? [{ exchange: payload.exchange, price: payload.price ?? null, markPrice: payload.markPrice ?? null, oiBase: payload.oiBase ?? null, eventTime: payload.eventTime }]
+        : [];
+    for (const row of rows) {
+      if (row.oiBase == null || !row.eventTime || !row.exchange) continue;
+      const existing = byVenue.get(row.exchange) ?? [];
+      existing.push({ time: row.eventTime, availableAt: entry.ingestTime, oiBase: row.oiBase, price: row.price, markPrice: row.markPrice, coverage: coverageOf(entry as { quality?: string }) });
+      byVenue.set(row.exchange, existing);
     }
   }
 

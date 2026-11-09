@@ -168,3 +168,15 @@ test('coverage accounting separates observed, valid, excluded and missing sample
   assert.equal(venue.timeCoveragePct, 58.33);
   assert.equal(venue.validCoveragePct, 50);
 });
+
+test('per-venue journal events are recognised as historical factor samples', () => {
+  const entries = [
+    { ingestTime: T0 + 1_000, quality: 'live', payload: { exchange: 'mexc', eventTime: T0, price: 1, markPrice: 1.01, oiBase: 1_000 } },
+    { ingestTime: T0 + 61_000, quality: 'live', payload: { exchange: 'mexc', eventTime: T0 + 60_000, price: 1.1, markPrice: 1.12, oiBase: 1_100 } },
+  ];
+  const samples = factorSamplesFromSnapshots(entries);
+  assert.equal(samples.filter((sample) => sample.factor === 'oi_level').length, 2);
+  assert.equal(samples.filter((sample) => sample.factor === 'oi_delta').length, 1);
+  assert.equal(samples.find((sample) => sample.factor === 'oi_delta')?.value, 10);
+  assert.equal(samples.find((sample) => sample.factor === 'funding_basis')?.unit, 'bps');
+});

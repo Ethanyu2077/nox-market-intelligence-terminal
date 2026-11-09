@@ -81,7 +81,9 @@ export class ResearchJobManager {
   size(): number { return this.jobs.size; }
 
   create(projectId: string, params: { factor: string; timeframe: string; start?: number | null; end?: number | null; asOf?: number }): { job: ResearchJob; duplicate: boolean } {
-    const asOf = params.asOf ?? this.now();
+    // A default cutoff is aligned to the minute: two clicks in the same minute are the
+    // same research request, while an explicit or later asOf still yields a new job.
+    const asOf = params.asOf ?? Math.floor(this.now() / 60_000) * 60_000;
     const fingerprint = researchFingerprint(projectId, { factor: params.factor, timeframe: params.timeframe, start: params.start, end: params.end, asOf });
     const active = [...this.jobs.values()].find((record) => record.job.fingerprint === fingerprint && ['QUEUED', 'RUNNING'].includes(record.job.status));
     if (active) return { job: active.job, duplicate: true };

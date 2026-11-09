@@ -177,3 +177,16 @@ test('cancellation propagates the abort signal to the page query', async () => {
   await manager.wait(job.id);
   assert.equal(seen?.aborted, true);
 });
+
+test('default asOf is minute-aligned so rapid duplicate submissions dedupe', async () => {
+  let clock = 1_700_000_010_000;
+  const manager = new ResearchJobManager(store(pages(10, 10), { delayMs: 5 }) as never, baseLimits, { now: () => clock });
+  const first = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  clock += 20_000; // still the same minute
+  const duplicate = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.job.id, first.job.id);
+  clock += 60_000; // next minute => new cutoff
+  const next = manager.create('p1', { factor: 'oi_level', timeframe: '5m' });
+  assert.notEqual(next.job.id, first.job.id);
+});

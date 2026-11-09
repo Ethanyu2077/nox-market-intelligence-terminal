@@ -232,3 +232,17 @@
 | TTL / 保留上限 / 报告大小 | TESTED | 终态任务按 TTL 与数量清理；运行中不清理；超大报告 PARTIAL |
 | Evidence Panel 恢复 | IMPLEMENTED | 重新加载持久化任务，展示 INTERRUPTED，需显式载入报告 |
 | 真实 TimescaleDB 取消/恢复 | **NOT VERIFIED** | 无实例，未做数据库级验证 |
+
+## 2026-11 Phase III 增补（数据可靠性 / 证据链）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| `/api/version` 只读版本接口 | TESTED | commit/build/API version/startedAt/node；无环境或路径泄露 |
+| Data Health 统一模型 | TESTED | LIVE/PARTIAL/STALE/UNAVAILABLE/NOT VERIFIED；200 但指标全空 = UNAVAILABLE |
+| `/api/data-health/center` | TESTED | venues、coverage、breakers、collectors、L2、storage 聚合；10s 缓存只读 |
+| Data Health UI | IMPLEMENTED | Settings 内子区域；摘要、项目覆盖、来源、诊断；30s 刷新 |
+| Journal→Timescale 迁移工具 | TESTED（逻辑） | dry-run、SHA256、重复检测、幂等插入、checkpoint 绑定文件哈希 |
+| 迁移真实执行 | **NOT VERIFIED** | 生产未执行；本地 dry-run 仅验证工具 |
+| Evidence Manifest / 冻结数据集 / 两次复现 | **NOT IMPLEMENTED** | 尚未开发 |
+| 研究质量门槛（E） | PARTIAL | 已有 partial/insufficient/truncated 语义；未形成独立可配置质量门 |
+| 真实 L2 / 30 分钟 / 24 小时 | **NOT VERIFIED** | L2 collector 仍空闲 |

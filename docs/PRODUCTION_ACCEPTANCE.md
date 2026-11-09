@@ -170,3 +170,28 @@ two valid updates is NOT VERIFIED.
   _PAGE_TIMEOUT_MS, _TTL_MS, _MAX_RETAINED, _MAX_REPORT_BYTES.
 - UI reloads persisted jobs and requires an explicit Load report; PARTIAL/INTERRUPTED are
   never presented as complete conclusions.
+
+## Phase III additions
+
+### Version
+
+`GET /api/version` returns `{ commit, buildTime, apiVersion, startedAt, node }`. Set
+`NOX_COMMIT_SHA` and `NOX_BUILD_TIME` at build/deploy time; no paths or secrets are exposed.
+
+### Data health
+
+`GET /api/data-health/center` aggregates live venue snapshots, data-coverage, breakers,
+collectors, L2 and storage. States: LIVE / PARTIAL / STALE / UNAVAILABLE / NOT VERIFIED.
+A 200 response with null metrics is UNAVAILABLE, never LIVE.
+
+### Journal migration (dry-run by default)
+
+```bash
+node scripts/migration/journal-to-timescale.mjs --data-dir=.data
+# apply only on an authorized target:
+DATABASE_URL=... MIGRATION_ALLOW_WRITES=1 \
+  node scripts/migration/journal-to-timescale.mjs --data-dir=.data --apply
+```
+
+The tool never deletes the journal; inserts use `ON CONFLICT (event_time,id) DO NOTHING`
+and the checkpoint is bound to each file's SHA256. Production apply is NOT executed.

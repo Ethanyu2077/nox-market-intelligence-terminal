@@ -48,3 +48,19 @@ production mutation, restart or deployment was performed.
 Commit `api-not-found`: `server/api-not-found.ts`, mounted before the SPA fallback.
 Tests prove unknown API routes return `API_NOT_FOUND` 404 while real API and SPA routes
 still work. Requires redeploy to affect production.
+
+## Re-audit (2026-11-09, after TimescaleDB deployment)
+
+| Module | Status | Evidence |
+| --- | --- | --- |
+| API | LIVE | `/api/health` ok, process pid 7, new `startedAt` |
+| TimescaleDB | CONNECTED | `mode=timescaledb-with-local-outbox`, `connected=true`, ~177k rows |
+| History query | FAST | `/history` ~291ms, backend `timescaledb` (was 36s local scan) |
+| Research quick preview | LIVE | 6 venues / 15 pairs / 140–162 samples; 0.5–0.8s |
+| Research job | PASS | COMPLETED 1,734 records in ~0.55s; parallel submit dedupes to one job |
+| Data coverage | PARTIAL | 300s cadence, max ingest gap ≈25.8h (previous outage), trade stale |
+| L2 collector | IDLE | `activeFeeds=0`, all projects `standard`; JCT has only MEXC |
+| Exact deployed SHA | NOT VERIFIED | no server access before `/api/version` deployment |
+
+The 25.8h ingest gap corresponds to the period when the production site was unreachable;
+it explains the stale/partial data observed earlier.

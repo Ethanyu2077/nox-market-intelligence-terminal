@@ -334,7 +334,7 @@ app.get('/api/data-health/center', safe(async (_req, res) => {
       rows: storage.databaseRowsAcknowledged ?? null,
     },
     collectors: collector.status().map((item) => ({ projectId: item.projectId, mode: item.mode ?? 'unknown', error: item.error, checkedAt: item.checkedAt })),
-    l2: l2Collector.health(),
+    l2: { ...l2Collector.health(), feeds: l2Collector.feedSnapshots() },
     breakers: venueBreakers.snapshot(),
     projects: [] as Array<{ id: string; name: string; mode: string; venues: unknown; coverage: unknown }>,
   };

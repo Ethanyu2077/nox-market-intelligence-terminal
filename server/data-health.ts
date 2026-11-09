@@ -4,7 +4,7 @@ export interface HealthInputs {
   now: number;
   storage: { mode: string; connected: boolean; journalBytes?: number | null; pendingBytes?: number | null; rows?: number | null };
   collectors: Array<{ projectId: string; mode: string; error: string | null; checkedAt: number | null }>;
-  l2: { activeFeeds: number; sampled: number; lastPersistAt: number | null };
+  l2: { activeFeeds: number; sampled: number; lastPersistAt: number | null; feeds?: Array<{ venue: string; symbol: string; state: string; sequence: number | null; epoch: number | null; verified: boolean; integrity: string; gaps: number; resyncs: number; lastMessageAt: number | null }> };
   breakers: Array<{ exchange: string; family: string; state: string; lastError?: string | null; lastFailureAt?: number | null; lastSuccessAt?: number | null }>;
   projects: Array<{
     id: string;
@@ -16,6 +16,21 @@ export interface HealthInputs {
 }
 
 const STALE_AFTER_MS = 15 * 60_000;
+
+export function classifyStorage(input: { mode: string; connected: boolean; pendingBytes?: number | null }): 'LOCAL_JOURNAL' | 'TIMESCALE_CONNECTED' | 'TIMESCALE_DISCONNECTED' | 'STORAGE_DEGRADED' | 'NOT VERIFIED' {
+  if (!input.mode) return 'NOT VERIFIED';
+  if (!input.connected) return input.mode.startsWith('timescaledb') ? 'TIMESCALE_DISCONNECTED' : 'LOCAL_JOURNAL';
+  if ((input.pendingBytes ?? 0) > 0) return 'STORAGE_DEGRADED';
+  return input.mode.startsWith('timescaledb') ? 'TIMESCALE_CONNECTED' : 'LOCAL_JOURNAL';
+}
+
+export function classifyL2(feeds: NonNullable<HealthInputs['l2']['feeds']>, now: number): HealthState {
+  if (!feeds.length) return 'NOT VERIFIED';
+  const live = feeds.filter((feed) => feed.state === 'live' && feed.verified && feed.integrity === 'ok' && feed.lastMessageAt != null && now - feed.lastMessageAt < 60_000);
+  if (!live.length) return 'UNAVAILABLE';
+  if (live.length < feeds.length) return 'PARTIAL';
+  return 'LIVE';
+}
 const PARTIAL_AFTER_MS = 5 * 60_000;
 
 /** Quality + freshness decide state; HTTP 200 or a non-null price alone is not enough. */
@@ -36,7 +51,9 @@ function worst(states: HealthState[]): HealthState {
 
 export function buildDataHealth(inputs: HealthInputs): DataHealthReport {
   const { now } = inputs;
-  const storageStatus = inputs.storage.connected ? (inputs.storage.mode.startsWith('timescaledb') ? 'timescaledb' : 'local-journal') : 'disconnected';
+  const storageStatus = classifyStorage(inputs.storage);
+  const l2Feeds = inputs.l2.feeds ?? [];
+  const l2State = classifyL2(l2Feeds, now);
   const issues: HealthIssue[] = [];
   const sources: SourceHealth[] = [];
   const projects: ProjectCoverageHealth[] = [];
@@ -93,13 +110,16 @@ export function buildDataHealth(inputs: HealthInputs): DataHealthReport {
     }
   }
 
-  if (!inputs.storage.connected) issues.push({ severity: 'warning', category: 'storage-local', source: 'history', detail: `storage is ${inputs.storage.mode}; no TimescaleDB connection`, firstSeen: null, lastSeen: now, recovery: 'open' });
+  if (storageStatus === 'TIMESCALE_DISCONNECTED') issues.push({ severity: 'critical', category: 'storage-degraded', source: 'history', detail: 'TimescaleDB is configured but disconnected; local journal is the fallback', firstSeen: null, lastSeen: now, recovery: 'open' });
+  else if (storageStatus === 'LOCAL_JOURNAL') issues.push({ severity: 'info', category: 'storage-local', source: 'history', detail: 'running on the local journal (no TimescaleDB connection)', firstSeen: null, lastSeen: now, recovery: 'open' });
+  else if (storageStatus === 'STORAGE_DEGRADED') issues.push({ severity: 'warning', category: 'storage-backlog', source: 'history', detail: `${inputs.storage.pendingBytes} bytes pending`, firstSeen: null, lastSeen: now, recovery: 'open' });
   if ((inputs.storage.pendingBytes ?? 0) > 0) issues.push({ severity: 'warning', category: 'journal-backlog', source: 'history', detail: `${inputs.storage.pendingBytes} bytes pending`, firstSeen: null, lastSeen: now, recovery: 'open' });
   if (inputs.l2.activeFeeds === 0) issues.push({ severity: 'info', category: 'l2-idle', source: 'l2', detail: 'no active L2 feeds (projects are Standard or unsupported venue)', firstSeen: null, lastSeen: now, recovery: 'open' });
+  else if (l2State !== 'LIVE') issues.push({ severity: 'warning', category: 'l2-degraded', source: 'l2', detail: `L2 feeds are ${l2State.toLowerCase()} (stale, partial or unverified)`, firstSeen: null, lastSeen: now, recovery: 'open' });
 
   const states = sources.map((source) => source.state);
   const count = (state: HealthState) => states.filter((item) => item === state).length;
-  const l2State: HealthState = inputs.l2.activeFeeds > 0 ? 'LIVE' : 'NOT VERIFIED';
+
   return {
     generatedAt: now,
     overall: {
@@ -108,8 +128,8 @@ export function buildDataHealth(inputs: HealthInputs): DataHealthReport {
       unavailable: count('UNAVAILABLE'), notVerified: count('NOT VERIFIED'),
     },
     sources, projects, issues,
-    storage: { mode: inputs.storage.mode, connected: inputs.storage.connected, journalBytes: inputs.storage.journalBytes ?? null, pendingBytes: inputs.storage.pendingBytes ?? null, rows: inputs.storage.rows ?? null },
+    storage: { mode: inputs.storage.mode, connected: inputs.storage.connected, state: storageStatus, journalBytes: inputs.storage.journalBytes ?? null, pendingBytes: inputs.storage.pendingBytes ?? null, rows: inputs.storage.rows ?? null },
     collectors: inputs.collectors,
-    l2: { ...inputs.l2, state: l2State },
+    l2: { activeFeeds: inputs.l2.activeFeeds, sampled: inputs.l2.sampled, lastPersistAt: inputs.l2.lastPersistAt, state: l2State, feeds: l2Feeds },
   };
 }

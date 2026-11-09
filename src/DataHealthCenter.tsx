@@ -49,10 +49,26 @@ export function DataHealthCenter() {
             <div className="dh-card"><span>PARTIAL</span><strong>{report.overall.partial}</strong></div>
             <div className="dh-card"><span>STALE</span><strong>{report.overall.stale}</strong></div>
             <div className="dh-card"><span>UNAVAILABLE</span><strong>{report.overall.unavailable}</strong></div>
-            <div className="dh-card"><span>Storage</span><strong>{report.storage.mode}</strong><small>{report.storage.connected ? `${report.storage.rows ?? '—'} rows` : 'disconnected'}</small></div>
+            <div className="dh-card"><span>Storage</span><strong>{report.storage.state}</strong><small>{report.storage.connected ? `${report.storage.rows ?? '—'} rows` : report.storage.mode}</small></div>
             <div className="dh-card"><span>L2 feeds</span><strong>{report.l2.activeFeeds}</strong><small>{report.l2.sampled} samples · {report.l2.state}</small></div>
           </div>
 
+          {report.l2.feeds.length > 0 && (
+            <div className="dh-section">
+              <h4>L2 feeds <small>{report.l2.state}</small></h4>
+              <div className="table-wrap"><table className="dh-table"><thead><tr><th>Venue</th><th>Symbol</th><th>State</th><th>Sequence</th><th>Epoch</th><th>Verified</th><th>Integrity</th><th>Gaps</th><th>Resyncs</th></tr></thead><tbody>
+                {report.l2.feeds.map((feed) => (
+                  <tr key={`${feed.venue}:${feed.symbol}`}>
+                    <td>{feed.venue}</td><td>{feed.symbol}</td>
+                    <td><span className={`dh-state ${stateClass(feed.state)}`}>{feed.state}</span></td>
+                    <td>{feed.sequence ?? '—'}</td><td>{feed.epoch ?? '—'}</td>
+                    <td>{feed.verified ? 'yes' : 'no'}</td><td>{feed.integrity}</td>
+                    <td>{feed.gaps}</td><td>{feed.resyncs}</td>
+                  </tr>
+                ))}
+              </tbody></table></div>
+            </div>
+          )}
           <div className="dh-section">
             <h4>Project coverage</h4>
             <div className="table-wrap"><table className="dh-table"><thead><tr><th>Project</th><th>Mode</th><th>Cadence</th><th>Kinds</th><th>Notes</th></tr></thead><tbody>

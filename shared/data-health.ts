@@ -1,5 +1,6 @@
 /** Unified data-health vocabulary used by the API and Settings. */
 export type HealthState = 'LIVE' | 'PARTIAL' | 'STALE' | 'UNAVAILABLE' | 'NOT VERIFIED';
+export type StorageState = 'LOCAL_JOURNAL' | 'TIMESCALE_CONNECTED' | 'TIMESCALE_DISCONNECTED' | 'STORAGE_DEGRADED' | 'NOT VERIFIED';
 
 export interface HealthIssue {
   severity: 'critical' | 'warning' | 'info';
@@ -28,7 +29,7 @@ export interface SourceHealth {
   resyncCount: number | null;
   integrity: string | null;
   errorCategory: string | null;
-  storageStatus: 'timescaledb' | 'local-journal' | 'disconnected';
+  storageStatus: StorageState;
   state: HealthState;
   evidence: string[];
 }
@@ -48,7 +49,10 @@ export interface DataHealthReport {
   sources: SourceHealth[];
   projects: ProjectCoverageHealth[];
   issues: HealthIssue[];
-  storage: { mode: string; connected: boolean; journalBytes: number | null; pendingBytes: number | null; rows: number | null };
+  storage: { mode: string; connected: boolean; state: StorageState; journalBytes: number | null; pendingBytes: number | null; rows: number | null };
   collectors: Array<{ projectId: string; mode: string; error: string | null; checkedAt: number | null }>;
-  l2: { activeFeeds: number; sampled: number; lastPersistAt: number | null; state: HealthState };
+  l2: {
+    activeFeeds: number; sampled: number; lastPersistAt: number | null; state: HealthState;
+    feeds: Array<{ venue: string; symbol: string; state: string; sequence: number | null; epoch: number | null; verified: boolean; integrity: string; gaps: number; resyncs: number; lastMessageAt: number | null }>;
+  };
 }

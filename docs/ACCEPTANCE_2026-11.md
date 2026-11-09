@@ -246,3 +246,17 @@
 | Evidence Manifest / 冻结数据集 / 两次复现 | **NOT IMPLEMENTED** | 尚未开发 |
 | 研究质量门槛（E） | PARTIAL | 已有 partial/insufficient/truncated 语义；未形成独立可配置质量门 |
 | 真实 L2 / 30 分钟 / 24 小时 | **NOT VERIFIED** | L2 collector 仍空闲 |
+
+## 2026-11 Phase III 完成轮（A–D）
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| 迁移目标身份验证 | TESTED | 需 target + MIGRATION_EXPECTED_DB 匹配；生产另需 ACK |
+| 源文件快照/变更检测 | TESTED | apply 先快照，前后 SHA256；变化则 FAILED |
+| 每批 Checkpoint | TESTED | 提交+核对后原子写；断点恢复；幂等 |
+| Reconciliation | TESTED | 源/目标/插入/重复/损坏/缺失/payload/时间范围/SHA/commit |
+| 生产历史缺口审计 | **VERIFIED WITH REAL DATA（只读）** | 25h47m：2026-11-07T03:22:50Z → 2026-11-08T05:10:07Z，6 所，~308 快照/所；不补齐 |
+| Storage 状态分类 | TESTED | LOCAL_JOURNAL / TIMESCALE_CONNECTED / DISCONNECTED / DEGRADED / NOT VERIFIED |
+| L2 Health | TESTED | 必须有新鲜、verified、integrity=ok 的 feed；否则 UNAVAILABLE/NOT VERIFIED |
+| Evidence Manifest / Frozen Dataset / Repro | **NOT IMPLEMENTED** | 未开发 |
+| 生产迁移 apply | **NOT VERIFIED** | 未授权执行 |

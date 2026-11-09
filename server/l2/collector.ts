@@ -151,6 +151,19 @@ export class L2Collector {
   }
 
   /** Collector health for operations: sampling, writes, retries and open buckets. */
+  /** Current per-feed evidence used by Data Health (read-only). */
+  feedSnapshots() {
+    return [...this.feeds.entries()].map(([key, handle]) => {
+      const snapshot = handle.snapshot();
+      return {
+        venue: key.split(':')[1] ?? '', symbol: key.split(':')[2] ?? '',
+        state: snapshot.state, sequence: snapshot.sequence.last, epoch: snapshot.epoch,
+        verified: snapshot.verified, integrity: snapshot.integrity,
+        gaps: snapshot.gaps, resyncs: snapshot.resyncs, lastMessageAt: snapshot.lastMessageAt,
+      };
+    });
+  }
+
   health() {
     return {
       sampled: this.sampled,

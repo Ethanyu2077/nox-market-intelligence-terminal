@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildDataHealth, classifySource, type HealthInputs } from '../server/data-health.ts';
+import { buildDataHealth, classifyL2, classifySource, classifyStorage, type HealthInputs } from '../server/data-health.ts';
 
 const now = 1_700_000_000_000;
 const venue = (over: Record<string, unknown> = {}) => ({
@@ -52,4 +52,21 @@ test('issues cover breaker, storage, l2 and stale coverage without fabricating d
 test('no sources means NOT VERIFIED, never LIVE', () => {
   const report = buildDataHealth(base([]));
   assert.equal(report.overall.state, 'NOT VERIFIED');
+});
+
+test('storage classification distinguishes local journal, disconnected and degraded', () => {
+  assert.equal(classifyStorage({ mode: 'local-journal', connected: false }), 'LOCAL_JOURNAL');
+  assert.equal(classifyStorage({ mode: 'timescaledb-with-local-outbox', connected: false }), 'TIMESCALE_DISCONNECTED');
+  assert.equal(classifyStorage({ mode: 'timescaledb-with-local-outbox', connected: true, pendingBytes: 0 }), 'TIMESCALE_CONNECTED');
+  assert.equal(classifyStorage({ mode: 'timescaledb-with-local-outbox', connected: true, pendingBytes: 10 }), 'STORAGE_DEGRADED');
+  assert.equal(classifyStorage({ mode: '', connected: true }), 'NOT VERIFIED');
+});
+
+test('L2 health requires fresh verified integrity, not just an active feed', () => {
+  const feed = { venue: 'binance', symbol: 'BTCUSDT', state: 'live', sequence: 10, epoch: 1, verified: true, integrity: 'ok', gaps: 0, resyncs: 0, lastMessageAt: now - 1_000 };
+  assert.equal(classifyL2([], now), 'NOT VERIFIED');
+  assert.equal(classifyL2([feed], now), 'LIVE');
+  assert.equal(classifyL2([{ ...feed, verified: false }], now), 'UNAVAILABLE');
+  assert.equal(classifyL2([{ ...feed, lastMessageAt: now - 120_000 }], now), 'UNAVAILABLE');
+  assert.equal(classifyL2([feed, { ...feed, venue: 'bybit', verified: false }], now), 'PARTIAL');
 });

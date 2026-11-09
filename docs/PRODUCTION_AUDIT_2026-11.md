@@ -64,3 +64,39 @@ still work. Requires redeploy to affect production.
 
 The 25.8h ingest gap corresponds to the period when the production site was unreachable;
 it explains the stale/partial data observed earlier.
+
+## Historical gap audit (2026-11-09, read-only)
+
+Command (admin session from env, no writes):
+
+```bash
+NOX_AUDIT_USER=... NOX_AUDIT_PASSWORD=... \
+  node scripts/audit/historical-gaps.mjs --base=https://ans.y2k.ventures --days=3 --min-gap-minutes=10
+```
+
+### Perle (6 venues: gate, kucoin, bitget, bybit, binance, mexc)
+
+| Field | Value |
+| --- | --- |
+| Largest gap | **2026-11-07T03:22:50Z → 2026-11-08T05:10:07Z** |
+| Duration | **92,836,958 ms ≈ 25h 47m** |
+| Affected venues | all 6 simultaneously |
+| Estimated missing | ≈308 snapshots per venue at 300s cadence |
+| Second gap | 2026-11-08 ~05:38Z, 1.4–2.3M ms per venue (≈4–7 snapshots) |
+
+### JCT (MEXC only)
+
+First sampled ingest is 2026-11-08T05:23:43Z; a separate gap begins
+2026-11-08T06:59:03Z. JCT was added/collected later than Perle, so its window differs.
+
+### Classification
+
+- All venues stop and resume at the same instant, and the local journal's own
+  `largestIngestGapMs` matches the DB gap → **collector/API outage**, not an
+  exchange-specific failure and not a migration artifact.
+- The window is absent from the source journal, so DB migration cannot recover it.
+- Exchange REST history (klines/trades) cannot reconstruct the same snapshot OI/funding
+  or L2 book events; **no interpolation or synthetic backfill**. The window stays a
+  permanent gap marker.
+- Trade stream is separately stale (event-driven tape), which is expected when no trades
+  are recorded in the sampled window.

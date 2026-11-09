@@ -41,7 +41,7 @@ export function CrossExchangePanel({ project, language }: { project: MarketProje
     const lookbackMs = { '6h': 21_600_000, '24h': 86_400_000, '7d': 604_800_000, '30d': 2_592_000_000 }[lookback];
     // The interactive panel must not hang on a slow research query (the deployed API can
     // exceed the proxy timeout); abort after 20s and show an explicit error.
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 20_000);
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 45_000);
     setLoading(true);
     fetch(`/api/projects/${project.id}/research/cross-factor?factor=${factor}&timeframe=${timeframe}&start=${Date.now() - lookbackMs}`, { signal: controller.signal })
       .then(async (response) => {

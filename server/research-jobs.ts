@@ -27,7 +27,9 @@ export const DEFAULT_RESEARCH_JOB_LIMITS: ResearchJobLimits = {
   maxRecords: Number(process.env.NOX_RESEARCH_MAX_RECORDS ?? 200_000),
   maxRuntimeMs: Number(process.env.NOX_RESEARCH_TIMEOUT_MS ?? 300_000),
   pageLimit: Number(process.env.NOX_RESEARCH_PAGE_LIMIT ?? 500),
-  pageTimeoutMs: Number(process.env.NOX_RESEARCH_PAGE_TIMEOUT_MS ?? 3_000),
+  // Local-journal scans can exceed 3s on a large journal; the DB path is still bounded
+  // by NOX_DB_STATEMENT_TIMEOUT_MS. Operators can override this per deployment.
+  pageTimeoutMs: Number(process.env.NOX_RESEARCH_PAGE_TIMEOUT_MS ?? 10_000),
   terminalTtlMs: Number(process.env.NOX_RESEARCH_TTL_MS ?? 86_400_000),
   maxRetained: Number(process.env.NOX_RESEARCH_MAX_RETAINED ?? 100),
   maxReportBytes: Number(process.env.NOX_RESEARCH_MAX_REPORT_BYTES ?? 2_000_000),

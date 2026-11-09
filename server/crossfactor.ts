@@ -325,7 +325,8 @@ export function factorSamplesFromL2(entries: Array<{ ingestTime: number; payload
 /** Extract comparable factor samples from the local snapshot journal. */
 export function factorSamplesFromSnapshots(entries: Array<{ ingestTime: number; quality?: string; payload: unknown }>): FactorSample[] {
   const byVenue = new Map<string, Array<{ time: number; availableAt: number; oiBase: number; price: number | null; markPrice: number | null; coverage: number }>>();
-  const coverageOf = (entry: { quality?: string }) => entry.quality && entry.quality !== 'live' ? 0 : 100;
+  // Partial snapshots still carry usable price/OI/basis; stale or unavailable rows do not.
+  const coverageOf = (entry: { quality?: string }) => entry.quality === 'live' ? 100 : entry.quality === 'partial' ? 75 : 0;
   for (const entry of entries) {
     // The live collector writes one event per venue (`payload` is a single snapshot),
     // while project-venue responses carry `{ snapshots: [...] }`. Accept both shapes;

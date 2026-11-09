@@ -180,3 +180,10 @@ test('per-venue journal events are recognised as historical factor samples', () 
   assert.equal(samples.find((sample) => sample.factor === 'oi_delta')?.value, 10);
   assert.equal(samples.find((sample) => sample.factor === 'funding_basis')?.unit, 'bps');
 });
+
+test('partial-quality snapshots count as weighted coverage, stale ones do not', () => {
+  const entry = (quality: string, time: number) => ({ ingestTime: time + 500, quality, payload: { exchange: 'gate', eventTime: time, price: 100, markPrice: 100.1, oiBase: 1000 } });
+  const samples = factorSamplesFromSnapshots([entry('partial', T0), entry('stale', T0 + 60_000)]);
+  assert.equal(samples.find((sample) => sample.time === T0)?.coveragePct, 75);
+  assert.equal(samples.find((sample) => sample.time === T0 + 60_000)?.coveragePct, 0);
+});

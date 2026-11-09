@@ -1,0 +1,109 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { DataHealthReport, HealthState } from '../shared/data-health';
+
+const stateClass = (state: HealthState | string) => state.toLowerCase().replace(/[^a-z]/g, '');
+
+/** Read-only Data Health Center; every field is backed by the health API. */
+export function DataHealthCenter() {
+  const [report, setReport] = useState<DataHealthReport | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/data-health/center', { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setReport(await response.json() as DataHealthReport);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Data health unavailable');
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 30_000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const overall = report?.overall;
+  return (
+    <section className="panel dh-panel">
+      <div className="panel-head">
+        <div>
+          <h3>Data health center</h3>
+          <p>Collector freshness, coverage, gaps, breakers, storage and L2 in one read-only view. Missing data stays unavailable, never zero.</p>
+        </div>
+        <span className={`dh-state ${stateClass(overall?.state ?? 'notverified')}`}>{overall?.state ?? 'NOT VERIFIED'}</span>
+      </div>
+      {error && <p role="alert" className="alerts-error">{error}</p>}
+      <div className="dh-controls">
+        <button onClick={() => void load()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
+        <span>{report ? `generated ${new Date(report.generatedAt).toLocaleTimeString()}` : 'Loading…'}</span>
+      </div>
+      {report && (
+        <>
+          <div className="dh-grid">
+            <div className="dh-card"><span>LIVE</span><strong>{report.overall.live}</strong></div>
+            <div className="dh-card"><span>PARTIAL</span><strong>{report.overall.partial}</strong></div>
+            <div className="dh-card"><span>STALE</span><strong>{report.overall.stale}</strong></div>
+            <div className="dh-card"><span>UNAVAILABLE</span><strong>{report.overall.unavailable}</strong></div>
+            <div className="dh-card"><span>Storage</span><strong>{report.storage.mode}</strong><small>{report.storage.connected ? `${report.storage.rows ?? '—'} rows` : 'disconnected'}</small></div>
+            <div className="dh-card"><span>L2 feeds</span><strong>{report.l2.activeFeeds}</strong><small>{report.l2.sampled} samples · {report.l2.state}</small></div>
+          </div>
+
+          <div className="dh-section">
+            <h4>Project coverage</h4>
+            <div className="table-wrap"><table className="dh-table"><thead><tr><th>Project</th><th>Mode</th><th>Cadence</th><th>Kinds</th><th>Notes</th></tr></thead><tbody>
+              {report.projects.map((project) => (
+                <tr key={project.projectId}>
+                  <td>{project.projectName}</td>
+                  <td>{project.mode}</td>
+                  <td>{project.cadenceMs ? `${Math.round(project.cadenceMs / 1000)}s` : '—'}</td>
+                  <td>{project.kinds.length ? project.kinds.map((kind) => `${kind.kind}:${kind.state}${kind.gaps ? `(${kind.gaps}g)` : ''}`).join(' · ') : '—'}</td>
+                  <td>{project.notes.join('; ') || '—'}</td>
+                </tr>
+              ))}
+            </tbody></table></div>
+          </div>
+
+          <div className="dh-section">
+            <h4>Exchange sources <small>{report.sources.length} venues</small></h4>
+            <div className="table-wrap dh-scroll"><table className="dh-table"><thead><tr><th>Project</th><th>Exchange</th><th>Symbol</th><th>Type</th><th>State</th><th>Delay</th><th>Evidence</th></tr></thead><tbody>
+              {report.sources.map((source) => (
+                <tr key={`${source.projectId}:${source.exchange}:${source.symbol}`}>
+                  <td>{source.projectName}</td>
+                  <td>{source.exchange}</td>
+                  <td>{source.symbol}</td>
+                  <td>{source.marketType}</td>
+                  <td><span className={`dh-state ${stateClass(source.state)}`}>{source.state}</span></td>
+                  <td>{source.delayMs == null ? '—' : `${Math.round(source.delayMs / 1000)}s`}</td>
+                  <td className="dh-evidence">{source.evidence.join(' · ')}</td>
+                </tr>
+              ))}
+            </tbody></table></div>
+          </div>
+
+          <div className="dh-section">
+            <h4>Diagnostics <small>{report.issues.length} issues</small></h4>
+            {report.issues.length === 0 ? <p className="dh-empty">No active issue from the checked sources.</p> : (
+              <div className="table-wrap"><table className="dh-table"><thead><tr><th>Severity</th><th>Category</th><th>Source</th><th>Detail</th><th>Last seen</th></tr></thead><tbody>
+                {report.issues.slice(0, 50).map((issue, index) => (
+                  <tr key={`${issue.category}:${issue.source}:${index}`}>
+                    <td><span className={`dh-sev ${issue.severity}`}>{issue.severity}</span></td>
+                    <td>{issue.category}</td>
+                    <td>{issue.source}</td>
+                    <td>{issue.detail}</td>
+                    <td>{new Date(issue.lastSeen).toLocaleTimeString()}</td>
+                  </tr>
+                ))}
+              </tbody></table></div>
+            )}
+          </div>
+          <p className="dh-footnote">Collector modes: {report.collectors.map((item) => `${item.projectId.slice(0, 6)}=${item.mode}`).join(' · ') || 'none'}. L2 requires an Active project with a supported Binance/Bybit/OKX market.</p>
+        </>
+      )}
+    </section>
+  );
+}

@@ -305,3 +305,31 @@
 .cx-job { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); font: 10px var(--mono); color: var(--muted); }
 .cx-job button { background: var(--surface-2); border: 1px solid var(--line); color: var(--text); border-radius: 3px; padding: 3px 8px; font: 10px var(--mono); cursor: pointer; }
 .cx-error-text { color: var(--warn); }
+
+/* Data health center */
+.dh-panel { margin-top: 16px; }
+.dh-controls { display: flex; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); font: 10px var(--mono); color: var(--faint); }
+.dh-controls button { background: var(--surface-2); border: 1px solid var(--line); color: var(--text); border-radius: 3px; padding: 4px 8px; font: 10px var(--mono); cursor: pointer; }
+.dh-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; padding: 12px 14px; }
+.dh-card { border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; background: var(--surface-2); display: flex; flex-direction: column; gap: 2px; }
+.dh-card span { font: 9px var(--mono); color: var(--faint); text-transform: uppercase; }
+.dh-card strong { font: 13px var(--mono); color: var(--text); }
+.dh-card small { font: 9px var(--mono); color: var(--muted); }
+.dh-section { padding: 4px 14px 12px; }
+.dh-section h4 { font: 10px var(--mono); color: var(--faint); text-transform: uppercase; margin: 10px 0 6px; }
+.dh-section h4 small { color: var(--muted); margin-left: 6px; }
+.dh-scroll { max-height: 260px; overflow: auto; }
+.dh-table td, .dh-table th { font: 10px var(--mono); }
+.dh-evidence { color: var(--faint); max-width: 380px; }
+.dh-state { padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; font: 9px var(--mono); color: var(--muted); text-transform: uppercase; }
+.dh-state.live { color: var(--up); border-color: color-mix(in srgb, var(--up) 30%, transparent); }
+.dh-state.partial, .dh-state.notverified { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.dh-state.stale, .dh-state.unavailable { color: var(--down); border-color: color-mix(in srgb, var(--down) 35%, transparent); }
+.dh-sev { font: 9px var(--mono); text-transform: uppercase; }
+.dh-sev.critical { color: var(--down); }
+.dh-sev.warning { color: var(--warn); }
+.dh-sev.info { color: var(--muted); }
+.dh-empty { color: var(--muted); font-size: 11px; }
+.dh-footnote { padding: 0 14px 14px; color: var(--faint); font: 9.5px var(--mono); }
+@media (max-width: 1100px) { .dh-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .dh-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

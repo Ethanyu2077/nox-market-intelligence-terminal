@@ -53,6 +53,7 @@ import { scanHistory } from './history-scan.ts';
 import { ResearchJobManager } from './research-jobs.ts';
 import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
+import { buildDataHealth } from './data-health.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
 import { registerAcceptanceRoute } from './acceptance-route.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
@@ -317,6 +318,37 @@ app.get('/api/health', (_req, res) => res.json({ service: 'nox-market-intelligen
 // Per-venue breaker state: lets the UI explain a fast-failing venue instead of showing a
 // generic upstream error, and lets an operator see which venue is being cooled down.
 app.get('/api/venues/health', (_req, res) => res.json({ items: venueBreakers.snapshot(), timestamp: Date.now() }));
+
+let dataHealthCache: { at: number; value: unknown } | null = null;
+app.get('/api/data-health/center', safe(async (_req, res) => {
+  if (dataHealthCache && Date.now() - dataHealthCache.at < 10_000) { res.json(dataHealthCache.value); return; }
+  const generatedAt = Date.now();
+  const projects = store.getProjects(true);
+  const storage = history.status();
+  const inputs = {
+    now: generatedAt,
+    storage: {
+      mode: storage.mode, connected: storage.connected,
+      journalBytes: storage.capacity?.journalBytes ?? null,
+      pendingBytes: storage.capacity?.pendingBytes ?? null,
+      rows: storage.databaseRowsAcknowledged ?? null,
+    },
+    collectors: collector.status().map((item) => ({ projectId: item.projectId, mode: item.mode ?? 'unknown', error: item.error, checkedAt: item.checkedAt })),
+    l2: l2Collector.health(),
+    breakers: venueBreakers.snapshot(),
+    projects: [] as Array<{ id: string; name: string; mode: string; venues: unknown; coverage: unknown }>,
+  };
+  for (const project of projects) {
+    const [venues, coverage] = await Promise.all([
+      projectVenueSnapshots(project.markets),
+      projectDataCoverage(history, project, generatedAt),
+    ]);
+    inputs.projects.push({ id: project.id, name: project.name, mode: project.monitoring.collectionMode ?? 'unknown', venues, coverage });
+  }
+  const value = buildDataHealth(inputs as never);
+  dataHealthCache = { at: Date.now(), value };
+  res.json(value);
+}));
 app.get('/api/exchanges', (_req, res) => res.json({ items: exchangeCapabilities(), timestamp: Date.now() }));
 // Unified capability + live coverage registry; every page should read this rather than
 // hard-coding per-venue support.

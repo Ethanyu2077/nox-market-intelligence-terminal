@@ -52,6 +52,7 @@ import { buildFactorEvidence, factorSamplesFromL2, factorSamplesFromSnapshots, r
 import { scanHistory } from './history-scan.ts';
 import { ResearchJobManager } from './research-jobs.ts';
 import { apiNotFound } from './api-not-found.ts';
+import { versionInfo } from './version.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
 import { registerAcceptanceRoute } from './acceptance-route.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
@@ -124,6 +125,7 @@ const safe = (handler: express.RequestHandler): express.RequestHandler => async 
   }
 };
 const flowQuery = z.object({ interval: z.enum(['1m', '5m', '15m', '1h', '4h']).default('1m'), reset: z.enum(['window', 'utc-day', 'utc-hour']).default('window'), at: z.coerce.number().finite().min(1e12).optional() });
+app.get('/api/version', (_req, res) => res.json(versionInfo(process.env, PROCESS_STARTED_AT, process.version)));
 app.get('/api/operations', (_req, res) => res.json({
   process: { pid: process.pid, startedAt: PROCESS_STARTED_AT },
   l2Collection: l2Collector.health(),

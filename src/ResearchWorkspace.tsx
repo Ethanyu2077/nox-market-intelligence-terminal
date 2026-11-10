@@ -119,7 +119,7 @@ export function ResearchWorkspace({ project, data, chart, language }: { project:
   return (
     <section className="research-workspace">
       <header className="research-toolbar">
-        <div><h1>{zh ? '研究工作区' : 'Research workspace'}</h1><p>{project.name} · {zh ? '拖动标题停靠 / 拖动分隔线调整 / 自动保存' : 'Drag headers to dock / resize dividers / autosaved'}</p></div>
+        <div><h1>{zh ? '研究工作区' : 'Research workspace'}</h1></div>
         <button onClick={() => setPalette(true)}>⌘ / Ctrl K</button>
         <button onClick={() => changeLayout(INITIAL)}>{zh ? '重置布局' : 'Reset layout'}</button>
       </header>

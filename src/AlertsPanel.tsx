@@ -76,7 +76,7 @@ export function AlertsPanel({ language, projects, venues }: { language: 'en' | '
   const evaluate = () => void mutate(() => api('/alerts/evaluate', { method: 'POST', body: '{}' }));
   const clear = () => void mutate(() => api('/alerts/events/clear', { method: 'POST', body: '{}' }));
 
-  const metricLabel = (id: AlertMetric) => ALERT_METRICS.find((item) => item.id === id)?.[zh ? 'label' : 'label'] ?? id;
+  const metricLabel = (id: AlertMetric) => zh ? ({price_change_24h:'24h 涨跌幅',funding_rate:'资金费率',volume_24h_usd:'24h 成交额'} as Record<AlertMetric,string>)[id] : ALERT_METRICS.find(item=>item.id===id)?.label ?? id;
   const scopeText = (rule: AlertRule) => {
     const parts: string[] = [];
     if (rule.projectId) parts.push(projects.find((project) => project.id === rule.projectId)?.name ?? rule.projectId);
@@ -92,28 +92,31 @@ export function AlertsPanel({ language, projects, venues }: { language: 'en' | '
       <div className="panel-head">
         <div>
           <strong>{zh ? '告警规则与触发记录' : 'Alert rules & triggered events'}</strong>
-          <span>
-            {zh ? '服务端每 30 秒评估一次，越过阈值时触发一次；同一规则 15 分钟内不重复。' : 'Evaluated server-side every 30s; fires once per crossing, with a 15-minute cooldown.'}
-          </span>
+
         </div>
         <div className="alerts-actions">
           <button onClick={evaluate} disabled={busy} title={zh ? '立即评估' : 'Evaluate now'}><RefreshCw size={12} />{zh ? '立即评估' : 'Evaluate'}</button>
         </div>
       </div>
 
+      <details className="analysis-method"><summary>{zh ? "评估频率与触发规则" : "Evaluation & trigger policy"}</summary>
+          <p>
+            {zh ? '服务端每 30 秒评估一次，越过阈值时触发一次；同一规则 15 分钟内不重复。' : 'Evaluated server-side every 30s; fires once per crossing, with a 15-minute cooldown.'}
+          </p>      </details>
       <div className="alerts-meta">
         <span><Bell size={12} />{status?.rules.filter((rule) => rule.enabled).length ?? 0} {zh ? '条启用' : 'enabled'}</span>
         <span><Activity size={12} />{lastEvaluated ? `${zh ? '上次评估' : 'last'} ${new Date(lastEvaluated).toLocaleTimeString()}` : (zh ? '尚未评估' : 'not evaluated yet')}</span>
         <span>{status?.events.length ?? 0} {zh ? '条触发记录' : 'events'}</span>
       </div>
 
+      <div className="alerts-composer"><h2>{zh ? "新建提醒" : "Create alert"}</h2>
       <div className="alerts-form">
         <label>{zh ? '交易对' : 'Symbol'}
           <input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="DOODUSDT" maxLength={30} />
         </label>
         <label>{zh ? '指标' : 'Metric'}
           <select value={metric} onChange={(event) => setMetric(event.target.value as AlertMetric)}>
-            {ALERT_METRICS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            {ALERT_METRICS.map((item) => <option key={item.id} value={item.id}>{metricLabel(item.id)}</option>)}
           </select>
         </label>
         <label>{zh ? '条件' : 'Condition'}
@@ -129,26 +132,28 @@ export function AlertsPanel({ language, projects, venues }: { language: 'en' | '
       </div>
       <div className="alerts-scope">
         <span>{zh ? '作用域（可选）' : 'Scope (optional)'}</span>
-        <select aria-label={zh ? '项目' : 'Project'} value={scope.projectId} onChange={(event) => setScope((current) => ({ ...current, projectId: event.target.value }))}>
+        <label>{zh ? '项目' : 'Project'}<select aria-label={zh ? '项目' : 'Project'} value={scope.projectId} onChange={(event) => setScope((current) => ({ ...current, projectId: event.target.value }))}>
           <option value="">{zh ? '任意项目' : 'Any project'}</option>
           {projects.filter((project) => !project.archived).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-        </select>
-        <select aria-label={zh ? '交易所' : 'Venue'} value={scope.venue} onChange={(event) => setScope((current) => ({ ...current, venue: event.target.value }))}>
+        </select></label>
+        <label>{zh ? '交易所' : 'Venue'}<select aria-label={zh ? '交易所' : 'Venue'} value={scope.venue} onChange={(event) => setScope((current) => ({ ...current, venue: event.target.value }))}>
           <option value="">{zh ? '聚合' : 'Aggregate'}</option>
           {venues.filter((venue) => venue.id !== 'aggregated').map((venue) => <option key={venue.id} value={venue.id}>{venue.label}</option>)}
-        </select>
-        <select aria-label={zh ? '市场类型' : 'Market type'} value={scope.marketType} onChange={(event) => setScope((current) => ({ ...current, marketType: event.target.value }))}>
+        </select></label>
+        <label>{zh ? '市场类型' : 'Market type'}<select aria-label={zh ? '市场类型' : 'Market type'} value={scope.marketType} onChange={(event) => setScope((current) => ({ ...current, marketType: event.target.value }))}>
           <option value="">{zh ? '默认永续' : 'Default perp'}</option>
           <option value="perpetual">{zh ? '永续' : 'Perpetual'}</option>
           <option value="spot">{zh ? '现货' : 'Spot'}</option>
-        </select>
-        <select aria-label={zh ? '周期' : 'Timeframe'} value={scope.timeframe} onChange={(event) => setScope((current) => ({ ...current, timeframe: event.target.value }))}>
+        </select></label>
+        <label>{zh ? '周期' : 'Timeframe'}<select aria-label={zh ? '周期' : 'Timeframe'} value={scope.timeframe} onChange={(event) => setScope((current) => ({ ...current, timeframe: event.target.value }))}>
           <option value="">{zh ? '无周期限制' : 'No timeframe'}</option>
           {['1m', '5m', '15m', '1h', '4h'].map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
-        </select>
+        </select></label>
       </div>
       <p className="alerts-hint">{METRIC_UNITS[metric][zh ? 'zh' : 'en']}{scope.timeframe ? (zh ? ' · 冷却不短于该周期' : ' · cooldown is at least this timeframe') : ''}</p>
       {error && <p role="alert" className="alerts-error">{error}</p>}
+      </div>
+      <h2 className="alerts-list-title">{zh ? "已配置规则" : "Configured rules"}</h2>
 
       <div className="table-wrap">
         <table className="alerts-table">

@@ -62,7 +62,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   if(endpoints.length&&endpoints.at(-1)!.target>326){const offset=endpoints.at(-1)!.target-326;endpoints.forEach(s=>{s.target-=offset;});}
   const stale=!!data&&(Date.now()-data.end>10*60_000||!!error);
   return <div className="wo">
-    <div className="wo-heading"><div><h1>{t('关注总览','Watchlist Overview')}</h1><span className="wo-heading-note">{t('自选项目监控','PROJECT MONITOR')}</span></div><div className="wo-actions"><span role="status">{loading?t('更新中…','Updating…'):data?`${t('截至','As of')} ${new Date(data.end).toLocaleTimeString(zh?'zh-CN':'en-GB')}`:'—'}</span><button onClick={()=>setRefresh(n=>n+1)} disabled={loading}>{t('刷新','Refresh')}</button><button onClick={onManage}>{t('管理关注','Manage projects')}</button></div></div>
+    <div className="wo-heading"><div><h1>{t('关注总览','Watchlist Overview')}</h1></div><div className="wo-actions"><span role="status">{loading?t('更新中…','Updating…'):data?`${t('截至','As of')} ${new Date(data.end).toLocaleTimeString(zh?'zh-CN':'en-GB')}`:'—'}</span><button onClick={()=>setRefresh(n=>n+1)} disabled={loading}>{t('刷新','Refresh')}</button><button onClick={onManage}>{t('管理关注','Manage projects')}</button></div></div>
     {error&&<div className="wo-notice" role="alert">{t('更新失败，保留上次数据：','Update failed; retaining previous data: ')}{error}</div>}
     {stale&&<div className="wo-notice">{t('数据已延迟，请核对时间后使用。','Data delayed. Check timestamps before use.')}</div>}
     {!projects.some(p=>!p.archived)?<div className="wo-empty"><h2>{t('先添加你的关注项目','Add your first project')}</h2><p>{t('总览只加载已添加的项目，不扫描全市场。','This overview only loads your projects.')}</p><button onClick={onManage}>{t('添加项目','Add project')}</button></div>:<>

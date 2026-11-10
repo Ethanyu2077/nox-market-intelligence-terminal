@@ -438,7 +438,7 @@ export default function App() {
             }}/>}
             {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}
             {page === 'orderflow' && selectedProject && <OrderFlowPage key={selectedProject.id} project={selectedProject} series={localizedSeries} venues={venueData} interval={interval} onInterval={setIntervalValue} language={language} selection={exchange}/>}
-            {page === 'signals' && selectedProject && <><AlertsPanel language={language} projects={projects} venues={venues}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></>}
+            {page === 'signals' && selectedProject && <div className="signals-page intelligence-page"><header className="intelligence-page-head"><h1>{language==='zh'?'信号与提醒':'Signals & alerts'}</h1></header><AlertsPanel language={language} projects={projects} venues={venues}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></div>}
             {page === 'history' && selectedProject && <EventStudyPage key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval}/>}
             </ErrorBoundary>
           </main>
@@ -544,7 +544,7 @@ function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { pr
       <div className="watchlist-head">
         <div className="watchlist-title">
           <h1>{t('Project Watchlist')}</h1>
-          <p>{zh ? '每个项目只采集你确认过的市场。价格每 15 秒刷新；缺失值显示为「—」而不是 0。' : 'Only confirmed markets are monitored. Quotes refresh every 15s; missing values render as “—” and never as zero.'}</p>
+
         </div>
         <div className="watchlist-actions">
           <div className="segmented" role="group" aria-label={zh ? '项目筛选' : 'Project filter'}>
@@ -837,7 +837,7 @@ function StructurePage({ overview, series, interval, onInterval, project, theme,
   const { t } = useUi();
   return <><PageHead eyebrow="FLAGSHIP ANALYSIS" title={`${series?.symbol ?? primary?.symbol ?? 'Market'} ${language === 'zh' ? '结构分析' : 'structure'}`} detail={language === 'zh' ? '同步的价格、成交量、持仓量与合约 CVD；在任一图上移动即可检视同一事件时间。' : 'Synchronized price, volume, open interest and futures CVD. Move across any panel to inspect the same event time.'} right={<div className="provenance"><i/><span>{mode === 'nox' ? (series?.source ?? t('Awaiting source')) : 'TradingView public widget'}</span></div>}/>
     <ChartModeSwitcher mode={mode} onChange={changeMode} language={language}/>
-    {mode === 'nox' ? <NOXMarketStructureChart overview={overview} series={series} interval={interval}/> : <TradingViewChartPanel market={primary} interval={interval} onInterval={onInterval} theme={theme} language={language}/>} 
+    {mode === 'nox' ? <NOXMarketStructureChart overview={overview} series={series} interval={interval}/> : <TradingViewChartPanel market={primary} interval={interval} onInterval={onInterval} theme={theme} language={language}/>}
     <div className="structure-depth"><OrderBookPanel project={project} exchange={exchange} language={language}/></div>
     <TimeframeAlignmentPanel project={project}/>
     <StructureEvidence overview={overview} series={series}/>
@@ -1172,6 +1172,6 @@ function DerivativesPage({ overview, series }: { overview: Overview | null; seri
 
 
 
-function PageHead({ eyebrow, title, detail, right }: { eyebrow: string; title: string; detail: string; right?: React.ReactNode }) { const { t } = useUi(); return <div className="page-head"><div><span>{t(eyebrow)}</span><h1>{t(title)}</h1><p>{t(detail)}</p></div>{right}</div>; }
+function PageHead({ eyebrow, title, right }: { eyebrow: string; title: string; detail: string; right?: React.ReactNode }) { const { t } = useUi(); return <div className="page-head"><div><span>{t(eyebrow)}</span><h1>{t(title)}</h1></div>{right}</div>; }
 function PanelHead({ title, meta, action }: { title: string; meta?: string; action?: string }) { const { t } = useUi(); return <div className="panel-head"><div><strong>{t(title)}</strong>{meta && <span>{t(meta)}</span>}</div>{action && <button>{t(action)}</button>}</div>; }
 function Observation({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: string }) { const { t } = useUi(); return <div className={`observation ${tone}`}><div className="observation-icon">{icon}</div><div><span>{t(label)}</span><strong>{t(value)}</strong><p>{t(detail)}</p></div></div>; }

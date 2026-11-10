@@ -57,6 +57,7 @@ import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
 import { buildProviderChecks } from './provider-crosscheck.ts';
+import { assessResearchQuality } from './research-quality.ts';
 import { binanceGovernor } from './binance-governor.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
 import { registerAcceptanceRoute } from './acceptance-route.ts';
@@ -234,8 +235,21 @@ app.get('/api/projects/:id/research/cross-factor', safe(async (req, res) => {
     report.verdict = 'insufficient';
     report.counterEvidence = [...report.counterEvidence, `Historical scan incomplete (${truncationReason ?? 'no snapshot history'}); conclusions are limited to the scanned range`];
   }
+  const quality = assessResearchQuality({
+    scannedRecords: snapshots.scanned + l2.scanned,
+    samples: report.samples,
+    coveragePct: report.venues.length ? Math.min(...report.venues.map((venue) => venue.validCoveragePct)) : null,
+    truncated,
+    missingWindows: report.missingWindows,
+    dataAvailable: report.venues.length > 0,
+  });
+  if (quality.state !== 'COMPLETE') {
+    report.verdict = 'insufficient';
+    report.counterEvidence = [...report.counterEvidence, `Quality gate: ${quality.state} (${quality.reasons.join('; ') || 'incomplete evidence'})`];
+  }
   res.json({
     ...report,
+    quality,
     partial: !researchComplete,
     snapshotCursor: snapshots.cursor,
     l2Cursor: l2.cursor,

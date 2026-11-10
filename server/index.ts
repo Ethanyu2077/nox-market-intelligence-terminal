@@ -57,6 +57,7 @@ import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
 import { buildProviderChecks } from './provider-crosscheck.ts';
+import { marketCache } from './market-cache.ts';
 import { validateContractIdentity } from './web3-contract.ts';
 import { assessResearchQuality } from './research-quality.ts';
 import { binanceGovernor } from './binance-governor.ts';
@@ -503,11 +504,14 @@ app.get('/api/market/:exchange/:symbol/series', safe(async (req, res) => {
   if (exchange.data !== 'binance' && exchange.data !== 'aster') { res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } }); return; }
   if (!venueBreakers.allow(exchange.data, 'series')) { res.status(503).json({ error: { message: `${exchange.data} series is in an open-circuit cooldown` } }); return; }
   try {
-    const series = exchange.data === 'binance'
-      ? await marketSeries(String(req.params.symbol), interval)
-      : await asterMarketSeries(String(req.params.symbol), interval);
+    const symbol = String(req.params.symbol).toUpperCase();
+    const cached = await marketCache.get(`series:${exchange.data}:${symbol}:${interval}`, {
+      ttlMs: 15_000, staleMs: 15 * 60_000, timeoutMs: 9_000,
+      load: () => exchange.data === 'binance' ? marketSeries(symbol, interval) : asterMarketSeries(symbol, interval),
+    });
     venueBreakers.success(exchange.data, 'series');
-    res.json(series);
+    res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
+    res.json({ ...cached.value, cache: { stale: cached.stale, at: cached.at } });
   } catch (error) {
     venueBreakers.failure(exchange.data, error instanceof Error ? error.message : 'series failed', 'series');
     throw error;

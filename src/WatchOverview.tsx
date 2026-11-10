@@ -30,7 +30,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   },[signature,refresh]);
   const names=new Map(projects.map(p=>[p.id,p.tokenSymbol||p.name]));
   const rows=(data?.rows??[]).filter(r=>names.has(r.projectId));
-  const reference=data?.benchmarks.find(r=>r.projectId===benchmark);
+  const reference=data?.benchmarks?.find(r=>r.projectId===benchmark);
   const relative=(r:WatchRow,m=minutes)=>{const value=performance(r.candles,end,m);if(benchmark==='absolute')return value;const ref=reference?performance(reference.candles,end,m):null;return value!==null&&ref!==null?value-ref:null;};
   const relativeLabel=(v:number|null)=>v===null?'—':benchmark==='absolute'?pct(v):`${v>0?'+':''}${v.toFixed(2)} pp`;
   const sorted=[...rows].sort((a,b)=>(relative(b)??-Infinity)-(relative(a)??-Infinity));
@@ -60,6 +60,8 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
       return Math.abs(change)>=priceGate||(ratio!==null&&ratio>=volumeGate)?[{row,time:c.time,change,ratio}]:[];
     })).sort((a,b)=>b.time-a.time).slice(0,80);
   },[data,end,priceGate,volumeGate]);
+  if(!data) return <section className="wo-panel wo-main-panel"><div className="wo-panel-head"><h2><i>01</i>{t('关注总览','Watch overview')}</h2></div><div className="wo-empty">{error?<><strong>{t('数据加载失败','Failed to load')}</strong><span>{error}</span><button onClick={()=>setRefresh(n=>n+1)}>{t('重试','Retry')}</button></>:<span>{loading?t('加载中…','Loading…'):t('暂无数据','No data')}</span>}</div></section>;
+
   const comparable=rows.filter(r=>r.marketType===market&&r.quote==='USDT'&&!r.error);
   const ranked=comparable.map(row=>{
     const fresh=row.candles.at(-1)?.time===data?.end;

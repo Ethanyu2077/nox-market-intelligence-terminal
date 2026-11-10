@@ -15,7 +15,7 @@ export type WatchMetric = { state: WatchMetricState; source: string | null; at: 
 export type WatchMetrics = { price: WatchMetric; kline: WatchMetric; oi: WatchMetric; funding: WatchMetric; spot: WatchMetric; perp: WatchMetric; cvd: WatchMetric };
 export type WatchRow = { projectId: string; venue: string; symbol: string; marketType: string; quote: string; candles: WatchCandle[]; error: string | null; funding?: { rate: number; hours: number; time: number } | null;
   flow?: WatchFlow | null; oiSeries?: WatchOiPoint[]; metrics?: WatchMetrics; }
-export type WatchOverview = { asOf: number; end: number; rows: WatchRow[]; benchmarks: WatchRow[] };
+export type WatchOverview = { asOf: number; end: number; rows: WatchRow[]; benchmarks: WatchRow[]; cache?: { stale: boolean; at: number } };
 export function windowPoints(candles: WatchCandle[], end: number, minutes: number): WatchCandle[] | null {
   const start = end - minutes * 60_000;
   const points = candles.filter(p => p.time >= start && p.time <= end).sort((a,b)=>a.time-b.time);

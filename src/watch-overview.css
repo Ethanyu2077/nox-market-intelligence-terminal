@@ -97,3 +97,12 @@
 .fc-metrics span { font: 9px var(--mono); border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; color: var(--faint); }
 .fc-metrics .ok { color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, var(--line)); }
 .fc-metrics .off { color: var(--warn); }
+
+.wo-metric-coverage { border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
+.wo-metric-coverage summary { padding: 8px 12px; cursor: pointer; }
+.wo-metric-grid { display: flex; flex-direction: column; gap: 4px; padding: 0 12px 10px; }
+.wo-metric-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font: 9px var(--mono); }
+.wo-metric-row strong { font: 10px var(--mono); min-width: 48px; }
+.wo-metric-row span { border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; color: var(--faint); }
+.wo-metric-row .ok { color: var(--up); }
+.wo-metric-row .off { color: var(--warn); }

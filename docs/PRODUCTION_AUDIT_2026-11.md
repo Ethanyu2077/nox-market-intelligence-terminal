@@ -100,3 +100,43 @@ First sampled ingest is 2026-11-08T05:23:43Z; a separate gap begins
   permanent gap marker.
 - Trade stream is separately stale (event-driven tape), which is expected when no trades
   are recorded in the sampled window.
+
+## Binance API failure audit (2026-11-10, read-only)
+
+Observed via `/api/operations`, `/api/venues/health`, `/api/data-health/center`:
+
+| Endpoint family | Status | Evidence |
+| --- | --- | --- |
+| `premiumIndex` (snapshot) | **418** | breaker `binance:snapshot` **open**, 9 failures, lastError `Binance 418: /fapi/v1/premiumIndex?symbol=JCTUSDT` |
+| `aggTrades` (series) | **418** | breaker `binance:series` **open**, 9 failures, lastError `Binance 418: /fapi/v1/aggTrades?...` |
+| `depth` | **418** | breaker `binance:depth` **half-open**, 9 failures |
+| `klines`/series | 502 upstream then 418 | `/api/market/binance/BTCUSDT/series` currently returns open-circuit, not data |
+| openInterest/funding | unavailable via same 418 family | collector reports `1 venue(s) unavailable` for all 3 projects |
+| CoinGlass | LIVE | provider unaffected (separate vendor) |
+
+- Last success ≈ 2026-11-10T15:38Z; failures start immediately after and stay in cooldown.
+- Production `/api/version` exists but `commit=unknown` (no `NOX_COMMIT_SHA` injected).
+- L2: **no active feeds at audit time** (`activeFeeds=0`), so the reported 110 gaps / 566
+  resyncs were accumulated in an earlier page-opened feed session. They are not
+  reproducible now and cannot be attributed without those session logs.
+- Research rejection (`0/5`, insufficient samples) is consistent with missing Binance
+  trades/klines; it is a correct quality refusal, not a research bug.
+
+### Root cause (confirmed)
+
+**Binance IP-level 418 rate limiting.** Multiple server modules requested the same
+uncached endpoints independently (watchlist quotes, overview, structure, order flow,
+alignment, research), with no shared in-flight dedupe, no per-endpoint spacing and no
+honoring of `Retry-After`. Repeated retries deepened the ban and kept breakers open.
+
+### High probability contributors
+
+1. No unified request budget/dedupe across modules.
+2. Snapshot fetch failures caused L2 resync loops that re-requested REST depth.
+3. Retry/backoff was per-breaker, not global; other families kept calling during cooldown.
+
+### Not verified
+
+Exact request counts, egress IP and rate-limit headers (not exposed by the API); the
+24h error log is not accessible without server access. No IP rotation or proxy bypass
+was used or will be used.

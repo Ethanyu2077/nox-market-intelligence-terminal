@@ -8,6 +8,7 @@
 
 import type { DepthVenue, OrderBookLevel, OrderBookSnapshot } from '../shared/orderbook.ts';
 import { venueBreakers } from './venue-health.ts';
+import { binanceGovernor } from './binance-governor.ts';
 
 export type { DepthVenue, OrderBookLevel, OrderBookSnapshot } from '../shared/orderbook.ts';
 
@@ -87,9 +88,14 @@ export async function orderBookSnapshot(exchange: string, symbol: string, limit 
     if (!venueBreakers.allow(exchange, 'depth')) throw new Error(`${exchange} depth is in an open-circuit cooldown`);
     try {
       const url = `${ENDPOINTS[exchange]}/fapi/v1/depth?symbol=${encodeURIComponent(symbol.toUpperCase())}&limit=${depthLimit}`;
-      const response = await transport(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
-      if (!response.ok) throw new Error(`${exchange} depth HTTP ${response.status}`);
-      const parsed = parseDepth(exchange, symbol, await response.json(), Date.now());
+      let payload: unknown;
+      if (exchange === 'binance') payload = await binanceGovernor.json(url);
+      else {
+        const response = await transport(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
+        if (!response.ok) throw new Error(`${exchange} depth HTTP ${response.status}`);
+        payload = await response.json();
+      }
+      const parsed = parseDepth(exchange, symbol, payload, Date.now());
       venueBreakers.success(exchange, 'depth');
       return parsed;
     } catch (error) {

@@ -1,3 +1,4 @@
+import { binanceGovernor } from './binance-governor.ts';
 import type {
   AggregatedMarketSnapshot, CrossExchangeInsight, ExchangeCapabilities, ExchangeContributionSummary, ExchangeId, Instrument,
   ProjectDiscoveryResult, ProjectMarket, ProjectVenueResponse, VenueMarketSnapshot
@@ -64,6 +65,7 @@ export function activeExchangeIds(): ExchangeId[] {
 
 
 async function json<T>(url: string, timeoutMs = TIMEOUT): Promise<T> {
+  if (new URL(url).hostname === 'fapi.binance.com') return binanceGovernor.json<T>(url);
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
   if (!response.ok) throw new Error(`${new URL(url).hostname} HTTP ${response.status}`);
   return response.json() as Promise<T>;

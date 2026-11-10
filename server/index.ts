@@ -57,6 +57,7 @@ import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
 import { buildProviderChecks } from './provider-crosscheck.ts';
+import { binanceGovernor } from './binance-governor.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
 import { registerAcceptanceRoute } from './acceptance-route.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
@@ -134,6 +135,7 @@ app.get('/api/version', (_req, res) => res.json(versionInfo(process.env, PROCESS
 app.get('/api/operations', (_req, res) => res.json({
   process: { pid: process.pid, startedAt: PROCESS_STARTED_AT },
   l2Collection: l2Collector.health(),
+  binanceRest: binanceGovernor.status(),
   researchJobs: { total: researchJobs.size() }, storage: history.status(), archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
 app.get('/api/projects/:id/event-study',safe(async(req,res)=>{
   const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}

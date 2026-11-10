@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { aggregateCvd, backtestPositionSignals, computeOiDeltas, computeVolumeFlow, detectPositionFlowSignals, isSeriesStale, openInterestUsd, type RawAggTrade } from './calculations.ts';
 import type { Instrument, MarketSeries, Overview, ProjectDiscoveryResult, ProjectMarket, ScannerRow } from '../shared/types.ts';
+import { binanceGovernor } from './binance-governor.ts';
 
 const REST = process.env.BINANCE_REST_BASE ?? 'https://fapi.binance.com';
 const SPOT_REST = process.env.BINANCE_SPOT_REST_BASE ?? 'https://api.binance.com';
@@ -8,9 +9,8 @@ const WS = process.env.BINANCE_WS_BASE ?? 'wss://fstream.binance.com';
 const requestTimeout = 9_000;
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${REST}${path}`, { signal: AbortSignal.timeout(requestTimeout) });
-  if (!response.ok) throw new Error(`Binance ${response.status}: ${path}`);
-  return response.json() as Promise<T>;
+  // Single process-wide governor: dedupe, per-endpoint spacing, 418/429 cooldown.
+  return binanceGovernor.json<T>(`${REST}${path}`);
 }
 
 async function getExternalJson<T>(url: string): Promise<T> {

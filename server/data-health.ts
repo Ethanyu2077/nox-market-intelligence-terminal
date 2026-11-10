@@ -4,6 +4,7 @@ export interface HealthInputs {
   now: number;
   storage: { mode: string; connected: boolean; journalBytes?: number | null; pendingBytes?: number | null; rows?: number | null };
   collectors: Array<{ projectId: string; mode: string; error: string | null; checkedAt: number | null }>;
+  binance?: { bannedUntil: number | null; banReason: string | null; failures: number; lastSuccessAt: number | null };
   providers?: Array<{ provider: string; state: HealthState; configured: boolean; lastSuccessAt: number | null; lastFailureAt: number | null; lastLatencyMs: number | null; lastReason: string | null }>;
   l2: { activeFeeds: number; sampled: number; lastPersistAt: number | null; feeds?: Array<{ venue: string; symbol: string; state: string; sequence: number | null; epoch: number | null; verified: boolean; integrity: string; gaps: number; resyncs: number; lastMessageAt: number | null }> };
   breakers: Array<{ exchange: string; family: string; state: string; lastError?: string | null; lastFailureAt?: number | null; lastSuccessAt?: number | null }>;
@@ -118,6 +119,9 @@ export function buildDataHealth(inputs: HealthInputs): DataHealthReport {
   if (inputs.l2.activeFeeds === 0) issues.push({ severity: 'info', category: 'l2-idle', source: 'l2', detail: 'no active L2 feeds (projects are Standard or unsupported venue)', firstSeen: null, lastSeen: now, recovery: 'open' });
   else if (l2State !== 'LIVE') issues.push({ severity: 'warning', category: 'l2-degraded', source: 'l2', detail: `L2 feeds are ${l2State.toLowerCase()} (stale, partial or unverified)`, firstSeen: null, lastSeen: now, recovery: 'open' });
 
+  if (inputs.binance?.bannedUntil && inputs.binance.bannedUntil > now) {
+    issues.push({ severity: 'critical', category: 'binance-cooldown', source: 'binance', detail: `${inputs.binance.banReason ?? '418/429'} until ${new Date(inputs.binance.bannedUntil).toISOString()}`, firstSeen: null, lastSeen: now, recovery: 'open' });
+  }
   for (const provider of inputs.providers ?? []) {
     if (!provider.configured) issues.push({ severity: 'info', category: 'provider-not-configured', source: provider.provider, detail: 'no API key configured', firstSeen: null, lastSeen: now, recovery: 'open' });
     else if (provider.state === 'UNAVAILABLE') issues.push({ severity: 'warning', category: 'provider-error', source: provider.provider, detail: provider.lastReason ?? 'provider unavailable', firstSeen: provider.lastFailureAt, lastSeen: now, recovery: 'open' });

@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import type { L2RestSnapshot, L2Venue } from '../../shared/l2.ts';
 import { L2Book } from './engine.ts';
+import { BinanceCooldownError, binanceGovernor } from '../binance-governor.ts';
 
 /**
  * Continuous L2 feed: REST snapshot + WebSocket deltas, buffered until the snapshot is
@@ -111,9 +112,14 @@ export class L2Feed {
     this.syncing = true;
     this.book.markResyncing();
     try {
-      const response = await fetch(this.restUrl(), { signal: AbortSignal.timeout(8_000) });
-      if (!response.ok) throw new Error(`snapshot HTTP ${response.status}`);
-      this.book.applySnapshot(this.parseRest(await response.json()), this.now());
+      let payload: unknown;
+      if (this.venue === 'binance') payload = await binanceGovernor.json(this.restUrl());
+      else {
+        const response = await fetch(this.restUrl(), { signal: AbortSignal.timeout(8_000) });
+        if (!response.ok) throw new Error(`snapshot HTTP ${response.status}`);
+        payload = await response.json();
+      }
+      this.book.applySnapshot(this.parseRest(payload), this.now());
       const pending = this.buffer;
       this.buffer = [];
       this.syncing = false;
@@ -121,8 +127,13 @@ export class L2Feed {
         const result = this.book.applyDelta(delta, this.now());
         if (result.reason === 'gap') { if (attempt < 2) void this.resync(attempt + 1); return; }
       }
-    } catch {
+    } catch (error) {
       this.syncing = false;
+      if (error instanceof BinanceCooldownError) {
+        // Respect the exchange cooldown instead of re-requesting snapshots in a loop.
+        setTimeout(() => { if (!this.stopped) void this.resync(0); }, Math.min(error.retryAfterMs, 300_000));
+        return;
+      }
       if (attempt < 2) { await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1))); void this.resync(attempt + 1); }
       else this.scheduleReconnect();
     }

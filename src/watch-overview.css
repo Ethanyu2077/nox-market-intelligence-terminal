@@ -61,3 +61,15 @@
 .cf-venues div { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font: 9px var(--mono); color: var(--muted); }
 .cf-venues div b { grid-row: 1; justify-self: end; }
 .cf-venues div small { grid-column: 1 / -1; color: var(--faint); }
+
+.lfe-panel { margin-top: 10px; }
+.lfe-empty { padding: 10px 14px; font: 10px var(--mono); color: var(--faint); }
+.lfe-list { display: flex; flex-direction: column; padding: 6px 14px 10px; }
+.lfe-row { display: grid; grid-template-columns: 110px 90px 1fr auto; gap: 10px; align-items: center; padding: 5px 0; background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--muted); text-align: left; cursor: pointer; font: 10px var(--mono); }
+.lfe-row:hover { color: var(--text); }
+.lfe-kind { color: var(--faint); letter-spacing: .04em; }
+.lfe-row.up strong { color: var(--up); }
+.lfe-row.down strong { color: var(--down); }
+.lfe-row.warn strong { color: var(--warn); }
+.lfe-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lfe-row time { color: var(--faint); }

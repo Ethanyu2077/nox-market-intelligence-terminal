@@ -51,6 +51,7 @@ export interface DataHealthReport {
   issues: HealthIssue[];
   storage: { mode: string; connected: boolean; state: StorageState; journalBytes: number | null; pendingBytes: number | null; rows: number | null };
   collectors: Array<{ projectId: string; mode: string; error: string | null; checkedAt: number | null }>;
+  binanceRest: { bannedUntil: number | null; banReason: string | null; failures: number; lastSuccessAt: number | null } | null;
   providers: Array<{ provider: string; state: HealthState; configured: boolean; lastSuccessAt: number | null; lastFailureAt: number | null; lastLatencyMs: number | null; lastReason: string | null }>;
   l2: {
     activeFeeds: number; sampled: number; lastPersistAt: number | null; state: HealthState;

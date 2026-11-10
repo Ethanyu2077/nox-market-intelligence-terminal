@@ -141,6 +141,7 @@ export function buildDataHealth(inputs: HealthInputs): DataHealthReport {
     sources, projects, issues,
     storage: { mode: inputs.storage.mode, connected: inputs.storage.connected, state: storageStatus, journalBytes: inputs.storage.journalBytes ?? null, pendingBytes: inputs.storage.pendingBytes ?? null, rows: inputs.storage.rows ?? null },
     collectors: inputs.collectors,
+    binanceRest: inputs.binance ?? null,
     providers: inputs.providers ?? [],
     l2: { activeFeeds: inputs.l2.activeFeeds, sampled: inputs.l2.sampled, lastPersistAt: inputs.l2.lastPersistAt, state: l2State, feeds: l2Feeds },
   };

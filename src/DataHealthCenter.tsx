@@ -68,6 +68,9 @@ export function DataHealthCenter({ canUseCoinGlass }: { canUseCoinGlass: boolean
             <div className="dh-card"><span>UNAVAILABLE</span><strong>{report.overall.unavailable}</strong></div>
             <div className="dh-card"><span>Storage</span><strong>{report.storage.state}</strong><small>{report.storage.connected ? `${report.storage.rows ?? '—'} rows` : report.storage.mode}</small></div>
             <div className="dh-card"><span>L2 feeds</span><strong>{report.l2.activeFeeds}</strong><small>{report.l2.sampled} samples · {report.l2.state}</small></div>
+            {report.binanceRest && (
+              <div className="dh-card"><span>Binance REST</span><strong>{report.binanceRest.bannedUntil && report.binanceRest.bannedUntil > report.generatedAt ? 'COOLDOWN' : 'OK'}</strong><small>{report.binanceRest.banReason ?? `${report.binanceRest.failures} failures`}</small></div>
+            )}
             {report.providers?.map((provider) => (
               <div className="dh-card" key={provider.provider}><span>{provider.provider}</span><strong>{provider.state}</strong><small>{provider.configured ? `${provider.lastLatencyMs ?? '—'} ms` : 'not configured'}</small></div>
             ))}

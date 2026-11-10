@@ -1,3 +1,4 @@
+import { WatchOverview } from './WatchOverview';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, Bell, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Waves, X } from 'lucide-react';
 import type { CandlePoint, CvdPoint, ExchangeCapabilities, ExchangeSelection, LinePoint, MarketProject, MarketSeries, OiDeltaPoint, OnchainProjectSnapshot, Overview, PositionFlowSignal, ProjectDiscoveryResult, ProjectMarket, ProjectResearchContext, ProjectVenueResponse, VolumeFlowPoint } from '../shared/types';
@@ -36,7 +37,7 @@ import { AiDrawer } from './ai/AiDrawer';
 import { AiSettingsCard } from './ai/AiSettingsCard';
 import type { ConnectionState } from './shell/labels';
 
-type Page = 'projects' | 'terminal' | 'overview' | 'structure' | 'positionFlow' | 'derivatives' | 'contribution' | 'crossExchange' | 'liquidity' | 'signals' | 'history' | 'settings' | 'research' | 'orderflow';
+type Page = 'watchOverview' | 'projects' | 'terminal' | 'overview' | 'structure' | 'positionFlow' | 'derivatives' | 'contribution' | 'crossExchange' | 'liquidity' | 'signals' | 'history' | 'settings' | 'research' | 'orderflow';
 type Interval = '1m' | '5m' | '15m' | '1h' | '4h';
 type Language = 'en' | 'zh';
 type Theme = 'dark' | 'light';
@@ -59,7 +60,7 @@ const ZH: Record<string, string> = {
   'Project-scoped collection': '仅采集当前项目',
   'Only selected projects are monitored. Confirm token identity and markets before enabling collection.': '仅监控你选择的项目。启用采集前，请确认代币身份与交易市场。',
   'Advanced Order Flow': '高级订单流',
-  'WATCHLIST': '观察列表', 'PROJECT': '项目', 'SYSTEM': '系统', 'Project Watchlist': '项目观察列表', 'Market Overview': '市场概览',
+  'Watchlist Overview': '关注总览', 'WATCHLIST': '观察列表', 'PROJECT': '项目', 'SYSTEM': '系统', 'Project Watchlist': '项目观察列表', 'Market Overview': '市场概览',
   'Market Structure': '市场结构', 'Exchange Contribution': '交易所贡献', 'Cross-Exchange Analysis': '跨交易所分析', 'Liquidity Intelligence': '流动性情报',
   'Price / OI / CVD': '价格 / OI / CVD', 'Position Flow': '仓位资金流', 'Funding & Liquidations': '资金费率与清算',
   'Order Book & Liquidity': '订单簿与流动性', 'Signals & Alerts': '信号与提醒', 'Historical Analysis': '历史分析', 'Settings / Data Sources': '设置 / 数据源',
@@ -112,7 +113,7 @@ function useTimeAgo() { const { language } = useUi(); return useCallback((timest
 const NAV_GROUPS: NavGroup[] = [
   {
     label: 'WATCHLIST',
-    items: [{ id: 'projects', label: 'Project Watchlist', icon: <FolderKanban size={15}/> }],
+    items: [{ id: 'watchOverview', label: 'Watchlist Overview', icon: <Activity size={15}/> }, { id: 'projects', label: 'Project Watchlist', icon: <FolderKanban size={15}/> }],
   },
   {
     label: 'TERMINAL',
@@ -194,7 +195,7 @@ function appendAggregateTrade(current: MarketSeries, trade: { p: string; q: stri
 export default function App() {
   const [language, setLanguage] = useState<Language>(() => localStorage.getItem('nox-language') === 'zh' ? 'zh' : 'en');
   const [theme, setTheme] = useState<Theme>(() => localStorage.getItem('nox-theme') === 'light' ? 'light' : 'dark');
-  const [page, setPage] = useState<Page>('projects');
+  const [page, setPage] = useState<Page>('watchOverview');
   const [interval, setIntervalValue] = useState<Interval>('5m');
   const [projects, setProjects] = useState<MarketProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -229,7 +230,7 @@ export default function App() {
   const analyticsVenue = analyticsMarket?.exchange ?? '';
   const coverage = venueData ? { successful: venueData.aggregate.coverage.successful, requested: venueData.aggregate.coverage.requested } : null;
   // On the watchlist the transport is REST polling by definition; never show a socket state there.
-  const displayConnection: ConnectionState = page === 'projects' ? 'polling' : connection;
+  const displayConnection: ConnectionState = (page === 'projects' || page === 'watchOverview') ? 'polling' : connection;
   const pageLabel = t(NAV_GROUPS.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? 'Project Watchlist');
 
   const refreshProjects = useCallback(async (preferredId?: string) => {
@@ -249,7 +250,7 @@ export default function App() {
     // exchange selection is dropped instead of overwriting the current selection.
     const generation = ++loadGeneration.current;
     loadAbort.current?.abort();
-    if (!selectedProject) { setOverview(null); setSeries(null); setVenueData(null); setLoading(false); return; }
+    if (page === 'watchOverview' || !selectedProject) { setOverview(null); setSeries(null); setVenueData(null); setLoading(false); return; }
     const controller = new AbortController(); loadAbort.current = controller;
     if (!quiet) setLoading(true); setError('');
     const requests: Array<Promise<unknown>> = [api<ProjectVenueResponse>(`/projects/${selectedProject.id}/venues`, { signal: controller.signal })];
@@ -268,7 +269,7 @@ export default function App() {
     const failures = [venues, nativeSeries].filter((result) => result?.status === 'rejected') as PromiseRejectedResult[];
     if (failures.length) setError(`${requests.length - failures.length} of ${requests.length} selected-project datasets loaded; ${failures[0].reason instanceof Error ? failures[0].reason.message : 'an upstream request failed'}`);
     setLoading(false);
-  }, [symbol, analyticsVenue, interval, selectedProject, exchange]);
+  }, [symbol, analyticsVenue, interval, selectedProject, exchange, page]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { loadGeneration.current += 1; loadAbort.current?.abort(); }, []);
@@ -281,7 +282,7 @@ export default function App() {
   useEffect(() => {
     // The watchlist page has no instrument view; opening a venue socket there only burns
     // connections and produces misleading "degraded" transport labels.
-    if (page === 'projects') { setConnection('polling'); return; }
+    if (page === 'projects' || page === 'watchOverview') { setConnection('polling'); return; }
     // A project with streaming switched off is polled on a 60s timer, which is healthy —
     // only an enabled stream that stops delivering is stale.
     if (!selectedProject?.monitoring.streamingEnabled) { setConnection('polling'); return; }
@@ -356,7 +357,7 @@ export default function App() {
     items: group.items.map((item) => ({
       ...item,
       label: t(item.label),
-      disabled: item.id !== 'projects' && item.id !== 'settings' && !selectedProject,
+      disabled: item.id !== 'watchOverview' && item.id !== 'projects' && item.id !== 'settings' && !selectedProject,
     })),
   })), [selectedProject, t]);
 
@@ -390,7 +391,7 @@ export default function App() {
             user={auth.user}
             onSignOut={auth.signOut}
           />
-          {selectedProject && page !== 'projects' && (
+          {selectedProject && page !== 'projects' && page !== 'watchOverview' && (
             <MarketBar
               project={selectedProject}
               primary={primaryMarket}
@@ -406,10 +407,11 @@ export default function App() {
               onSwitchProject={() => setPaletteOpen(true)}
             />
           )}
-          {error && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
+          {error && page !== 'watchOverview' && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
           <main className="page-content">
             <ErrorBoundary level="page" language={language} resetKey={`${page}:${selectedProjectId ?? ''}`}>
             {page === 'terminal' && selectedProject && <ResearchTerminal key={`${selectedProject.id}:${interval}`} project={selectedProject} series={localizedSeries} venues={venueData} language={language} interval={interval} kpis={<KpiStrip overview={overview}/>} exchange={exchange} onExchange={setExchange} onDetail={() => setPage('positionFlow')}/>}
+            {page === 'watchOverview' && <WatchOverview projects={projects} language={language} onManage={() => setPage('projects')} onOpen={(id) => { void selectProject(id); setPage('terminal'); }}/>}
             {page === 'projects' && <ProjectsPage projects={projects} selectedProjectId={selectedProjectId} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>}
             {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
             {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language} exchange={exchange}/>}

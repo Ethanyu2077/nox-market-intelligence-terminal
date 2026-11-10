@@ -42,9 +42,20 @@ const fmt = (v: number | null | undefined) =>
     ? "—"
     : new Intl.NumberFormat("en-US", { maximumSignificantDigits: 8 }).format(v);
 export function Web3ConnectionStatus({language}:{language:string}){
-  const zh=language==='zh',[configured,setConfigured]=useState<boolean|null>(null);
-  useEffect(()=>{let active=true;void fetch('/api/web3/capabilities').then(async r=>{if(!r.ok)throw new Error();return r.json();}).then(value=>{if(active)setConfigured(value.configured===true);}).catch(()=>{});return()=>{active=false;};},[]);
-  return <section className="ops-panel"><h2>Binance Web3 · {zh?'签名只读数据源':'Signed read-only source'}</h2><p>{configured==null?zh?'配置状态未知':'Configuration status unknown':configured?zh?'服务端凭证已配置；不代表权限、地区与真实行情已通过验收':'Server credentials configured; permission, region and live-data acceptance remain separate':zh?'开发者凭证未配置':'Developer credentials not configured'}</p><p>{zh?'公开 CEX / DexPaprika 数据无需密钥。Binance Web3 行情与 DeFi 需要独立开发者 Key / Secret，仅在服务端配置。详情位于“流动性情报”。':'Public CEX / DexPaprika feeds do not require credentials. Binance Web3 market and DeFi APIs require separate server-side developer credentials. See Liquidity Intelligence.'}</p></section>;
+  const zh=language==='zh',[state,setState]=useState<{configured:boolean;scope?:string}|null>(null);
+  useEffect(()=>{let active=true;void fetch('/api/web3/capabilities').then(async r=>{if(!r.ok)throw new Error();return r.json();}).then(value=>{if(active)setState({configured:value.configured===true,scope:value.scope});}).catch(()=>{if(active)setState({configured:false});});return()=>{active=false;};},[]);
+  const configured=state?.configured;
+  return <section className="ops-panel web3-settings">
+    <div className="web3-settings-head"><div><span>DATA SOURCE</span><h2>{zh?'Binance Spot Alpha':'Binance Spot Alpha'}</h2></div><span className={`web3-badge ${configured?'ok':'off'}`}>{configured==null?(zh?'检测中':'Checking'):configured?(zh?'已配置':'Configured'):(zh?'未配置':'Not configured')}</span></div>
+    <dl className="web3-facts">
+      <div><dt>{zh?'数据范围':'Scope'}</dt><dd>{zh?'仅 Spot Alpha 现货行情':'Spot Alpha spot market data only'}</dd></div>
+      <div><dt>{zh?'接入方式':'Access'}</dt><dd>{zh?'服务端只读':'Server-side read-only'}</dd></div>
+      <div><dt>{zh?'不包含':'Excluded'}</dt><dd>{zh?'DeFi 池子、Earn、链上聚合':'DeFi pools, Earn, on-chain aggregation'}</dd></div>
+      <div><dt>{zh?'密钥位置':'Credential'}</dt><dd><code>BINANCE_WEB3_API_KEY</code></dd></div>
+    </dl>
+    <p className="web3-note">{configured==null?(zh?'正在读取服务端状态…':'Reading server status…'):configured?(zh?'密钥已在服务端配置；是否可用仍以实际请求结果为准。':'Key is configured server-side; live availability still depends on real requests.'):(zh?'在服务端环境配置 BINANCE_WEB3_API_KEY 后重启生效。此页面不接收密钥。':'Set BINANCE_WEB3_API_KEY in the server environment and restart. This page never accepts the key.')}</p>
+    <p className="web3-note">{zh?'Spot Alpha 使用交易对/代币符号，不需要项目合约或链配置。':'Spot Alpha is symbol-based; no project contract or chain configuration is required.'}</p>
+  </section>;
 }
 function PriceCandles({ points, zh }: { points: Web3Candle[]; zh: boolean }) {
   const [index, setIndex] = useState<number | null>(null);

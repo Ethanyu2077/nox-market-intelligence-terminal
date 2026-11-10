@@ -337,3 +337,16 @@
 .dh-inline { border-bottom: 0; padding: 0 0 8px; }
 .dh-inline select { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 3px 6px; font: 10px var(--mono); }
 .dh-diverge td { color: var(--warn); }
+
+.web3-settings-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 8px; }
+.web3-settings-head span { font: 9px var(--mono); color: var(--faint); letter-spacing: .08em; }
+.web3-settings-head h2 { margin: 2px 0 0; font-size: 15px; }
+.web3-badge { font: 10px var(--mono); padding: 2px 7px; border-radius: 2px; border: 1px solid var(--line); }
+.web3-badge.ok { color: var(--up); border-color: color-mix(in srgb, var(--up) 45%, var(--line)); }
+.web3-badge.off { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.web3-facts { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.web3-facts div { display: grid; grid-template-columns: 110px 1fr; gap: 10px; font: 10px var(--mono); }
+.web3-facts dt { color: var(--faint); }
+.web3-facts dd { margin: 0; color: var(--muted); }
+.web3-facts code { font: 10px var(--mono); color: var(--accent); }
+.web3-note { font: 10px var(--mono); color: var(--muted); line-height: 1.7; margin: 4px 0; }

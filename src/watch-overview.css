@@ -106,3 +106,24 @@
 .wo-metric-row span { border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; color: var(--faint); }
 .wo-metric-row .ok { color: var(--up); }
 .wo-metric-row .off { color: var(--warn); }
+
+/* Compact first screen: ~340px plot, 70/30 chart-to-leaders, flow+events side by side. */
+.wo { gap: 8px; }
+.wo-panel-head { padding: 8px 12px; min-height: 40px; }
+.wo-strength { grid-template-columns: minmax(0, 1fr) minmax(250px, 30%) !important; }
+.wo-chart svg { min-height: 290px !important; max-height: 340px !important; height: auto !important; aspect-ratio: 820 / 340 !important; }
+.wo-chart { padding: 0 !important; }
+.wo-chart-foot { padding: 2px 12px; }
+.wo-dock { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) !important; gap: 8px !important; align-items: start; }
+.wo-dock > .cf-panel { grid-column: 1; }
+.wo-dock > .lfe-panel { grid-column: 2; }
+.wo-dock > .fc-panel { grid-column: 1 / -1; }
+.fc-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)) !important; gap: 6px !important; padding: 8px 12px !important; }
+.fc-card { padding: 8px !important; }
+.fc-card dl { gap: 4px 8px !important; margin: 6px 0 !important; }
+.lfe-list { padding: 4px 12px 8px !important; }
+.lfe-row { padding: 4px 0 !important; }
+.wo-main-panel.wo-fullscreen .wo-chart svg { min-height: 420px !important; max-height: 70vh !important; aspect-ratio: auto !important; }
+@media (max-width: 1439px) { .wo-strength { grid-template-columns: minmax(0, 1fr) minmax(230px, 32%) !important; } }
+@media (max-width: 1023px) { .wo-dock { grid-template-columns: 1fr !important; } .wo-dock > .cf-panel, .wo-dock > .lfe-panel, .wo-dock > .fc-panel { grid-column: auto; } }
+@media (max-width: 850px) { .wo-strength { grid-template-columns: 1fr !important; } .wo-chart svg { min-height: 260px !important; max-height: 320px !important; aspect-ratio: auto !important; } }

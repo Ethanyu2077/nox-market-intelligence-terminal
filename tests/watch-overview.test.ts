@@ -65,3 +65,12 @@ test('metric detail separates price from flow, OI and funding', () => {
   assert.equal(noFlow.perp.state, 'UNAVAILABLE');
   assert.equal(noFlow.cvd.state, 'UNAVAILABLE');
 });
+test('missing flow uses explicit enums, not empty values', () => {
+  const row = { projectId: 'p', venue: 'binance', symbol: 'X', marketType: 'perpetual', quote: 'USDT', candles: [], error: null, flow: null, collectionMode: 'standard', hasSpot: false, hasPerp: true };
+  const metrics = buildWatchMetrics(row as never);
+  assert.equal(metrics.spot.state, 'UNAVAILABLE');
+  assert.equal(metrics.spot.error, 'UNSUPPORTED');
+  assert.equal(metrics.perp.error, 'COLLECTOR_NOT_STARTED');
+  assert.equal(metrics.cvd.error, 'COLLECTOR_NOT_STARTED');
+  assert.equal(buildWatchMetrics({ ...row, collectionMode: 'active' } as never).perp.error, 'NO_TRADES_IN_WINDOW');
+});

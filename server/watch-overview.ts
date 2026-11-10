@@ -126,6 +126,9 @@ export async function watchOverview(projects:MarketProject[], orderFlow?: OrderF
     while(cursor<active.length){const p=active[cursor++];const market=p.markets.find(m=>m.id===p.primaryMarketId)??p.markets[0];
       const row = market ? await candles(market, p.id, end, klines) : {projectId:p.id,venue:'',symbol:'',marketType:'',quote:'',candles:[],error:'No primary market'};
       if (market) {
+        row.collectionMode = p.monitoring.collectionMode;
+        row.hasSpot = p.markets.some((m) => m.marketType === 'spot');
+        row.hasPerp = p.markets.some((m) => m.marketType === 'perpetual');
         row.flow = flowOf(orderFlow, p, end, start);
         row.oiSeries = await oiSeriesOf(history, p, end);
         row.metrics = buildWatchMetrics(row);

@@ -14,7 +14,8 @@ export type WatchMetricState = 'LIVE' | 'STALE' | 'UNAVAILABLE';
 export type WatchMetric = { state: WatchMetricState; source: string | null; at: number | null; error: string | null };
 export type WatchMetrics = { price: WatchMetric; kline: WatchMetric; oi: WatchMetric; funding: WatchMetric; spot: WatchMetric; perp: WatchMetric; cvd: WatchMetric };
 export type WatchRow = { projectId: string; venue: string; symbol: string; marketType: string; quote: string; candles: WatchCandle[]; error: string | null; funding?: { rate: number; hours: number; time: number } | null;
-  flow?: WatchFlow | null; oiSeries?: WatchOiPoint[]; metrics?: WatchMetrics; }
+  flow?: WatchFlow | null; oiSeries?: WatchOiPoint[]; metrics?: WatchMetrics;
+  collectionMode?: 'active' | 'standard' | 'paused'; hasSpot?: boolean; hasPerp?: boolean; }
 export type WatchOverview = { asOf: number; end: number; rows: WatchRow[]; benchmarks: WatchRow[]; cache?: { stale: boolean; at: number } };
 export function windowPoints(candles: WatchCandle[], end: number, minutes: number): WatchCandle[] | null {
   const start = end - minutes * 60_000;
@@ -47,14 +48,16 @@ export function buildWatchMetrics(row: WatchRow): WatchMetrics {
   const lastOi = row.oiSeries?.at(-1)?.time ?? null;
   const source = row.venue || null;
   const metric = (ok: boolean, at: number | null, error: string | null = null): WatchMetric => ({ state: ok ? 'LIVE' : 'UNAVAILABLE', source, at, error });
-  const flowError = row.flow ? null : (row.error ? 'aggressor flow unavailable' : 'no trades in window');
+  const flowReason = row.collectionMode && row.collectionMode !== 'active' ? 'COLLECTOR_NOT_STARTED' : 'NO_TRADES_IN_WINDOW';
+  const spotReason = row.hasSpot === false ? 'UNSUPPORTED' : flowReason;
+  const perpReason = row.hasPerp === false ? 'UNSUPPORTED' : flowReason;
   return {
     price: metric(!row.error && row.candles.length > 0, lastCandle, row.error ?? null),
     kline: metric(!row.error && row.candles.length > 0, lastCandle, row.error ?? null),
     oi: metric((row.oiSeries?.length ?? 0) > 1, lastOi, row.oiSeries ? null : 'OI history unavailable'),
     funding: metric(Boolean(row.funding), row.funding?.time ?? null, row.funding ? null : 'funding unavailable'),
-    spot: metric(row.flow?.spotDelta != null, lastFlow, flowError),
-    perp: metric(row.flow?.perpDelta != null, lastFlow, flowError),
-    cvd: metric(row.flow?.cvd != null, lastFlow, flowError),
+    spot: metric(row.flow?.spotDelta != null, lastFlow, spotReason),
+    perp: metric(row.flow?.perpDelta != null, lastFlow, perpReason),
+    cvd: metric(row.flow?.cvd != null, lastFlow, perpReason),
   };
 }

@@ -1,0 +1,17 @@
+{
+  "name": "NOX Market Intelligence Terminal",
+  "healthchecks": {
+    "web": [
+      {
+        "type": "startup",
+        "name": "NOX API readiness",
+        "path": "/api/health",
+        "port": 3000,
+        "attempts": 6,
+        "timeout": 5,
+        "wait": 5,
+        "initialDelay": 3
+      }
+    ]
+  }
+}

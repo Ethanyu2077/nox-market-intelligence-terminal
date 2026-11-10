@@ -29,6 +29,7 @@
     "react-dom": "^18.3.1",
     "react-mosaic-component": "^7.2.1",
     "react-ts-tradingview-widgets": "^1.2.8",
+    "tsx": "^4.19.2",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
   },
@@ -47,7 +48,6 @@
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.14.0",
-    "tsx": "^4.19.2",
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5",

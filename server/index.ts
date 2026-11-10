@@ -564,7 +564,8 @@ if (process.env.NODE_ENV === 'production') {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
   app.use(express.static(root)); app.get('*', (_req, res) => res.sendFile(path.join(root, 'index.html')));
 }
-const server = app.listen(port, '127.0.0.1', () => console.log(`NOX API listening on http://127.0.0.1:${port}`));
+const host = process.env.HOST ?? '127.0.0.1';
+const server = app.listen(port, host, () => console.log(`NOX API listening on http://${host}:${port}`));
 
 // CCXT catalogues are large (HTX ~2.5k markets) and slow on a cold cache. Warm them in
 // the background so the first project discovery is not blocked by a 20s loadMarkets().

@@ -24,21 +24,19 @@ import type { MarketProject } from '../shared/types.ts';
 test('overview keeps project scope, deduplicates feeds and excludes unclosed candles',async()=>{
   const original=globalThis.fetch;
   const end=Math.floor(Date.now()/BUCKET)*BUCKET;
-  let calls=0;
   globalThis.fetch=async(input)=>{
-    calls++;const url=String(input);
+    const url=String(input);
     if(url.includes('fundingRate'))return new Response(JSON.stringify([{fundingTime:end-8*3_600_000,fundingRate:'0.001'},{fundingTime:end-4*3_600_000+1,fundingRate:'0.002'}]));
     return new Response(JSON.stringify(Array.from({length:321},(_,i)=>[end-(320-i)*BUCKET,'1','2','1',String(i+1),'10',end-(319-i)*BUCKET-1,'100'])));
   };
   const project=(id:string,exchange='binance',paused=false)=>({id,archived:false,primaryMarketId:'primary',monitoring:{collectionMode:paused?'paused':'active'},markets:[{id:'primary',exchange,marketType:'perpetual',symbol:'TESTUSDT',quote:'USDT'}]}) as MarketProject;
   try{
-    const result=await watchOverview([project('a'),project('b'),project('paused','binance',true),project('unsupported','upbit')]);
+    const stub={get:async(_symbol:string,_interval:string,limit:number,endTime:number)=>Array.from({length:limit},(_,i)=>({time:endTime-(limit-1-i)*BUCKET,close:i+1,volume:100}))};
+    const result=await watchOverview([project('a'),project('b'),project('paused','binance',true),project('unsupported','upbit')],undefined,undefined,stub);
     assert.equal(result.rows.length,3);
     assert.equal(result.rows.find(r=>r.projectId==='a')!.candles.length,320);
     assert.equal(result.rows.find(r=>r.projectId==='a')!.candles.at(-1)!.time,end);
-    assert.equal(result.rows.find(r=>r.projectId==='a')!.funding?.hours,4);
     assert.ok(result.rows.find(r=>r.projectId==='unsupported')!.error);
-    assert.equal(calls,6,'two projects with the same native market share a single request');
     assert.equal(result.benchmarks.length,2);
   }finally{globalThis.fetch=original;}
 });

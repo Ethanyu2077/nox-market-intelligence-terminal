@@ -40,6 +40,7 @@ import {alignmentOutcomes} from './alignment-outcome.ts';
 import {projectDataCoverage} from './data-coverage.ts';
 import {venueCoverage} from './venue-coverage.ts';
 import {signalReadiness,weightedConsensus} from './research-readiness.ts';
+import { watchOverview } from './watch-overview.ts';
 import { watchlistQuotes } from './watchlist.ts';
 import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
 import { venueBreakers } from './venue-health.ts';
@@ -407,6 +408,7 @@ app.get('/api/instruments', safe(async (req, res) => { const q = String(req.quer
 app.get('/api/projects', (_req, res) => res.json({ items: store.getProjects(true), selectedProjectId: store.getSelectedProjectId() }));
 // Hydrated quotes for every active project, so the watchlist is a price board and not a
 // list of dashes. Short server-side TTL; partial coverage is explicit per row.
+app.get('/api/watchlist/overview', safe(async (_req, res) => res.json(await watchOverview(store.getProjects(true)))));
 app.get('/api/watchlist/quotes', safe(async (_req, res) => res.json(await watchlistQuotes(store.getProjects(true)))));
 app.post('/api/projects/discover', safe(async (req, res) => { const body = z.object({ query: z.string().trim().min(1).max(100) }).parse(req.body); res.json(await discoverAcrossExchanges(body.query)); }));
 app.get('/api/projects/:id/venues', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await projectVenueSnapshots(project.markets)); }));

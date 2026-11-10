@@ -98,13 +98,8 @@ export function EventStudyPage({
   const n = (v: number | null | undefined) =>
     v == null ? "—" : `${v.toFixed(3)}%`;
   return (
-    <section className="ops-panel">
-      <h1>{zh ? "V2 历史事件研究" : "V2 Historical Event Study"}</h1>
-      <p>
-        {zh
-          ? "描述冻结事件后的价格表现，不是可执行交易回测。使用实际判断时间；同一项目的重叠观察期会剔除，同一事件多场所结果合并成一个样本簇。"
-          : "Descriptive post-event prices, not executable trading results. Actual decision times are used. Overlapping project horizons are purged and same-event venues form one cluster."}
-      </p>
+    <section className="ops-panel event-study-page intelligence-page">
+      <h1>{zh ? "历史分析" : "Historical analysis"}</h1>
       <div className="ops-controls">
         <label>
           {zh ? "前向周期" : "Forward horizon"}{" "}
@@ -180,6 +175,13 @@ export function EventStudyPage({
               : "Recalculate"}
         </button>
       </div>
+      <details className="analysis-method"><summary>{zh ? "统计口径与研究边界" : "Methodology & research scope"}</summary>
+      <p>
+        {zh
+          ? "描述冻结事件后的价格表现，不是可执行交易回测。使用实际判断时间；同一项目的重叠观察期会剔除，同一事件多场所结果合并成一个样本簇。"
+          : "Descriptive post-event prices, not executable trading results. Actual decision times are used. Overlapping project horizons are purged and same-event venues form one cluster."}
+      </p>
+      </details>
       <p>
         {zh ? "分析窗口 / 场所" : "Regime window / venue"}: {window} /{" "}
         {selection}

@@ -1,0 +1,71 @@
+/* Shared navigation sizing and the two analytical workspaces. */
+.app-shell{--sidebar-w:244px}
+.app-shell.shell nav{padding-inline:10px}
+.app-shell.shell nav .nav-item{height:36px;min-height:36px;padding-inline:12px;gap:10px}
+.app-shell.shell nav .nav-item span{line-height:36px}
+.app-shell.shell .nav-label{padding-left:12px}
+.app-shell .page-head,.app-shell .watchlist-head{align-items:center}
+.intelligence-page{display:flex;flex-direction:column;gap:18px;min-width:0}
+.intelligence-page-head{display:flex;align-items:center;min-height:30px}
+.intelligence-page-head h1,.app-shell .event-study-page>h1{margin:0;font:600 20px/1.4 var(--ui-font);letter-spacing:-.02em}
+.app-shell .event-study-page{margin:0}
+.app-shell .regime-evidence-panel,.signals-page>.alerts-panel{margin:0;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--surface);min-width:0;overflow:hidden}
+.app-shell .regime-evidence-panel{padding:18px;display:flex;flex-direction:column;gap:16px}
+.app-shell .regime-evidence-panel>.analysis-section-title{margin:0;font:600 14px/1.4 var(--ui-font);color:var(--text);letter-spacing:0;text-transform:none}
+.app-shell .intelligence-page .ops-controls{display:grid;align-items:end;gap:12px;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:6px;margin:0;color:var(--muted)}
+.app-shell .event-study-page>.ops-controls{grid-template-columns:repeat(5,minmax(0,1fr)) auto}
+.app-shell .regime-evidence-panel>.ops-controls{grid-template-columns:minmax(160px,1fr) minmax(0,3fr);background:var(--surface-2)}
+.intelligence-page .ops-controls>label{display:flex;flex-direction:column;gap:7px;min-width:0;font:11px/1.4 var(--ui-font)}
+.intelligence-page :is(input,select){box-sizing:border-box;width:100%;min-width:0;max-width:100%;height:34px;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;background:var(--bg);color:var(--text);font:12px var(--ui-font)}
+.intelligence-page :is(input,select):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.intelligence-page input::placeholder{color:var(--faint);font-size:12px}
+.app-shell .intelligence-page button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;height:34px;padding:0 12px;border:1px solid var(--line-strong);border-radius:4px;background:var(--surface-2);color:var(--text-2);font:12px var(--ui-font);white-space:nowrap;cursor:pointer}
+.app-shell .intelligence-page button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.app-shell .intelligence-page button:disabled{opacity:.45;cursor:not-allowed}
+.app-shell .intelligence-page button.primary-button{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+.app-shell .intelligence-page .ops-controls>button{background:var(--accent-soft);color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+.app-shell .intelligence-page .analysis-method{margin:0;border:1px solid var(--line);border-radius:5px;background:var(--surface)}
+.analysis-method summary{font:11px/1.6 var(--ui-font);color:var(--muted);cursor:pointer;padding:11px 14px}
+.app-shell .intelligence-page .analysis-method p{margin:0 14px 12px;color:var(--muted);max-width:100ch}
+.app-shell .intelligence-page>.analysis-method+ p{margin:0;font-size:11px;color:var(--muted)}
+.app-shell .intelligence-page .ops-evidence{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0}
+.app-shell .intelligence-page .ops-evidence article{min-width:0;padding:16px;border:1px solid var(--line);border-radius:5px;background:var(--surface)}
+.app-shell .intelligence-page .ops-evidence h3{font:500 11px/1.6 var(--ui-font);color:var(--muted);margin:0 0 12px;text-transform:none;letter-spacing:0}
+.app-shell .intelligence-page .ops-evidence article p{font:500 19px/1.5 var(--mono)!important;color:var(--text);margin:0 0 5px}
+.intelligence-page .ops-evidence small{font:10px/1.6 var(--ui-font);color:var(--faint)}
+.app-shell .intelligence-page .table-wrap{max-width:100%;min-width:0;overflow:auto;border:1px solid var(--line);border-radius:5px;background:var(--surface)}
+.app-shell .intelligence-page table{min-width:800px;width:100%;border-collapse:collapse;table-layout:auto}
+.app-shell .intelligence-page th{font:500 11px/1.5 var(--ui-font);color:var(--muted);padding:11px 14px!important;background:var(--surface-2);text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
+.app-shell .intelligence-page td{font:11px/1.65 var(--mono);color:var(--text-2);padding:12px 14px!important;height:auto!important;vertical-align:top;border-bottom:1px solid var(--line-soft)}
+.app-shell .intelligence-page td:first-child{min-width:150px}
+.app-shell .intelligence-page td small{font:10px/1.6 var(--ui-font);white-space:normal;max-width:32ch}
+.app-shell .intelligence-page h2:not(.analysis-section-title){font:600 14px/1.5 var(--ui-font);letter-spacing:0;text-transform:none;color:var(--text)}
+.app-shell .regime-evidence-panel>h2:not(.analysis-section-title){margin:8px 0 0}
+.app-shell .regime-evidence-panel>p{margin:0}
+.app-shell .regime-evidence-panel>.ops-panel{margin:0;padding:16px;border:1px solid var(--line);border-radius:5px;background:var(--bg)}
+.app-shell .regime-evidence-panel>.ops-panel>h2{margin:0 0 10px}
+.app-shell .event-study-page>p{margin:0;padding:13px 16px;border:1px solid var(--line);border-radius:5px;background:var(--surface)}
+.signals-page .alerts-panel>.panel-head{padding:14px 16px;min-height:50px;align-items:center;gap:12px;border-bottom:1px solid var(--line)}
+.signals-page .alerts-panel>.panel-head strong{font:600 14px var(--ui-font)}
+.signals-page .alerts-panel>.analysis-method{margin:12px 16px}
+.signals-page .alerts-meta{padding:10px 16px;font:11px var(--ui-font);gap:12px 24px;background:var(--bg)}
+.signals-page .alerts-composer{margin:16px;padding:16px;border:1px solid var(--line);border-radius:5px;background:var(--bg)}
+.signals-page .alerts-composer h2{margin:0 0 14px;font-size:12px!important}
+.signals-page .alerts-form{grid-template-columns:minmax(120px,1.2fr) minmax(140px,1.5fr) minmax(70px,.65fr) minmax(110px,1fr) auto;gap:12px;padding:0;align-items:end}
+.signals-page .alerts-form label,.signals-page .alerts-scope label{display:flex;flex-direction:column;gap:7px;font:11px/1.4 var(--ui-font);color:var(--muted);letter-spacing:0;text-transform:none;min-width:0}
+.signals-page .alerts-scope{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:16px 0 0;align-items:end}
+.signals-page .alerts-scope>span{grid-column:1/-1;font:11px var(--ui-font);color:var(--text-2);letter-spacing:0;text-transform:none}
+.signals-page .alerts-hint{margin:12px 0 0;font:11px/1.6 var(--ui-font)}
+.signals-page .alerts-list-title{margin:20px 16px 12px}
+.signals-page .alerts-panel>.table-wrap{margin:0 16px 16px;max-width:calc(100% - 32px)}
+.signals-page .alerts-events{margin:0;border-top:1px solid var(--line);background:var(--bg)}
+.signals-page .alerts-events-head{padding:14px 16px;min-height:44px;box-sizing:border-box}
+.signals-page .alerts-events-head strong{font-size:12px}
+.signals-page .alerts-events article{padding:12px 16px}
+.app-shell .signals-page .alerts-row-actions button{height:30px;min-height:30px;width:30px;padding:0}
+.signals-page .alerts-empty{padding:20px 16px;line-height:1.7}
+@media(max-width:1150px){.app-shell .event-study-page>.ops-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.event-study-page>.ops-controls>button{justify-self:start}.signals-page .alerts-form{grid-template-columns:repeat(2,minmax(0,1fr))}.signals-page .alerts-form>button{justify-self:start}.signals-page .alerts-scope{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.app-shell.shell>.sidebar{width:244px}.app-shell .intelligence-page .ops-evidence{grid-template-columns:1fr}.app-shell .regime-evidence-panel{padding:14px}.app-shell .regime-evidence-panel>.ops-controls{grid-template-columns:1fr}.signals-page .alerts-panel>.panel-head{align-items:flex-start;flex-wrap:wrap}.signals-page .alerts-composer{margin:12px;padding:12px}.signals-page .alerts-panel>.table-wrap{margin-inline:12px;max-width:calc(100% - 24px)}.signals-page .alerts-list-title{margin-inline:12px}}
+@media(max-width:480px){.app-shell .event-study-page>.ops-controls{grid-template-columns:1fr}.signals-page .alerts-form,.signals-page .alerts-scope{grid-template-columns:1fr}.signals-page .alerts-form>button{width:100%;justify-self:stretch}.signals-page .alerts-meta{gap:10px}.app-shell .intelligence-page-head h1,.app-shell .event-study-page>h1{font-size:18px}}
+@media(min-width:721px) and (max-width:1150px){.app-shell .event-study-page>.ops-controls{grid-template-columns:repeat(3,minmax(0,1fr))}.event-study-page>.ops-controls>button{justify-self:stretch}}
+.app-shell .error-banner>button{flex:0 0 auto;min-width:54px;white-space:nowrap}

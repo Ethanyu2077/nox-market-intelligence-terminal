@@ -87,22 +87,10 @@ export function RegimeV2Panel({
         ? [selected]
         : [];
   return (
-    <section className="ops-panel">
-      <h1>
+    <section className="ops-panel regime-evidence-panel">
+      <h2 className="analysis-section-title">
         {zh ? "市场结构与跨场所证据" : "Market regimes & cross-venue evidence"}
-      </h1>
-      <p>{zh?'可靠分类需要至少30个完整历史窗口。持续订单流请在设置中启用 Active；Standard 或采集缺口可能使证据不足。':'Reliable classification requires at least 30 complete historical windows. Enable Active in Settings for continuous order flow; Standard mode or collection gaps may leave insufficient evidence.'}</p>
-      <p>
-        {zh
-          ? "V2 规则：异常程度是历史分位，不是成功概率。证据质量表示输入覆盖；历史统计优势尚未验证。"
-          : "V2 rules: anomaly scores are historical ranks, not success probabilities. Evidence quality measures coverage. Historical edge is not validated."}
-      </p>
-      <p>
-        {zh ? "显示范围" : "Display scope"}: {selection} ·{" "}
-        {zh
-          ? "结构规则最小窗口为5M；全局1M模式在此使用5M。"
-          : "Minimum regime window is 5M; global 1M uses 5M here."}
-      </p>
+      </h2>
       <div className="ops-controls">
         <label>
           {zh ? "分析窗口" : "Analysis window"}{" "}
@@ -143,6 +131,20 @@ export function RegimeV2Panel({
           </select>
         </label>
       </div>
+      <details className="analysis-method"><summary>{zh ? "分析口径与数据要求" : "Methodology & data requirements"}</summary>
+      <p>{zh?'可靠分类需要至少30个完整历史窗口。持续订单流请在设置中启用 Active；Standard 或采集缺口可能使证据不足。':'Reliable classification requires at least 30 complete historical windows. Enable Active in Settings for continuous order flow; Standard mode or collection gaps may leave insufficient evidence.'}</p>
+      <p>
+        {zh
+          ? "V2 规则：异常程度是历史分位，不是成功概率。证据质量表示输入覆盖；历史统计优势尚未验证。"
+          : "V2 rules: anomaly scores are historical ranks, not success probabilities. Evidence quality measures coverage. Historical edge is not validated."}
+      </p>
+      <p>
+        {zh ? "显示范围" : "Display scope"}: {selection} ·{" "}
+        {zh
+          ? "结构规则最小窗口为5M；全局1M模式在此使用5M。"
+          : "Minimum regime window is 5M; global 1M uses 5M here."}
+      </p>
+      </details>
       {error && <p role="alert">{error}</p>}
       <ResearchReadinessPanel project={project} language={language} interval={interval} selection={selection}/>
       {!report ? (

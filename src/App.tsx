@@ -1,6 +1,8 @@
+import { SettingsHub } from './SettingsHub';
+import { WatchOverview } from './WatchOverview';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, Bell, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Waves, X } from 'lucide-react';
-import type { CandlePoint, CvdPoint, ExchangeCapabilities, ExchangeSelection, LinePoint, MarketProject, MarketSeries, OiDeltaPoint, OnchainProjectSnapshot, Overview, PositionFlowSignal, ProjectDiscoveryResult, ProjectMarket, ProjectResearchContext, ProjectVenueResponse, VolumeFlowPoint } from '../shared/types';
+import type { CandlePoint, CvdPoint, ExchangeSelection, LinePoint, MarketProject, MarketSeries, OiDeltaPoint, OnchainProjectSnapshot, Overview, PositionFlowSignal, ProjectDiscoveryResult, ProjectMarket, ProjectResearchContext, ProjectVenueResponse, VolumeFlowPoint } from '../shared/types';
 import type { VolumeBarsResponse, VolumeMatrixResponse, VolumeShareHistory } from '../shared/volume';
 import type { AlignmentHistoryResponse, AlignmentOutcomeResponse, TimeframeAlignmentResponse } from '../shared/timeframe';
 import { ChartModeSwitcher, TradingViewChartPanel, type ChartMode } from './TradingViewChart';
@@ -36,7 +38,7 @@ import { AiDrawer } from './ai/AiDrawer';
 import { AiSettingsCard } from './ai/AiSettingsCard';
 import type { ConnectionState } from './shell/labels';
 
-type Page = 'projects' | 'terminal' | 'overview' | 'structure' | 'positionFlow' | 'derivatives' | 'contribution' | 'crossExchange' | 'liquidity' | 'signals' | 'history' | 'settings' | 'research' | 'orderflow';
+type Page = 'watchOverview' | 'projects' | 'terminal' | 'overview' | 'structure' | 'positionFlow' | 'derivatives' | 'contribution' | 'crossExchange' | 'liquidity' | 'signals' | 'history' | 'settings' | 'research' | 'orderflow';
 type Interval = '1m' | '5m' | '15m' | '1h' | '4h';
 type Language = 'en' | 'zh';
 type Theme = 'dark' | 'light';
@@ -59,7 +61,7 @@ const ZH: Record<string, string> = {
   'Project-scoped collection': '仅采集当前项目',
   'Only selected projects are monitored. Confirm token identity and markets before enabling collection.': '仅监控你选择的项目。启用采集前，请确认代币身份与交易市场。',
   'Advanced Order Flow': '高级订单流',
-  'WATCHLIST': '观察列表', 'PROJECT': '项目', 'SYSTEM': '系统', 'Project Watchlist': '项目观察列表', 'Market Overview': '市场概览',
+  'Watchlist Overview': '关注总览', 'WATCHLIST': '观察列表', 'PROJECT': '项目', 'SYSTEM': '系统', 'Project Watchlist': '项目观察列表', 'Market Overview': '市场概览',
   'Market Structure': '市场结构', 'Exchange Contribution': '交易所贡献', 'Cross-Exchange Analysis': '跨交易所分析', 'Liquidity Intelligence': '流动性情报',
   'Price / OI / CVD': '价格 / OI / CVD', 'Position Flow': '仓位资金流', 'Funding & Liquidations': '资金费率与清算',
   'Order Book & Liquidity': '订单簿与流动性', 'Signals & Alerts': '信号与提醒', 'Historical Analysis': '历史分析', 'Settings / Data Sources': '设置 / 数据源',
@@ -112,7 +114,7 @@ function useTimeAgo() { const { language } = useUi(); return useCallback((timest
 const NAV_GROUPS: NavGroup[] = [
   {
     label: 'WATCHLIST',
-    items: [{ id: 'projects', label: 'Project Watchlist', icon: <FolderKanban size={15}/> }],
+    items: [{ id: 'watchOverview', label: 'Watchlist Overview', icon: <Activity size={15}/> }, { id: 'projects', label: 'Project Watchlist', icon: <FolderKanban size={15}/> }],
   },
   {
     label: 'TERMINAL',
@@ -194,7 +196,7 @@ function appendAggregateTrade(current: MarketSeries, trade: { p: string; q: stri
 export default function App() {
   const [language, setLanguage] = useState<Language>(() => localStorage.getItem('nox-language') === 'zh' ? 'zh' : 'en');
   const [theme, setTheme] = useState<Theme>(() => localStorage.getItem('nox-theme') === 'light' ? 'light' : 'dark');
-  const [page, setPage] = useState<Page>('projects');
+  const [page, setPage] = useState<Page>(()=>window.location.hash.startsWith('#/settings')?'settings':'watchOverview');
   const [interval, setIntervalValue] = useState<Interval>('5m');
   const [projects, setProjects] = useState<MarketProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -229,7 +231,7 @@ export default function App() {
   const analyticsVenue = analyticsMarket?.exchange ?? '';
   const coverage = venueData ? { successful: venueData.aggregate.coverage.successful, requested: venueData.aggregate.coverage.requested } : null;
   // On the watchlist the transport is REST polling by definition; never show a socket state there.
-  const displayConnection: ConnectionState = page === 'projects' ? 'polling' : connection;
+  const displayConnection: ConnectionState = (page === 'projects' || page === 'watchOverview' || page === 'settings') ? 'polling' : connection;
   const pageLabel = t(NAV_GROUPS.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? 'Project Watchlist');
 
   const refreshProjects = useCallback(async (preferredId?: string) => {
@@ -249,7 +251,7 @@ export default function App() {
     // exchange selection is dropped instead of overwriting the current selection.
     const generation = ++loadGeneration.current;
     loadAbort.current?.abort();
-    if (!selectedProject) { setOverview(null); setSeries(null); setVenueData(null); setLoading(false); return; }
+    if (page === 'watchOverview' || page === 'settings' || !selectedProject) { setOverview(null); setSeries(null); setVenueData(null); setLoading(false); return; }
     const controller = new AbortController(); loadAbort.current = controller;
     if (!quiet) setLoading(true); setError('');
     const requests: Array<Promise<unknown>> = [api<ProjectVenueResponse>(`/projects/${selectedProject.id}/venues`, { signal: controller.signal })];
@@ -268,7 +270,7 @@ export default function App() {
     const failures = [venues, nativeSeries].filter((result) => result?.status === 'rejected') as PromiseRejectedResult[];
     if (failures.length) setError(`${requests.length - failures.length} of ${requests.length} selected-project datasets loaded; ${failures[0].reason instanceof Error ? failures[0].reason.message : 'an upstream request failed'}`);
     setLoading(false);
-  }, [symbol, analyticsVenue, interval, selectedProject, exchange]);
+  }, [symbol, analyticsVenue, interval, selectedProject, exchange, page]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { loadGeneration.current += 1; loadAbort.current?.abort(); }, []);
@@ -281,7 +283,7 @@ export default function App() {
   useEffect(() => {
     // The watchlist page has no instrument view; opening a venue socket there only burns
     // connections and produces misleading "degraded" transport labels.
-    if (page === 'projects') { setConnection('polling'); return; }
+    if (page === 'projects' || page === 'watchOverview' || page === 'settings') { setConnection('polling'); return; }
     // A project with streaming switched off is polled on a 60s timer, which is healthy —
     // only an enabled stream that stops delivering is stale.
     if (!selectedProject?.monitoring.streamingEnabled) { setConnection('polling'); return; }
@@ -345,8 +347,12 @@ export default function App() {
     if (status?.user && status.user.role !== 'viewer') await api('/projects/selection', { method: 'POST', body: JSON.stringify({ id }) });
   };
 
+  useEffect(()=>{const onHash=()=>{if(window.location.hash.startsWith('#/settings'))setPage('settings');else setPage(current=>current==='settings'?'watchOverview':current);};window.addEventListener('hashchange',onHash);return()=>window.removeEventListener('hashchange',onHash);},[]);
+  useEffect(()=>{if(page!=='settings'&&window.location.hash.startsWith('#/settings'))window.history.replaceState(null,'',window.location.pathname+window.location.search);},[page]);
+
   const navigate = (id: string) => {
     if (id === 'ai') { setAiOpen(true); setMobileNav(false); return; }
+    if(id==='settings')window.location.hash='#/settings';
     setPage(id as Page);
     setMobileNav(false);
   };
@@ -356,7 +362,7 @@ export default function App() {
     items: group.items.map((item) => ({
       ...item,
       label: t(item.label),
-      disabled: item.id !== 'projects' && item.id !== 'settings' && !selectedProject,
+      disabled: item.id !== 'watchOverview' && item.id !== 'projects' && item.id !== 'settings' && !selectedProject,
     })),
   })), [selectedProject, t]);
 
@@ -390,7 +396,7 @@ export default function App() {
             user={auth.user}
             onSignOut={auth.signOut}
           />
-          {selectedProject && page !== 'projects' && (
+          {selectedProject && page !== 'projects' && page !== 'watchOverview' && page !== 'settings' && (
             <MarketBar
               project={selectedProject}
               primary={primaryMarket}
@@ -406,22 +412,33 @@ export default function App() {
               onSwitchProject={() => setPaletteOpen(true)}
             />
           )}
-          {error && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
+          {error && page !== 'watchOverview' && page !== 'settings' && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
           <main className="page-content">
             <ErrorBoundary level="page" language={language} resetKey={`${page}:${selectedProjectId ?? ''}`}>
             {page === 'terminal' && selectedProject && <ResearchTerminal key={`${selectedProject.id}:${interval}`} project={selectedProject} series={localizedSeries} venues={venueData} language={language} interval={interval} kpis={<KpiStrip overview={overview}/>} exchange={exchange} onExchange={setExchange} onDetail={() => setPage('positionFlow')}/>}
+            {page === 'watchOverview' && <WatchOverview projects={projects} language={language} onManage={() => setPage('projects')} onOpen={(id) => { void selectProject(id); setPage('terminal'); }}/>}
             {page === 'projects' && <ProjectsPage projects={projects} selectedProjectId={selectedProjectId} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>}
             {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
             {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language} exchange={exchange}/>}
             {page === 'contribution' && selectedProject && <ExchangeContributionPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/>}
-            {page === 'crossExchange' && selectedProject && <><CrossExchangeAnalysisPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/><KoreanSpotPanel project={selectedProject} language={language}/><CoinGlassPanel project={selectedProject} language={language} onSettings={()=>setPage('settings')}/></>}
+            {page === 'crossExchange' && selectedProject && <><CrossExchangeAnalysisPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/><KoreanSpotPanel project={selectedProject} language={language}/><CoinGlassPanel project={selectedProject} language={language} onSettings={()=>{window.location.hash='#/settings/coinglass';setPage('settings');}}/></>}
             {page === 'positionFlow' && selectedProject && <PositionFlowPage overview={overview} series={localizedSeries} interval={interval}/>}
             {page === 'derivatives' && selectedProject && <DerivativesPage overview={overview} series={localizedSeries}/>}
             {page === 'liquidity' && selectedProject && <OnchainLiquidityPage project={selectedProject} interval={interval}/>}
-            {page === 'settings' && <><AiSettingsCard language={language} /><CapabilityPanel language={language} /><CcxtPanel language={language} /><ProviderSettings language={language} hasProject={!!selectedProject} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/><CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/><DataCoveragePanel projects={projects} language={language}/><VenueCoveragePanel projects={projects} language={language}/><SettingsPage/><Web3ConnectionStatus language={language}/></>}
+            {page === 'settings' && <SettingsHub language={language} hasProject={!!selectedProject} onManage={()=>setPage('projects')} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} panels={{
+              deepseek:<AiSettingsCard language={language}/>,
+              coinglass:<ProviderSettings language={language} hasProject={!!selectedProject} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/>,
+              'binance-web3':<Web3ConnectionStatus language={language}/>,
+              ccxt:<CcxtPanel language={language}/>,
+              collection:<CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/>,
+              coverage:<DataCoveragePanel projects={projects} language={language}/>,
+              venues:<VenueCoveragePanel projects={projects} language={language}/>,
+              health:<DataHealthCenter/>,
+              capabilities:<CapabilityPanel language={language}/>,
+            }}/>}
             {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}
             {page === 'orderflow' && selectedProject && <OrderFlowPage key={selectedProject.id} project={selectedProject} series={localizedSeries} venues={venueData} interval={interval} onInterval={setIntervalValue} language={language} selection={exchange}/>}
-            {page === 'signals' && selectedProject && <><AlertsPanel language={language} projects={projects} venues={venues}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></>}
+            {page === 'signals' && selectedProject && <div className="signals-page intelligence-page"><header className="intelligence-page-head"><h1>{language==='zh'?'信号与提醒':'Signals & alerts'}</h1></header><AlertsPanel language={language} projects={projects} venues={venues}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></div>}
             {page === 'history' && selectedProject && <EventStudyPage key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval}/>}
             </ErrorBoundary>
           </main>
@@ -527,7 +544,7 @@ function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { pr
       <div className="watchlist-head">
         <div className="watchlist-title">
           <h1>{t('Project Watchlist')}</h1>
-          <p>{zh ? '每个项目只采集你确认过的市场。价格每 15 秒刷新；缺失值显示为「—」而不是 0。' : 'Only confirmed markets are monitored. Quotes refresh every 15s; missing values render as “—” and never as zero.'}</p>
+
         </div>
         <div className="watchlist-actions">
           <div className="segmented" role="group" aria-label={zh ? '项目筛选' : 'Project filter'}>
@@ -820,7 +837,7 @@ function StructurePage({ overview, series, interval, onInterval, project, theme,
   const { t } = useUi();
   return <><PageHead eyebrow="FLAGSHIP ANALYSIS" title={`${series?.symbol ?? primary?.symbol ?? 'Market'} ${language === 'zh' ? '结构分析' : 'structure'}`} detail={language === 'zh' ? '同步的价格、成交量、持仓量与合约 CVD；在任一图上移动即可检视同一事件时间。' : 'Synchronized price, volume, open interest and futures CVD. Move across any panel to inspect the same event time.'} right={<div className="provenance"><i/><span>{mode === 'nox' ? (series?.source ?? t('Awaiting source')) : 'TradingView public widget'}</span></div>}/>
     <ChartModeSwitcher mode={mode} onChange={changeMode} language={language}/>
-    {mode === 'nox' ? <NOXMarketStructureChart overview={overview} series={series} interval={interval}/> : <TradingViewChartPanel market={primary} interval={interval} onInterval={onInterval} theme={theme} language={language}/>} 
+    {mode === 'nox' ? <NOXMarketStructureChart overview={overview} series={series} interval={interval}/> : <TradingViewChartPanel market={primary} interval={interval} onInterval={onInterval} theme={theme} language={language}/>}
     <div className="structure-depth"><OrderBookPanel project={project} exchange={exchange} language={language}/></div>
     <TimeframeAlignmentPanel project={project}/>
     <StructureEvidence overview={overview} series={series}/>
@@ -1153,8 +1170,8 @@ function TimeframeAlignmentPanel({ project }: { project: MarketProject }) {
 
 function DerivativesPage({ overview, series }: { overview: Overview | null; series: MarketSeries | null }) { return <><PageHead eyebrow="DERIVATIVES" title={`${overview?.symbol ?? 'Market'} positioning`} detail="Venue-reported OI and funding, with base units kept distinct from price-sensitive USD notional."/><KpiStrip overview={overview}/><div className="two-column"><section className="panel padded"><PanelHead title="Open interest history" meta="Base quantity"/><LineChart points={series?.oiBase ?? []} cursor={null} onCursor={() => {}} color="#c7d0d5" height={240}/></section><section className="panel padded"><PanelHead title="Funding settlement" meta="Authoritative nextFundingTime"/><div className="funding-focus"><span>Current rate</span><strong className={(overview?.fundingRate ?? 0) >= 0 ? 'positive' : 'negative'}>{overview ? signedRate(overview.fundingRate) : '—'}</strong><span>Next settlement</span><em>{countdown(overview?.nextFundingTime)}</em><small>{overview?.nextFundingTime ? new Date(overview.nextFundingTime).toLocaleString() : 'Unavailable'}</small></div><div className="method-note"><strong>Interpretation boundary</strong><p>Funding can reflect demand imbalance, but is not proof of a crowded trade or future price direction.</p></div></section></div></>; }
 
-function SettingsPage() { const timeAgo = useTimeAgo(); const [health, setHealth] = useState<{ status: string; latencyMs: number; checkedAt: number } | null>(null); const [capabilities, setCapabilities] = useState<ExchangeCapabilities[]>([]); useEffect(() => { api<typeof health>('/data-health').then(setHealth).catch(() => setHealth(null)); api<{ items: ExchangeCapabilities[] }>('/exchanges').then((value) => setCapabilities(value.items)).catch(() => setCapabilities([])); }, []); return <><PageHead eyebrow="SYSTEM" title="Data sources & methodology" detail="Connection state, provenance and quantitative definitions for project-scoped collection."/><div className="two-column"><section className="panel source-card"><PanelHead title="Market data fabric" meta="Public, unauthenticated sources"/><div className="source-status"><i className={health?.status === 'live' ? 'live' : ''}/><div><strong>{health?.status === 'live' ? 'Operational' : 'Checking'}</strong><span>{health ? `${health.latencyMs} ms Binance REST probe · ${timeAgo(health.checkedAt)}` : 'Awaiting health probe'}</span></div></div><dl><div><dt>CEX adapters</dt><dd>9 native adapters · venue-specific REST / WebSocket</dd></div><div><dt>On-chain</dt><dd>DexPaprika contract-scoped context</dd></div><div><dt>Scope</dt><dd>Selected project markets only</dd></div><div><dt>Credentials</dt><dd>None required for current sources</dd></div></dl></section><section className="panel source-card"><PanelHead title="Calculation contract" meta="Unified model"/><dl><div><dt>CVD</dt><dd>Σ aggressor-signed price × quantity</dd></div><div><dt>OI USD</dt><dd>Normalized base OI × mark price</dd></div><div><dt>Volume</dt><dd>Venue 24H quote notional</dd></div><div><dt>Freshness</dt><dd>Event time, never silent zero</dd></div></dl></section></div><section className="panel capability-panel"><PanelHead title="Exchange capability matrix" meta="Runtime source registry · unsupported fields stay unavailable"/><div className="table-wrap"><table><thead><tr>{['Exchange','Discovery','Snapshot','Ticker WS','Trades WS','History','Open interest','Funding','Order book','Liquidations'].map((item) => <th key={item}>{item}</th>)}</tr></thead><tbody>{capabilities.map((item) => <tr key={item.exchange}><td><strong>{item.label}</strong><small>{item.notes[0]}</small></td>{[item.restDiscovery,item.restSnapshot,item.websocketTicker,item.websocketTrades,item.historicalSeries,item.openInterest,item.funding,item.websocketOrderBook,item.liquidations].map((enabled, index) => <td key={index}><span className={`capability-state ${enabled ? 'enabled' : 'disabled'}`}>{enabled ? 'YES' : 'N/A'}</span></td>)}</tr>)}</tbody></table></div></section><DataHealthCenter /><section className="panel limitations"><PanelHead title="Known source limitations" meta="Visible by design"/><div><p><strong>Aggregate trades</strong> can combine fills by venue rules. Native historical CVD is currently Binance-only.</p><p><strong>DEX liquidity</strong> is not CEX order-book depth. Top-pool totals cover returned pools only.</p><p><strong>AI research context</strong> exports observed data, inferences and nulls separately; it is not an execution recommendation.</p></div></section></>; }
 
-function PageHead({ eyebrow, title, detail, right }: { eyebrow: string; title: string; detail: string; right?: React.ReactNode }) { const { t } = useUi(); return <div className="page-head"><div><span>{t(eyebrow)}</span><h1>{t(title)}</h1><p>{t(detail)}</p></div>{right}</div>; }
+
+function PageHead({ eyebrow, title, right }: { eyebrow: string; title: string; detail: string; right?: React.ReactNode }) { const { t } = useUi(); return <div className="page-head"><div><span>{t(eyebrow)}</span><h1>{t(title)}</h1></div>{right}</div>; }
 function PanelHead({ title, meta, action }: { title: string; meta?: string; action?: string }) { const { t } = useUi(); return <div className="panel-head"><div><strong>{t(title)}</strong>{meta && <span>{t(meta)}</span>}</div>{action && <button>{t(action)}</button>}</div>; }
 function Observation({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: string }) { const { t } = useUi(); return <div className={`observation ${tone}`}><div className="observation-icon">{icon}</div><div><span>{t(label)}</span><strong>{t(value)}</strong><p>{t(detail)}</p></div></div>; }

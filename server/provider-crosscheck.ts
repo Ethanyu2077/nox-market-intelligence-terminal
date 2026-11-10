@@ -36,7 +36,10 @@ export function buildProviderChecks(projectId: string, native: NativeSnapshot[],
       nativeSource: row?.source ?? null, coinGlassSource: 'coinglass',
     });
     const nativeFunding = row?.fundingRate ?? null;
-    const cgFundingValue = cgFunding.get(exchange)?.rateRaw ?? null;
+    // CoinGlass reports funding_rate as a percentage (0.005 = 0.005%), while native
+    // adapters store a decimal (0.00005). Normalise before comparing.
+    const rawFunding = cgFunding.get(exchange)?.rateRaw ?? null;
+    const cgFundingValue = rawFunding == null ? null : rawFunding / 100;
     const fundingDivergence = nativeFunding != null && cgFundingValue != null
       ? Math.abs(nativeFunding - cgFundingValue) / Math.max(Math.abs(nativeFunding), Math.abs(cgFundingValue), 1e-9) * 100 : null;
     checks.push({

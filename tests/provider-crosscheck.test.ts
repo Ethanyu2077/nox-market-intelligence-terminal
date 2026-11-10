@@ -29,3 +29,12 @@ test('missing values are never coerced to zero', () => {
   assert.ok(checks.every((check) => check.status === 'unavailable'));
   assert.ok(checks.every((check) => check.native === null && check.coinGlass === null));
 });
+
+test('CoinGlass percent funding is normalised before comparison', () => {
+  const checks = buildProviderChecks('p1', [{ exchange: 'aster', symbol: 'SIGNUSDT', oiUsd: 9000, fundingRate: 0.00005, source: 'Aster' }],
+    [{ exchange: 'Aster', oiUsd: 9017 }], [{ exchange: 'Aster', rateRaw: 0.005 }]);
+  const funding = checks.find((check) => check.field === 'fundingRate')!;
+  assert.equal(funding.coinGlass, 0.00005);
+  assert.equal(funding.status, 'agree');
+  assert.equal(funding.divergencePct, 0);
+});

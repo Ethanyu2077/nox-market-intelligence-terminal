@@ -40,3 +40,12 @@ test('overview keeps project scope, deduplicates feeds and excludes unclosed can
     assert.equal(result.benchmarks.length,2);
   }finally{globalThis.fetch=original;}
 });
+
+import { watchStatus } from '../shared/watch-overview.ts';
+test('a failed kline keeps flow/OI usable as PARTIAL instead of ERROR', () => {
+  const base = { projectId: 'p', venue: 'binance', symbol: 'X', marketType: 'perpetual', quote: 'USDT', candles: [], error: 'HTTP 502' };
+  assert.equal(watchStatus(base as never), 'UNAVAILABLE');
+  assert.equal(watchStatus({ ...base, flow: { buy: 1 } } as never), 'PARTIAL');
+  assert.equal(watchStatus({ ...base, error: null, funding: { rate: 0.0001, hours: 8, time: 1 } } as never), 'LIVE');
+  assert.equal(watchStatus({ ...base, error: null } as never), 'PARTIAL');
+});

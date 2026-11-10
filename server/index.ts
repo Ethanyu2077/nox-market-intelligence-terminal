@@ -432,7 +432,12 @@ app.get('/api/projects', (_req, res) => res.json({ items: store.getProjects(true
 // list of dashes. Short server-side TTL; partial coverage is explicit per row.
 app.get('/api/watchlist/overview', safe(async (req, res) => {
   const minutes = z.coerce.number().int().min(5).max(1440).default(60).parse(req.query.minutes ?? 60);
-  res.json(await watchOverview(store.getProjects(true), orderFlow, history, undefined, minutes));
+  const cached = await marketCache.get(`overview:${minutes}`, {
+    ttlMs: 15_000, staleMs: 10 * 60_000, timeoutMs: 20_000,
+    load: () => watchOverview(store.getProjects(true), orderFlow, history, undefined, minutes),
+  });
+  res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
+  res.json({ ...cached.value, cache: { stale: cached.stale, at: cached.at } });
 }));
 app.get('/api/watchlist/quotes', safe(async (_req, res) => res.json(await watchlistQuotes(store.getProjects(true)))));
 app.post('/api/projects/discover', safe(async (req, res) => { const body = z.object({ query: z.string().trim().min(1).max(100) }).parse(req.body); res.json(await discoverAcrossExchanges(body.query)); }));

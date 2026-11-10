@@ -30,3 +30,9 @@ export function volumeRatio(candles: WatchCandle[], index: number): number | nul
   const sorted=sample.map(p=>p.volume).sort((a,b)=>a-b); const median=(sorted[5]+sorted[6])/2;
   return median>0 && Number.isFinite(candles[index].volume) && candles[index].volume>=0 ? candles[index].volume/median : null;
 }
+
+/** Project-level status from independent metric availability; never all-or-nothing. */
+export function watchStatus(row: WatchRow): 'LIVE' | 'PARTIAL' | 'UNAVAILABLE' {
+  if (row.error) return row.flow || (row.oiSeries?.length ?? 0) > 0 ? 'PARTIAL' : 'UNAVAILABLE';
+  return row.funding ? 'LIVE' : 'PARTIAL';
+}

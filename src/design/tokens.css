@@ -1,51 +1,61 @@
 /*
  * NOX design tokens.
  *
- * One dark-first palette, one type scale, one spacing scale. Colours are split into
+ * Dashboard black-green palette, one type scale, one spacing scale. Colours split into
  * "brand/interaction" and "market semantics" so a green button never reads as an up-tick.
  */
 
 :root,
 .app-shell {
   /* Surfaces */
-  --bg: #070a0c;
-  --bg-elevated: #0a0e11;
-  --surface: #0b1013;
-  --surface-2: #10161a;
-  --surface-3: #151c21;
-  --surface-hover: #141b20;
-  --line: #1e272d;
-  --line-soft: #161d22;
-  --line-strong: #33414a;
+  --bg: #05090d;
+  --bg-elevated: #060c10;
+  --surface: #09141a;
+  --surface-2: #0d1920;
+  --surface-3: #12242a;
+  --surface-hover: #10251f;
+  --line: #1b2c35;
+  --line-soft: #12232a;
+  --line-strong: #2c454b;
 
   /* Text */
-  --text: #e9edf0;
-  --text-2: #c2cbd2;
-  --muted: #8b979f;
+  --text: #eef4f1;
+  --text-2: #c5d4cf;
+  --muted: #89969e;
   --faint: #5c686f;
 
   /* Market semantics — only for directional data */
-  --up: #2fbf71;
-  --up-soft: rgba(47, 191, 113, 0.12);
-  --down: #f2555f;
-  --down-soft: rgba(242, 85, 95, 0.12);
+  --up: #2fd47c;
+  --up-soft: rgba(47, 212, 124, 0.12);
+  --down: #ff6670;
+  --down-soft: rgba(255, 102, 112, 0.12);
   --flat: #9aa6ad;
-  --warn: #e3a83b;
+  --warn: #f1b84a;
   --warn-soft: rgba(227, 168, 59, 0.12);
   --info: #4f9cf5;
   --info-soft: rgba(79, 156, 245, 0.12);
-  --ai: #7cc4ff;
+  --ai: #66cba0;
 
-  /* Interaction accent (never used for price direction) */
-  --accent: #cfd8dd;
-  --accent-strong: #ffffff;
-  --accent-soft: rgba(207, 216, 221, 0.1);
+  /* Dashboard brand accent; market direction remains explicit via --up / --down. */
+  --accent: #2fd47c;
+  --accent-strong: #65e59f;
+  --accent-soft: rgba(47, 212, 124, 0.1);
 
   /* Back-compat aliases used by legacy page styles */
   --green: var(--up);
   --red: var(--down);
   --amber: var(--warn);
   --blue: var(--info);
+
+  /* Project comparison lines: fixed green-family identities, separate from direction. */
+  --series-1: #2fd47c;
+  --series-2: #a6dcae;
+  --series-3: #46b6a8;
+  --series-4: #c4d68b;
+  --series-5: #72cba0;
+  --series-6: #87b8aa;
+  --series-7: #a4c46d;
+  --series-8: #66d6c4;
 
   /* Type */
   --ui-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -115,9 +125,19 @@
   --info-soft: rgba(29, 95, 174, 0.09);
   --ai: #1d5fae;
 
-  --accent: #1b2329;
-  --accent-strong: #000000;
-  --accent-soft: rgba(20, 26, 31, 0.06);
+  --accent: #087747;
+  --accent-strong: #056338;
+  --accent-soft: rgba(8, 119, 71, 0.08);
+
+  --ai: #087747;
+  --series-1: #087747;
+  --series-2: #507a37;
+  --series-3: #147e76;
+  --series-4: #73782a;
+  --series-5: #25754d;
+  --series-6: #426c60;
+  --series-7: #5c7735;
+  --series-8: #19776d;
 
   color-scheme: light;
 }

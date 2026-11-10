@@ -11,3 +11,9 @@
 @media(min-width:1151px){.wo-chart svg{max-height:320px}}
 .wo-tape-row strong,.wo-tape-row b,.wo-volume-row strong,.wo-funding-row strong{font-size:11px}.wo-tape-row time{font-size:10px}.wo .wo-tape-row{min-height:36px}.wo-chart-foot{min-height:25px}.wo-ticker>button:hover{background:var(--surface-hover)}
 @media(max-width:480px){.wo-chart{overflow:hidden}.wo-chart svg{width:122%;max-width:none;padding-right:0}.wo-chart svg text{font-size:16px}.wo-chart .wo-end-label{display:none}.wo-legend>button{font-size:11px}.wo-legend b{font-size:10px}}
+/* Match the trading Dashboard's black-green interaction language. */
+.wo-tabs button[aria-pressed=true]{color:var(--accent);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 30%,var(--line))}
+.wo-actions>button:last-child{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line));background:var(--accent-soft)}
+.wo-legend>button[aria-pressed=true]{background:var(--surface-2)}
+.wo-volume-meter{background:var(--accent);opacity:.075}
+.app-shell.shell nav .nav-item.active{background:var(--accent-soft);color:var(--accent)}

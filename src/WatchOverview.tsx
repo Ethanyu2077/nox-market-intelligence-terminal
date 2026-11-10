@@ -3,7 +3,7 @@ import type { MarketProject } from '../shared/types';
 import { performance, windowPoints, volumeRatio, BUCKET, type WatchOverview as OverviewData, type WatchRow } from '../shared/watch-overview';
 import { api } from './api';
 import './watch-overview.css';
-const COLORS=['#64c7b5','#8eabeb','#d5af72','#c192ca','#82b9d6','#b7bd78','#d59187','#96a6c7'];
+const COLORS=Array.from({length:8},(_,i)=>`var(--series-${i+1})`);
 const pct=(v:number|null)=>v===null?'—':`${v>0?'+':''}${v.toFixed(2)}%`;
 const money=(v:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:2}).format(v);
 export function WatchOverview({projects,language,onOpen,onManage}:{projects:MarketProject[];language:'zh'|'en';onOpen:(id:string)=>void;onManage:()=>void}){

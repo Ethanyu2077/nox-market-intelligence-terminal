@@ -17,3 +17,25 @@
 .wo-legend>button[aria-pressed=true]{background:var(--surface-2)}
 .wo-volume-meter{background:var(--accent);opacity:.075}
 .app-shell.shell nav .nav-item.active{background:var(--accent-soft);color:var(--accent)}
+
+.cf-panel { margin-top: 10px; }
+.cf-legend { font: 10px var(--mono); color: var(--faint); }
+.cf-legend b { font-size: 12px; }
+.cf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding: 10px 14px; }
+.cf-node { position: relative; border: 1px solid var(--line); border-radius: 4px; padding: 10px; background: linear-gradient(160deg, color-mix(in srgb, var(--surface-2) 92%, transparent), var(--surface)); overflow: hidden; }
+.cf-node.cf-missing { opacity: .6; }
+.cf-head { display: flex; align-items: center; gap: 6px; font: 11px var(--mono); }
+.cf-head strong { flex: 1; color: var(--text); }
+.cf-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+.cf-net { font: 11px var(--mono); }
+.cf-bar { display: flex; height: 4px; margin: 8px 0 6px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.cf-sell-bar { background: var(--down); }
+.cf-buy-bar { background: var(--up); }
+.cf-meta { display: flex; justify-content: space-between; font: 10px var(--mono); }
+.cf-foot { display: flex; justify-content: space-between; margin-top: 6px; font: 9px var(--mono); color: var(--faint); }
+.cf-unavailable { margin: 8px 0 0; font: 10px var(--mono); color: var(--warn); }
+.cf-stream { position: absolute; left: 0; bottom: 0; height: 2px; opacity: .55; background: currentColor; animation: cf-stream 2.4s linear infinite; }
+.cf-buy { color: var(--up); }
+.cf-sell { color: var(--down); }
+@keyframes cf-stream { 0% { transform: translateX(-30%); } 100% { transform: translateX(100%); } }
+.cf-note { padding: 0 14px 12px; font: 9.5px var(--mono); color: var(--faint); }

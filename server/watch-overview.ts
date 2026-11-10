@@ -38,14 +38,57 @@ async function candles(market:ProjectMarket,projectId:string,end:number):Promise
   }
   return {...await entry.promise,projectId};
 }
-export async function watchOverview(projects:MarketProject[]):Promise<WatchOverview>{
+import type { OrderFlowService } from './orderflow-service.ts';
+import type { HistoryStore } from './history-store.ts';
+import type { WatchFlow } from '../shared/watch-overview.ts';
+
+function flowOf(service: OrderFlowService | undefined, project: MarketProject, end: number): WatchFlow | null {
+  if (!service) return null;
+  try {
+    const snapshot = service.snapshot(project, '5m', 'window', end);
+    const perp = snapshot.aggregates.perpetual, spot = snapshot.aggregates.spot;
+    const sum = (rows: typeof perp.buckets, key: 'buy' | 'sell' | 'delta') => {
+      const values = rows.map((row) => row[key]).filter((value): value is number => value != null && Number.isFinite(value));
+      return values.length ? values.reduce((total, value) => total + value, 0) : null;
+    };
+    const perpBuckets = perp.buckets.map((row) => ({ time: row.time, buy: row.buy, sell: row.sell, delta: row.delta, cvd: row.cvd }));
+    const lastCvd = [...perp.buckets].reverse().find((row) => row.cvd != null)?.cvd ?? null;
+    return {
+      buy: sum(perp.buckets, 'buy'), sell: sum(perp.buckets, 'sell'), delta: sum(perp.buckets, 'delta'),
+      cvd: lastCvd, spotDelta: sum(spot.buckets, 'delta'), perpDelta: sum(perp.buckets, 'delta'),
+      buckets: perpBuckets, covered: perp.covered, requested: perp.requested, source: 'orderflow',
+    };
+  } catch { return null; }
+}
+
+async function oiSeriesOf(store: HistoryStore | undefined, project: MarketProject, end: number): Promise<Array<{ time: number; oiUsd: number }> | undefined> {
+  if (!store) return undefined;
+  const primary = project.markets.find((market) => market.id === project.primaryMarketId) ?? project.markets[0];
+  if (!primary) return undefined;
+  try {
+    const events = await store.read(project.id, 'snapshot', end, 2_000);
+    const buckets = new Map<number, number>();
+    for (const event of events) {
+      const payload = event.payload as { exchange?: string; symbol?: string; oiUsd?: number | null; eventTime?: number };
+      if (payload.exchange !== primary.exchange || payload.symbol !== primary.symbol) continue;
+      if (payload.oiUsd == null || !Number.isFinite(payload.oiUsd)) continue;
+      const time = Math.floor((event.eventTime ?? payload.eventTime ?? 0) / 300_000) * 300_000;
+      if (time > 0) buckets.set(time, payload.oiUsd);
+    }
+    const series = [...buckets.entries()].map(([time, oiUsd]) => ({ time, oiUsd })).sort((a, b) => a.time - b.time);
+    return series.length >= 2 ? series.slice(-288) : undefined;
+  } catch { return undefined; }
+}
+
+export async function watchOverview(projects:MarketProject[], orderFlow?: OrderFlowService, history?: HistoryStore):Promise<WatchOverview>{
   const asOf=Date.now(),end=Math.floor(asOf/BUCKET)*BUCKET;
   const active=projects.filter(p=>!p.archived && p.monitoring.collectionMode!=='paused');
   const rows:WatchRow[]=[];
   let cursor=0;
   await Promise.all(Array.from({length:Math.min(3,active.length)},async()=>{
     while(cursor<active.length){const p=active[cursor++];const market=p.markets.find(m=>m.id===p.primaryMarketId)??p.markets[0];
-      rows.push(market?await candles(market,p.id,end):{projectId:p.id,venue:'',symbol:'',marketType:'',quote:'',candles:[],error:'No primary market'});
+      const row = market ? await candles(market, p.id, end) : {projectId:p.id,venue:'',symbol:'',marketType:'',quote:'',candles:[],error:'No primary market'};
+      rows.push(market ? { ...row, flow: flowOf(orderFlow, p, end), oiSeries: await oiSeriesOf(history, p, end) } : row);
     }
   }));
   const benchmarks=active.length?await Promise.all(['BTCUSDT','ETHUSDT'].map(symbol=>candles({id:symbol,exchange:'binance',marketType:'perpetual',symbol,base:symbol.slice(0,-4),quote:'USDT',status:'active'} as ProjectMarket,symbol,end))):[];

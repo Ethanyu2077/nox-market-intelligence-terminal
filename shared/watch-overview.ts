@@ -1,6 +1,16 @@
 export const BUCKET = 300_000;
 export type WatchCandle = { time: number; close: number; volume: number };
-export type WatchRow = { projectId: string; venue: string; symbol: string; marketType: string; quote: string; candles: WatchCandle[]; error: string | null; funding?: { rate: number; hours: number; time: number } | null };
+export type WatchFlowBucket = { time: number; buy: number | null; sell: number | null; delta: number | null; cvd: number | null };
+export type WatchFlow = {
+  buy: number | null; sell: number | null; delta: number | null; cvd: number | null;
+  spotDelta: number | null; perpDelta: number | null;
+  buckets: WatchFlowBucket[];
+  covered: number; requested: number;
+  source: 'orderflow';
+};
+export type WatchOiPoint = { time: number; oiUsd: number };
+export type WatchRow = { projectId: string; venue: string; symbol: string; marketType: string; quote: string; candles: WatchCandle[]; error: string | null; funding?: { rate: number; hours: number; time: number } | null;
+  flow?: WatchFlow | null; oiSeries?: WatchOiPoint[]; }
 export type WatchOverview = { asOf: number; end: number; rows: WatchRow[]; benchmarks: WatchRow[] };
 export function windowPoints(candles: WatchCandle[], end: number, minutes: number): WatchCandle[] | null {
   const start = end - minutes * 60_000;

@@ -92,3 +92,8 @@
 .wo-end-label circle { filter: drop-shadow(0 0 6px currentColor); }
 .wo-cursor { stroke: var(--accent); opacity: .7; }
 @media (prefers-reduced-motion: reduce) { .wo-flow-line { animation: none; opacity: .5; } }
+
+.fc-metrics { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.fc-metrics span { font: 9px var(--mono); border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; color: var(--faint); }
+.fc-metrics .ok { color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, var(--line)); }
+.fc-metrics .off { color: var(--warn); }

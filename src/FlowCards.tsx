@@ -1,4 +1,5 @@
 import type { WatchRow } from '../shared/watch-overview';
+import { buildWatchMetrics } from '../shared/watch-overview';
 
 const money = (value: number | null) => value == null ? '—' : new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(value);
 const pct = (value: number | null) => value == null ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
@@ -27,6 +28,7 @@ export function FlowCards({ rows, names, end, language }: { rows: WatchRow[]; na
                 <div><dt>CVD</dt><dd>{money(flow?.cvd ?? null)}</dd></div>
               </dl>
               <footer className={flow ? '' : 'muted'}>{flow ? `${flow.covered}/${flow.requested} ${zh ? '覆盖' : 'covered'}` : (zh ? '主动成交不可用' : 'Aggressor flow unavailable')}</footer>
+              <div className="fc-metrics">{Object.entries(buildWatchMetrics(row)).map(([name, metric]) => <span key={name} className={metric.state === 'LIVE' ? 'ok' : 'off'} title={`${name} · ${metric.state}${metric.at ? ` · ${new Date(metric.at).toLocaleTimeString()}` : ''}${metric.error ? ` · ${metric.error}` : ''}${metric.source ? ` · ${metric.source}` : ''}`}>{name}</span>)}</div>
             </article>
           );
         })}

@@ -53,6 +53,7 @@ async function candles(market:ProjectMarket,projectId:string,end:number,klines:{
 import type { OrderFlowService } from './orderflow-service.ts';
 import type { HistoryStore } from './history-store.ts';
 import type { WatchFlow } from '../shared/watch-overview.ts';
+import { buildWatchMetrics } from '../shared/watch-overview.ts';
 import { binanceKlineStream } from './binance-kline-stream.ts';
 import { binanceGovernor } from './binance-governor.ts';
 
@@ -124,7 +125,12 @@ export async function watchOverview(projects:MarketProject[], orderFlow?: OrderF
   await Promise.all(Array.from({length:Math.min(3,active.length)},async()=>{
     while(cursor<active.length){const p=active[cursor++];const market=p.markets.find(m=>m.id===p.primaryMarketId)??p.markets[0];
       const row = market ? await candles(market, p.id, end, klines) : {projectId:p.id,venue:'',symbol:'',marketType:'',quote:'',candles:[],error:'No primary market'};
-      rows.push(market ? { ...row, flow: flowOf(orderFlow, p, end, start), oiSeries: await oiSeriesOf(history, p, end) } : row);
+      if (market) {
+        row.flow = flowOf(orderFlow, p, end, start);
+        row.oiSeries = await oiSeriesOf(history, p, end);
+        row.metrics = buildWatchMetrics(row);
+      }
+      rows.push(row);
     }
   }));
   const benchmarks=active.length?await Promise.all(['BTCUSDT','ETHUSDT'].map(symbol=>candles({id:symbol,exchange:'binance',marketType:'perpetual',symbol,base:symbol.slice(0,-4),quote:'USDT',status:'active'} as ProjectMarket,symbol,end,klines))):[];

@@ -49,3 +49,19 @@ test('a failed kline keeps flow/OI usable as PARTIAL instead of ERROR', () => {
   assert.equal(watchStatus({ ...base, error: null, funding: { rate: 0.0001, hours: 8, time: 1 } } as never), 'LIVE');
   assert.equal(watchStatus({ ...base, error: null } as never), 'PARTIAL');
 });
+
+import { buildWatchMetrics } from '../shared/watch-overview.ts';
+test('metric detail separates price from flow, OI and funding', () => {
+  const row = { projectId: 'p', venue: 'binance', symbol: 'X', marketType: 'perpetual', quote: 'USDT', candles: [{ time: 1, close: 1, volume: 1 }], funding: { rate: 0.0001, hours: 8, time: 2 }, oiSeries: [{ time: 1, oiUsd: 1 }, { time: 2, oiUsd: 2 }], flow: { buy: 10, sell: 8, delta: 2, cvd: 2, spotDelta: 0, perpDelta: 2, buckets: [{ time: 3, buy: 10, sell: 8, delta: 2, cvd: 2 }], venues: [], covered: 1, requested: 1, source: 'orderflow' }, error: null };
+  const metrics = buildWatchMetrics(row as never);
+  assert.equal(metrics.price.state, 'LIVE');
+  assert.equal(metrics.oi.state, 'LIVE');
+  assert.equal(metrics.cvd.state, 'LIVE');
+  const partial = buildWatchMetrics({ ...row, candles: [], error: 'HTTP 502' } as never);
+  assert.equal(partial.kline.state, 'UNAVAILABLE');
+  assert.equal(partial.perp.state, 'LIVE');
+  assert.equal(partial.spot.state, 'LIVE');
+  const noFlow = buildWatchMetrics({ ...row, flow: null } as never);
+  assert.equal(noFlow.perp.state, 'UNAVAILABLE');
+  assert.equal(noFlow.cvd.state, 'UNAVAILABLE');
+});

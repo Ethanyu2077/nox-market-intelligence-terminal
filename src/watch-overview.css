@@ -73,3 +73,9 @@
 .lfe-row.warn strong { color: var(--warn); }
 .lfe-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lfe-row time { color: var(--faint); }
+
+.wo-line { animation: wo-line-in .55s ease-out; transition: opacity .3s ease; }
+@keyframes wo-line-in { from { opacity: .25; } to { opacity: 1; } }
+.wo-end-label circle { animation: wo-pulse 2.4s ease-in-out infinite; }
+@keyframes wo-pulse { 0%,100% { opacity: .65; r: 3; } 50% { opacity: 1; r: 4.2; } }
+@media (prefers-reduced-motion: reduce) { .wo-line, .wo-end-label circle { animation: none; } }

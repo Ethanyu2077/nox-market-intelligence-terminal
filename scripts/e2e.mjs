@@ -88,6 +88,24 @@ try {
     check(`navigate: ${label}`, text > 40 && pageErrors.length === before, text <= 40 ? `empty page (text=${text})` : pageErrors.slice(before).join('; '));
   }
 
+  // Watchlist V2 regression: the panel must mount and never fall back to the render-error
+  // boundary. Flow/Cards/Events only exist once the overview payload has rows.
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent.trim() === 'Project Watchlist' && !item.disabled);
+    button?.click();
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  check('watchlist: main panel mounts', Boolean(await page.$('.wo-main-panel')));
+  check('watchlist: no render-failure boundary', !/渲染失败|render failed|Cannot read properties of null/i.test(await page.evaluate(() => document.body.innerText)));
+  const hasRows = await page.evaluate(() => document.querySelectorAll('.wo-main-panel button').length > 1);
+  if (hasRows) {
+    check('watchlist: capital flow panel', Boolean(await page.$('.cf-panel')));
+    check('watchlist: flow cards panel', Boolean(await page.$('.fc-panel')));
+    check('watchlist: live events panel', Boolean(await page.$('.lfe-panel')));
+    check('watchlist: indicator control', Boolean(await page.$('.wo-main-panel select')));
+  }
+  await page.screenshot({ path: path.join(outDir, 'watchlist-v2.png'), fullPage: false });
+
   // Command palette. Control works on both platforms (Linux CI has no Meta mapping in
   // headless Chromium), with a click fallback if the shortcut is swallowed.
   const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';

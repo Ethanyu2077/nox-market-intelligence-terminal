@@ -56,7 +56,7 @@ import type { WatchFlow } from '../shared/watch-overview.ts';
 import { binanceKlineStream } from './binance-kline-stream.ts';
 import { binanceGovernor } from './binance-governor.ts';
 
-function flowOf(service: OrderFlowService | undefined, project: MarketProject, end: number): WatchFlow | null {
+function flowOf(service: OrderFlowService | undefined, project: MarketProject, end: number, start: number): WatchFlow | null {
   if (!service) return null;
   try {
     const snapshot = service.snapshot(project, '5m', 'window', end);
@@ -70,7 +70,7 @@ function flowOf(service: OrderFlowService | undefined, project: MarketProject, e
     const perpVenues = snapshot.venues.filter((venue) => venue.market.marketType === 'perpetual');
     const spotVenues = snapshot.venues.filter((venue) => venue.market.marketType !== 'perpetual');
     const perpBuckets = [...snapshot.venues.filter((venue) => venue.market.marketType === 'perpetual')
-      .flatMap((venue) => venue.buckets).reduce((map, row) => {
+      .flatMap((venue) => venue.buckets).filter((row) => row.time >= start && row.time <= end).reduce((map, row) => {
         if (row.buy == null && row.sell == null && row.delta == null) return map;
         const current = map.get(row.time) ?? { time: row.time, buy: 0, sell: 0, delta: 0 };
         current.buy += row.buy ?? 0; current.sell += row.sell ?? 0; current.delta += row.delta ?? 0;
@@ -81,7 +81,8 @@ function flowOf(service: OrderFlowService | undefined, project: MarketProject, e
     const perpBucketsWithCvd = perpBuckets.map((row) => ({ ...row, cvd: (runningCvd += row.delta) }));
     return {
       buy: sum(perpBuckets, 'buy'), sell: sum(perpBuckets, 'sell'), delta: sum(perpBuckets, 'delta'),
-      cvd: perpBucketsWithCvd.at(-1)?.cvd ?? null, spotDelta: sum(spotVenues.flatMap((venue) => venue.buckets), 'delta'), perpDelta: sum(perpVenues.flatMap((venue) => venue.buckets), 'delta'),
+      cvd: perpBucketsWithCvd.at(-1)?.cvd ?? null, spotDelta: sum(spotVenues.flatMap((venue) => venue.buckets).filter((row) => row.time >= start && row.time <= end), 'delta'),
+      perpDelta: sum(perpVenues.flatMap((venue) => venue.buckets).filter((row) => row.time >= start && row.time <= end), 'delta'),
       buckets: perpBucketsWithCvd,
       venues: snapshot.venues.map((venue) => {
         const sum = (key: 'buy' | 'sell' | 'delta') => {
@@ -114,15 +115,16 @@ async function oiSeriesOf(store: HistoryStore | undefined, project: MarketProjec
   } catch { return undefined; }
 }
 
-export async function watchOverview(projects:MarketProject[], orderFlow?: OrderFlowService, history?: HistoryStore, klines:{get:(symbol:string,interval:string,limit:number,end:number)=>Promise<Array<{time:number;close:number;volume:number}>>} = binanceKlineStream):Promise<WatchOverview>{
+export async function watchOverview(projects:MarketProject[], orderFlow?: OrderFlowService, history?: HistoryStore, klines:{get:(symbol:string,interval:string,limit:number,end:number)=>Promise<Array<{time:number;close:number;volume:number}>>} = binanceKlineStream, minutes = 60):Promise<WatchOverview>{
   const asOf=Date.now(),end=Math.floor(asOf/BUCKET)*BUCKET;
+  const start=end-Math.max(5,Math.min(1440,Math.round(minutes)))*60_000;
   const active=projects.filter(p=>!p.archived && p.monitoring.collectionMode!=='paused');
   const rows:WatchRow[]=[];
   let cursor=0;
   await Promise.all(Array.from({length:Math.min(3,active.length)},async()=>{
     while(cursor<active.length){const p=active[cursor++];const market=p.markets.find(m=>m.id===p.primaryMarketId)??p.markets[0];
       const row = market ? await candles(market, p.id, end, klines) : {projectId:p.id,venue:'',symbol:'',marketType:'',quote:'',candles:[],error:'No primary market'};
-      rows.push(market ? { ...row, flow: flowOf(orderFlow, p, end), oiSeries: await oiSeriesOf(history, p, end) } : row);
+      rows.push(market ? { ...row, flow: flowOf(orderFlow, p, end, start), oiSeries: await oiSeriesOf(history, p, end) } : row);
     }
   }));
   const benchmarks=active.length?await Promise.all(['BTCUSDT','ETHUSDT'].map(symbol=>candles({id:symbol,exchange:'binance',marketType:'perpetual',symbol,base:symbol.slice(0,-4),quote:'USDT',status:'active'} as ProjectMarket,symbol,end,klines))):[];

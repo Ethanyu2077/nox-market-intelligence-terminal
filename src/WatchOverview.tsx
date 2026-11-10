@@ -22,13 +22,13 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   useEffect(()=>{
     let alive=true,controller:AbortController|null=null;
     async function load(){if(document.hidden)return;controller=new AbortController();setLoading(true);
-      try {const value=await api<OverviewData>('/watchlist/overview',{signal:controller.signal});if(alive){setData(value);setError('');}}
+      try {const value=await api<OverviewData>(`/watchlist/overview?minutes=${minutes}`,{signal:controller.signal});if(alive){setData(value);setError('');}}
       catch(e){if(alive&&!(e instanceof DOMException&&e.name==='AbortError'))setError(e instanceof Error?e.message:String(e));}
       finally{if(alive)setLoading(false);}
     }
     void load();const timer=window.setInterval(()=>void load(),60_000);document.addEventListener('visibilitychange',load);
     return()=>{alive=false;controller?.abort();clearInterval(timer);document.removeEventListener('visibilitychange',load);};
-  },[signature,refresh]);
+  },[signature,refresh,minutes]);
   const names=new Map(projects.map(p=>[p.id,p.tokenSymbol||p.name]));
   const rows=(data?.rows??[]).filter(r=>names.has(r.projectId));
   const reference=data?.benchmarks?.find(r=>r.projectId===benchmark);

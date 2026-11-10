@@ -82,8 +82,13 @@
 
 /* Chart-dominant layout: narrower leader rail, taller plot. */
 .wo-strength { grid-template-columns: minmax(0, 1fr) minmax(210px, 240px) !important; }
-.wo-chart svg { min-height: 340px !important; max-height: 560px !important; height: auto !important; aspect-ratio: 820 / 370 !important; }
+.wo-chart svg { min-height: 360px !important; max-height: 640px !important; height: auto !important; aspect-ratio: 820 / 370 !important; }
 @media (max-width: 850px) { .wo-strength { grid-template-columns: 1fr !important; } }
 .wo-flow-line { stroke-dasharray: 2 130; opacity: .95; animation: wo-flow 3.2s linear infinite;  }
-@keyframes wo-flow { to { stroke-dashoffset: -132; } }
+@keyframes wo-flow { to { stroke-dashoffset: -100; } }
+.wo-chart { background: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%); }
+.wo-chart svg { filter: saturate(1.25) contrast(1.05); }
+.wo-end-label text { filter: drop-shadow(0 0 6px currentColor); font-weight: 600; }
+.wo-end-label circle { filter: drop-shadow(0 0 6px currentColor); }
+.wo-cursor { stroke: var(--accent); opacity: .7; }
 @media (prefers-reduced-motion: reduce) { .wo-flow-line { animation: none; opacity: .5; } }

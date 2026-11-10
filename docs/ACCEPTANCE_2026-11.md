@@ -260,3 +260,16 @@
 | L2 Health | TESTED | 必须有新鲜、verified、integrity=ok 的 feed；否则 UNAVAILABLE/NOT VERIFIED |
 | Evidence Manifest / Frozen Dataset / Repro | **NOT IMPLEMENTED** | 未开发 |
 | 生产迁移 apply | **NOT VERIFIED** | 未授权执行 |
+
+## 2026-11 Binance 418 / L2 / Quality 轮
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| Binance 418 根因 | **VERIFIED WITH REAL DATA（只读）** | snapshot/series breaker open，depth half-open，9 次失败，premiumIndex/aggTrades/depth 均 418 |
+| 统一 Binance Governor | TESTED | family 间距、并发 3、in-flight 去重、短缓存、418/429 Retry-After、全局冷却、不轮换 IP |
+| L2 冷却退避 | TESTED（逻辑） | 418 时按 Retry-After 延后 resync，不再每秒重试 |
+| Binance 冷却可视化 | IMPLEMENTED | Data Health 显示 COOLDOWN/OK + 原因 |
+| Research Quality Gate | TESTED | COMPLETE/PARTIAL/INSUFFICIENT/NOT VERIFIED；截断/覆盖不足/样本不足时拒绝完整结论 |
+| L2 历史 110 gaps / 566 resyncs | **NOT VERIFIED** | 审计时 `activeFeeds=0`；计数来自早前页面会话，缺少日志无法归因 |
+| 生产恢复（418 解除） | **NOT VERIFIED** | IP 级封禁需等待；未部署新代码，未重启 |
+| 30 分钟 soak / 断网重连 | **NOT VERIFIED** | 未执行 |

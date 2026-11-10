@@ -89,7 +89,7 @@ export async function orderBookSnapshot(exchange: string, symbol: string, limit 
     try {
       const url = `${ENDPOINTS[exchange]}/fapi/v1/depth?symbol=${encodeURIComponent(symbol.toUpperCase())}&limit=${depthLimit}`;
       let payload: unknown;
-      if (exchange === 'binance') payload = await binanceGovernor.json(url);
+      if (exchange === 'binance' && transport === fetch) payload = await binanceGovernor.json(url);
       else {
         const response = await transport(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
         if (!response.ok) throw new Error(`${exchange} depth HTTP ${response.status}`);

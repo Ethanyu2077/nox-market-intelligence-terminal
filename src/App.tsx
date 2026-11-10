@@ -713,14 +713,18 @@ function ProjectEditor({ project, onClose, onSaved }: { project: MarketProject |
     event.preventDefault(); setBusy(true); setError(''); setConfirmed(false);
     try {
       const result = await api<ProjectDiscoveryResult>('/projects/discover', { method: 'POST', body: JSON.stringify({ query }) });
-      setDiscovery(result); setName(result.identity.name ?? result.identity.symbol); const defaults = result.markets.filter((market) => market.marketType === 'perpetual' && market.quote === 'USDT').slice(0, 1).map((market) => market.id); setSelectedIds(defaults); setPrimaryId(defaults[0] ?? '');
+      setDiscovery(result); setName(result.identity.name ?? result.identity.symbol);
+      const eligible = result.markets.filter((market) => market.marketType === 'perpetual' && market.quote === 'USDT');
+      const preferred = eligible.find((market) => market.exchange === 'binance') ?? eligible[0];
+      const defaults = preferred ? [preferred.id] : [];
+      setSelectedIds(defaults); setPrimaryId(preferred?.id ?? '');
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Market discovery failed'); }
     finally { setBusy(false); }
   };
   const toggleMarket = (market: ProjectMarket) => {
     const selected = selectedIds.includes(market.id); const next = selected ? selectedIds.filter((id) => id !== market.id) : [...selectedIds, market.id]; setSelectedIds(next);
     if (selected && primaryId === market.id) setPrimaryId('');
-    if (!selected && market.marketType === 'perpetual' && !primaryId) setPrimaryId(market.id);
+    if (!selected && market.marketType === 'perpetual' && market.quote === 'USDT' && (!primaryId || !selectedIds.includes(primaryId))) setPrimaryId(market.exchange === 'binance' ? market.id : primaryId || market.id);
   };
   const save = async () => {
     if (!discovery || !confirmed) { setError(language === 'zh' ? '请先确认代币身份。' : 'Confirm the token identity before saving.'); return; }

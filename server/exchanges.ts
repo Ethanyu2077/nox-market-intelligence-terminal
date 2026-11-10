@@ -218,7 +218,9 @@ export async function discoverAcrossExchanges(rawQuery: string): Promise<Project
     if (result.status === 'rejected') { warnings.push(`One exchange catalog was unavailable: ${result.reason instanceof Error ? result.reason.message : 'unknown error'}.`); continue; }
     markets.push(...result.value.rows.filter((row) => row.base.toUpperCase() === identity.symbol).map(market));
   }
-  markets.sort((a, b) => a.exchange.localeCompare(b.exchange) || (a.marketType === b.marketType ? a.quote.localeCompare(b.quote) : a.marketType === 'perpetual' ? -1 : 1));
+  // Binance is the default primary/history source; keep other venues after it.
+  const priority = (exchange: string) => exchange === 'binance' ? 0 : exchange === 'bybit' ? 1 : exchange === 'okx' ? 2 : 3;
+  markets.sort((a, b) => priority(a.exchange) - priority(b.exchange) || a.exchange.localeCompare(b.exchange) || (a.marketType === b.marketType ? a.quote.localeCompare(b.quote) : a.marketType === 'perpetual' ? -1 : 1));
   if (!markets.length) warnings.push(`No supported market matched ${identity.symbol} across the enabled exchanges.`);
   if(koreanBaseSymbol(rawQuery)&&!markets.some(m=>m.quote==='KRW'))warnings.push(`No KRW spot market for ${identity.symbol} was returned by Upbit or Bithumb.`);
   warnings.push(identity.contract ? 'Contract identity is resolved with DexPaprika cross-chain search (DexScreener fallback); confirm network and centralized-exchange listings before saving.' : 'Symbol matches can represent unrelated tokens; confirm each venue and pair before saving.');

@@ -79,3 +79,11 @@
 .wo-end-label circle { animation: wo-pulse 2.4s ease-in-out infinite; }
 @keyframes wo-pulse { 0%,100% { opacity: .65; r: 3; } 50% { opacity: 1; r: 4.2; } }
 @media (prefers-reduced-motion: reduce) { .wo-line, .wo-end-label circle { animation: none; } }
+
+/* Chart-dominant layout: narrower leader rail, taller plot. */
+.wo-strength { grid-template-columns: minmax(0, 1fr) minmax(210px, 240px) !important; }
+.wo-chart svg { min-height: 340px !important; max-height: 560px !important; height: auto !important; aspect-ratio: 820 / 370 !important; }
+@media (max-width: 850px) { .wo-strength { grid-template-columns: 1fr !important; } }
+.wo-flow-line { stroke-dasharray: 2 130; opacity: .95; animation: wo-flow 3.2s linear infinite;  }
+@keyframes wo-flow { to { stroke-dashoffset: -132; } }
+@media (prefers-reduced-motion: reduce) { .wo-flow-line { animation: none; opacity: .5; } }

@@ -7,7 +7,7 @@ import type { CapabilityRegistry } from '../shared/capabilities';
  * operator view of "what can this deployment actually read right now", including live
  * breaker coverage, so nobody has to infer support from a blank panel.
  */
-export function CapabilityPanel({ language }: { language: 'en' | 'zh' }) {
+export function CapabilityPanel({ language, venue }: { venue?: string; language: 'en' | 'zh' }) {
   const zh = language === 'zh';
   const [registry, setRegistry] = useState<CapabilityRegistry | null>(null);
   const [error, setError] = useState('');
@@ -27,7 +27,7 @@ export function CapabilityPanel({ language }: { language: 'en' | 'zh' }) {
 
   useEffect(() => { void load(); }, [load]);
 
-  const venues = [...new Set((registry?.rows ?? []).map((row) => row.venue))];
+  const venues = [...new Set((registry?.rows ?? []).filter(row=>!venue||row.venue===venue).map((row) => row.venue))];
 
   return (
     <section className="ops-panel capability-panel">

@@ -77,11 +77,13 @@ export function createBinanceGovernor(deps: { fetchImpl?: typeof fetch; now?: ()
         stats.requests += 1;
         const response = await fetchImpl(url, { signal: AbortSignal.timeout(9_000), headers: { 'User-Agent': 'NOX-Market-Intelligence/0.2' } });
         stats.lastStatus = response.status;
-        if (response.status === 418 || response.status === 429) {
-          const delay = retryAfterMs(response.headers, 60_000 * 2 ** Math.min(banCount, 4));
+        if (response.status === 418 || response.status === 429 || response.status === 403 || response.status === 451) {
+          // 403/451 are usually geo/IP blocks: retrying cannot fix them, so stop for longer.
+          const blocked = response.status === 403 || response.status === 451;
+          const delay = retryAfterMs(response.headers, blocked ? 15 * 60_000 : 60_000 * 2 ** Math.min(banCount, 4));
           banCount += 1;
           bannedUntil = now() + delay;
-          banReason = `Binance ${response.status}: ${family}`;
+          banReason = `Binance ${response.status}${blocked ? ' (blocked)' : ''}: ${family}`;
           stats.cooldowns += 1; stats.failures += 1; stats.lastError = banReason;
           throw new BinanceCooldownError(delay, banReason);
         }

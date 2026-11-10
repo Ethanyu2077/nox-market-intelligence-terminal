@@ -59,3 +59,14 @@ test('cache suppresses repeated reads within its window', async () => {
   await governor.json('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT', { cacheMs: 1_000 });
   assert.equal(calls, 2);
 });
+
+test('403 is treated as a long block and stops further requests', async () => {
+  const now = 4_000_000; let calls = 0;
+  const governor = createBinanceGovernor({ now: () => now, fetchImpl: async () => { calls += 1; return rate(403); } });
+  await assert.rejects(() => governor.json('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT'));
+  const status = governor.status();
+  assert.ok(status.bannedUntil && status.bannedUntil - now >= 15 * 60_000 - 1);
+  assert.match(status.banReason ?? '', /403/);
+  await assert.rejects(() => governor.json('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT'));
+  assert.equal(calls, 1, 'no retry during a 403 block');
+});

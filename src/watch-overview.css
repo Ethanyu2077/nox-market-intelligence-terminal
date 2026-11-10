@@ -39,3 +39,19 @@
 .cf-sell { color: var(--down); }
 @keyframes cf-stream { 0% { transform: translateX(-30%); } 100% { transform: translateX(100%); } }
 .cf-note { padding: 0 14px 12px; font: 9.5px var(--mono); color: var(--faint); }
+
+.wo-main-panel.wo-fullscreen { position: fixed; inset: 12px; z-index: 60; overflow: auto; background: var(--bg); border: 1px solid var(--line); }
+.fc-panel { margin-top: 10px; }
+.fc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; padding: 10px 14px; }
+.fc-card { border: 1px solid var(--line); border-radius: 4px; background: var(--surface); padding: 10px; }
+.fc-card header { display: flex; justify-content: space-between; align-items: baseline; }
+.fc-card header strong { font: 12px var(--mono); }
+.fc-card header span { font: 9px var(--mono); color: var(--faint); }
+.fc-card dl { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin: 8px 0; }
+.fc-card dl div { display: flex; justify-content: space-between; font: 10px var(--mono); }
+.fc-card dt { color: var(--faint); }
+.fc-card dd { margin: 0; }
+.fc-card .up { color: var(--up); }
+.fc-card .down { color: var(--down); }
+.fc-card footer { font: 9px var(--mono); color: var(--faint); }
+.fc-card footer.muted { color: var(--warn); }

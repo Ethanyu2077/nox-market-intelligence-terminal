@@ -57,6 +57,7 @@ import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
 import { buildProviderChecks } from './provider-crosscheck.ts';
+import { validateContractIdentity } from './web3-contract.ts';
 import { assessResearchQuality } from './research-quality.ts';
 import { binanceGovernor } from './binance-governor.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
@@ -471,8 +472,20 @@ app.get('/api/projects/:id/research-context', safe(async (req, res) => {
     ],
   });
 }));
-app.post('/api/projects', safe(async (req, res) => { const project = await store.addProject(projectBodySchema.parse(req.body)); res.status(201).json(project); }));
-app.patch('/api/projects/:id', safe(async (req, res) => { const update = projectBodySchema.partial().extend({ archived: z.boolean().optional() }).parse(req.body); res.json(await store.updateProject(String(req.params.id), update)); }));
+app.post('/api/projects', safe(async (req, res) => {
+  const body = projectBodySchema.parse(req.body);
+  const identity = validateContractIdentity(body.contractAddress, body.identityNetwork);
+  if (!identity.ok) { res.status(400).json({ error: { code: 'INVALID_WEB3_IDENTITY', message: identity.message, timestamp: Date.now() } }); return; }
+  const project = await store.addProject(body); res.status(201).json(project);
+}));
+app.patch('/api/projects/:id', safe(async (req, res) => {
+  const update = projectBodySchema.partial().extend({ archived: z.boolean().optional() }).parse(req.body);
+  const existing = store.getProjects(true).find((project) => project.id === String(req.params.id));
+  if (!existing) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; }
+  const identity = validateContractIdentity(update.contractAddress ?? existing.contractAddress, update.identityNetwork ?? existing.identityNetwork);
+  if (!identity.ok) { res.status(400).json({ error: { code: 'INVALID_WEB3_IDENTITY', message: identity.message, timestamp: Date.now() } }); return; }
+  res.json(await store.updateProject(String(req.params.id), update));
+}));
 app.delete('/api/projects/:id', safe(async (req, res) => { await store.removeProject(String(req.params.id)); res.status(204).end(); }));
 app.post('/api/projects/reorder', safe(async (req, res) => { const body = z.object({ ids: z.array(z.string()).min(1) }).parse(req.body); res.json({ items: await store.reorderProjects(body.ids) }); }));
 app.post('/api/projects/selection', safe(async (req, res) => { const body = z.object({ id: z.string().nullable() }).parse(req.body); res.json({ selectedProjectId: await store.setSelectedProject(body.id) }); }));

@@ -5,6 +5,7 @@ export type WatchFlow = {
   buy: number | null; sell: number | null; delta: number | null; cvd: number | null;
   spotDelta: number | null; perpDelta: number | null;
   buckets: WatchFlowBucket[];
+  venues: Array<{ exchange: string; marketType: string; buy: number | null; sell: number | null; delta: number | null }>;
   covered: number; requested: number;
   source: 'orderflow';
 };

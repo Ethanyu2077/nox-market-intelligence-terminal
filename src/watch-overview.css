@@ -55,3 +55,9 @@
 .fc-card .down { color: var(--down); }
 .fc-card footer { font: 9px var(--mono); color: var(--faint); }
 .fc-card footer.muted { color: var(--warn); }
+
+.cf-expand { background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 2px; width: 18px; height: 18px; line-height: 1; cursor: pointer; }
+.cf-venues { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+.cf-venues div { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font: 9px var(--mono); color: var(--muted); }
+.cf-venues div b { grid-row: 1; justify-self: end; }
+.cf-venues div small { grid-column: 1 / -1; color: var(--faint); }

@@ -56,7 +56,15 @@ function flowOf(service: OrderFlowService | undefined, project: MarketProject, e
     return {
       buy: sum(perp.buckets, 'buy'), sell: sum(perp.buckets, 'sell'), delta: sum(perp.buckets, 'delta'),
       cvd: lastCvd, spotDelta: sum(spot.buckets, 'delta'), perpDelta: sum(perp.buckets, 'delta'),
-      buckets: perpBuckets, covered: perp.covered, requested: perp.requested, source: 'orderflow',
+      buckets: perpBuckets,
+      venues: snapshot.venues.map((venue) => {
+        const sum = (key: 'buy' | 'sell' | 'delta') => {
+          const values = venue.buckets.map((row) => row[key]).filter((value): value is number => value != null && Number.isFinite(value));
+          return values.length ? values.reduce((total, value) => total + value, 0) : null;
+        };
+        return { exchange: venue.market.exchange, marketType: venue.market.marketType, buy: sum('buy'), sell: sum('sell'), delta: sum('delta') };
+      }).filter((venue) => venue.buy != null || venue.sell != null || venue.delta != null),
+      covered: perp.covered, requested: perp.requested, source: 'orderflow',
     };
   } catch { return null; }
 }

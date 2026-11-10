@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { WatchRow } from '../shared/watch-overview';
 
 const money = (value: number | null) => value == null ? '—' : new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(value);
@@ -10,6 +11,7 @@ export function CapitalFlowVisual({ rows, names, colors, language }: {
   rows: WatchRow[]; names: Map<string, string>; colors: string[]; language: 'zh' | 'en';
 }) {
   const zh = language === 'zh';
+  const [expanded, setExpanded] = useState<string | null>(null);
   const scale = Math.max(1, ...rows.map((row) => Math.abs(row.flow?.delta ?? 0)));
   return (
     <section className="wo-panel cf-panel">
@@ -25,13 +27,14 @@ export function CapitalFlowVisual({ rows, names, colors, language }: {
           const net = flow?.delta ?? null;
           return (
             <div className={`cf-node ${flow ? '' : 'cf-missing'}`} key={row.projectId} title={flow ? `${zh ? '买入' : 'buy'} ${money(flow.buy)} · ${zh ? '卖出' : 'sell'} ${money(flow.sell)} · ${zh ? '净额' : 'net'} ${money(net)} · ${zh ? '现货Δ' : 'spotΔ'} ${money(flow.spotDelta)} · ${zh ? '合约Δ' : 'perpΔ'} ${money(flow.perpDelta)} · source: orderflow` : (zh ? '无主动成交数据' : 'no aggressor-flow data')}>
-              <div className="cf-head"><span className="cf-dot" style={{ background: color }} /><strong>{names.get(row.projectId)}</strong><span className={`cf-net ${net != null && net >= 0 ? 'cf-buy' : 'cf-sell'}`}>{net == null ? '—' : money(net)}</span></div>
+              <div className="cf-head"><span className="cf-dot" style={{ background: color }} /><strong>{names.get(row.projectId)}</strong><span className={`cf-net ${net != null && net >= 0 ? 'cf-buy' : 'cf-sell'}`}>{net == null ? '—' : money(net)}</span>{flow && flow.venues.length > 0 && <button className="cf-expand" onClick={() => setExpanded(expanded === row.projectId ? null : row.projectId)} aria-expanded={expanded === row.projectId}>{expanded === row.projectId ? '−' : '+'}</button>}</div>
               {flow ? (
                 <>
                   <div className="cf-bar"><span className="cf-sell-bar" style={{ width: `${flow.sell == null ? 0 : flow.sell / scale * 50}%` }} /><span className="cf-buy-bar" style={{ width: `${flow.buy == null ? 0 : flow.buy / scale * 50}%` }} /></div>
                   <div className="cf-meta"><span className="cf-buy">{money(flow.buy)}</span><span className="cf-sell">{money(flow.sell)}</span></div>
                   <div className="cf-foot"><span>{zh ? '现货' : 'spot'} {money(flow.spotDelta)}</span><span>{zh ? '合约' : 'perp'} {money(flow.perpDelta)}</span><span>{flow.covered}/{flow.requested} {zh ? '已覆盖' : 'covered'}</span></div>
                   <div className={`cf-stream ${net != null && net >= 0 ? 'cf-buy' : 'cf-sell'}`} style={{ width: `${Math.min(100, total / scale * 100)}%` }} />
+                  {expanded === row.projectId && <div className="cf-venues">{flow.venues.map((venue) => <div key={`${venue.exchange}:${venue.marketType}`}><span>{venue.exchange} · {venue.marketType}</span><b className={(venue.delta ?? 0) >= 0 ? 'cf-buy' : 'cf-sell'}>{money(venue.delta)}</b><small>{money(venue.buy)} / {money(venue.sell)}</small></div>)}</div>}
                 </>
               ) : <p className="cf-unavailable">{zh ? '主动买卖数据不可用' : 'Aggressor flow unavailable'}</p>}
             </div>

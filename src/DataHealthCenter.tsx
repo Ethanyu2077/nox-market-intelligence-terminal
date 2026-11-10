@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { DataHealthReport, HealthState } from '../shared/data-health';
+import type { ProviderCheck } from '../shared/provider-crosscheck';
 
 const stateClass = (state: HealthState | string) => state.toLowerCase().replace(/[^a-z]/g, '');
 
@@ -8,6 +9,9 @@ export function DataHealthCenter() {
   const [report, setReport] = useState<DataHealthReport | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [checks, setChecks] = useState<ProviderCheck[]>([]);
+  const [checkProject, setCheckProject] = useState('');
+  const [checkBusy, setCheckBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -26,6 +30,19 @@ export function DataHealthCenter() {
     const timer = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 30_000);
     return () => clearInterval(timer);
   }, [load]);
+
+  const selectedProject = checkProject || report?.projects[0]?.projectId || '';
+  useEffect(() => {
+    if (!selectedProject) return;
+    let active = true;
+    setCheckBusy(true);
+    fetch(`/api/projects/${selectedProject}/provider-crosscheck`, { headers: { Accept: 'application/json' } })
+      .then((response) => response.ok ? response.json() as Promise<{ checks: ProviderCheck[] }> : null)
+      .then((payload) => { if (active) setChecks(payload?.checks ?? []); })
+      .catch(() => { if (active) setChecks([]); })
+      .finally(() => { if (active) setCheckBusy(false); });
+    return () => { active = false; };
+  }, [selectedProject]);
 
   const overall = report?.overall;
   return (
@@ -51,6 +68,9 @@ export function DataHealthCenter() {
             <div className="dh-card"><span>UNAVAILABLE</span><strong>{report.overall.unavailable}</strong></div>
             <div className="dh-card"><span>Storage</span><strong>{report.storage.state}</strong><small>{report.storage.connected ? `${report.storage.rows ?? '—'} rows` : report.storage.mode}</small></div>
             <div className="dh-card"><span>L2 feeds</span><strong>{report.l2.activeFeeds}</strong><small>{report.l2.sampled} samples · {report.l2.state}</small></div>
+            {report.providers?.map((provider) => (
+              <div className="dh-card" key={provider.provider}><span>{provider.provider}</span><strong>{provider.state}</strong><small>{provider.configured ? `${provider.lastLatencyMs ?? '—'} ms` : 'not configured'}</small></div>
+            ))}
           </div>
 
           {report.l2.feeds.length > 0 && (
@@ -99,6 +119,33 @@ export function DataHealthCenter() {
                 </tr>
               ))}
             </tbody></table></div>
+          </div>
+
+          <div className="dh-section">
+            <h4>Native vs CoinGlass <small>{checkBusy ? 'loading…' : `${checks.filter((check) => check.status === 'diverge').length} divergences`}</small></h4>
+            <div className="dh-controls dh-inline">
+              <label>Project
+                <select value={selectedProject} onChange={(event) => setCheckProject(event.target.value)}>
+                  {report.projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.projectName}</option>)}
+                </select>
+              </label>
+              <span>Native values stay authoritative; CoinGlass is shown for comparison only.</span>
+            </div>
+            {checks.length === 0 ? <p className="dh-empty">No overlapping native/CoinGlass field for this project.</p> : (
+              <div className="table-wrap dh-scroll"><table className="dh-table"><thead><tr><th>Exchange</th><th>Field</th><th>Native</th><th>CoinGlass</th><th>Divergence</th><th>Status</th><th>Native source</th></tr></thead><tbody>
+                {checks.map((check) => (
+                  <tr key={`${check.exchange}:${check.field}`} className={check.status === 'diverge' ? 'dh-diverge' : ''}>
+                    <td>{check.exchange}</td>
+                    <td>{check.field}</td>
+                    <td>{check.native == null ? '—' : check.native.toFixed(6)}</td>
+                    <td>{check.coinGlass == null ? '—' : check.coinGlass.toFixed(6)}</td>
+                    <td>{check.divergencePct == null ? '—' : `${check.divergencePct}%`}</td>
+                    <td><span className={`dh-state ${check.status === 'agree' ? 'live' : check.status === 'diverge' ? 'stale' : 'notverified'}`}>{check.status}</span></td>
+                    <td className="dh-evidence">{check.nativeSource ?? '—'} → {check.coinGlassSource}</td>
+                  </tr>
+                ))}
+              </tbody></table></div>
+            )}
           </div>
 
           <div className="dh-section">

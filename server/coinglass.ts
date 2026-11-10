@@ -67,22 +67,55 @@ export function normalizeCoinGlassHistory(data:unknown,nonnegativeOnly:boolean,n
 }
 const unavailable = <T>(state: CoinGlassSection<T>['state'], reason: string): CoinGlassSection<T> => ({ state, reason, data: null, sourceTime: null, fetchedAt: null });
 export class CoinGlassService {
+  private lastAttemptAt: number | null = null;
+  private lastSuccessAt: number | null = null;
+  private lastFailureAt: number | null = null;
+  private lastLatencyMs: number | null = null;
+  private lastReason: string | null = null;
+  private lastStates: string[] = [];
+
   constructor(private client = new CoinGlassClient()) {}
   get configured() { return this.client.configured; }
+
+  private record(result: CoinGlassResponse, started: number): void {
+    this.lastAttemptAt = started;
+    this.lastLatencyMs = Date.now() - started;
+    this.lastStates = [result.oi.state, result.funding.state, result.liquidations.state, result.flow.state];
+    if (this.lastStates.some((state) => state === 'available')) this.lastSuccessAt = Date.now();
+    else {
+      this.lastFailureAt = Date.now();
+      this.lastReason = [result.oi.reason, result.funding.reason, result.liquidations.reason, result.flow.reason].find((reason) => reason) ?? 'no available section';
+    }
+  }
+
+  /** Provider health from real attempts; never claims LIVE without a recent success. */
+  health() {
+    const available = this.lastStates.filter((state) => state === 'available').length;
+    const errors = this.lastStates.filter((state) => state === 'error').length;
+    let state: 'LIVE' | 'PARTIAL' | 'UNAVAILABLE' | 'NOT VERIFIED' = 'NOT VERIFIED';
+    if (!this.configured) state = 'NOT VERIFIED';
+    else if (this.lastAttemptAt == null) state = 'NOT VERIFIED';
+    else if (available === 0 && errors > 0) state = 'UNAVAILABLE';
+    else if (available > 0 && errors > 0) state = 'PARTIAL';
+    else if (available > 0) state = 'LIVE';
+    else state = 'UNAVAILABLE';
+    return { provider: 'CoinGlass', configured: this.configured, state, lastAttemptAt: this.lastAttemptAt, lastSuccessAt: this.lastSuccessAt, lastFailureAt: this.lastFailureAt, lastLatencyMs: this.lastLatencyMs, lastReason: this.lastReason, sections: this.lastStates };
+  }
   async project(project: MarketProject, range: CoinGlassResponse['range'] = '24h', historyInterval?: '1h'|'4h'|'1d'): Promise<CoinGlassResponse> {
     const symbol = project.tokenSymbol.trim().toUpperCase();
     const blocked = <T>() => unavailable<T>(this.configured ? 'unsupported' : 'not-configured', this.configured ? 'symbol-unsupported' : 'not-configured');
     const result: CoinGlassResponse = { projectId: project.id, source: 'CoinGlass', configured: this.configured, symbol, identity: 'symbol-only', range, generatedAt: Date.now(), oi: blocked(), flow: blocked(), funding: blocked(), liquidations: blocked() };
     if(historyInterval)result.history={interval:historyInterval,oi:blocked(),funding:blocked()};
-    if (!this.configured || !symbol) return result;
+    const started = Date.now();
+    if (!this.configured || !symbol) { this.record(result, started); return result; }
     try {
       const supported = await this.client.request('/api/futures/supported-coins', {}, 3_600_000);
       if (!Array.isArray(supported.data)) throw new Error('invalid-response');
-      if (!supported.data.includes(symbol)) return result;
+      if (!supported.data.includes(symbol)) { this.record(result, started); return result; }
     } catch (e) {
       const reason = e instanceof Error ? e.message : 'invalid-response';
       if(result.history){result.history.oi=unavailable('error',reason);result.history.funding=unavailable('error',reason);}
-      result.flow=unavailable('error',reason);result.oi = unavailable('error', reason); result.funding = unavailable('error', reason); result.liquidations = unavailable('error', reason); return result;
+      result.flow=unavailable('error',reason);result.oi = unavailable('error', reason); result.funding = unavailable('error', reason); result.liquidations = unavailable('error', reason); this.record(result, started); return result;
     }
     const section = async <T extends unknown[]>(path: string, params: Record<string,string>, normalize: (data: unknown) => T): Promise<CoinGlassSection<T>> => {
       try { const response = await this.client.request(path, params), data = normalize(response.data); return { state: data.length ? 'available' : 'empty', data, reason: null, sourceTime: null, fetchedAt: response.fetchedAt }; }
@@ -94,6 +127,7 @@ export class CoinGlassService {
       section('/api/futures/liquidation/exchange-list', {symbol, range}, normalizeCoinGlassLiquidations),
       section('/api/futures/taker-buy-sell-volume/exchange-list',{symbol,range},data=>normalizeCoinGlassFlow(data,symbol)),
     ]);
+    this.record(result, started);
     if(historyInterval&&result.history){[result.history.oi,result.history.funding]=await Promise.all([
       section('/api/futures/open-interest/aggregated-history',{symbol,interval:historyInterval,limit:'120',unit:'usd'},data=>normalizeCoinGlassHistory(data,true)),
       section('/api/futures/funding-rate/oi-weight-history',{symbol,interval:historyInterval,limit:'120'},data=>normalizeCoinGlassHistory(data,false)),

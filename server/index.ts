@@ -54,6 +54,7 @@ import { ResearchJobManager } from './research-jobs.ts';
 import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
+import { buildProviderChecks } from './provider-crosscheck.ts';
 import { acceptanceRouteEnabled } from './acceptance-access.ts';
 import { registerAcceptanceRoute } from './acceptance-route.ts';
 import type { PriceSample } from '../shared/leadlag.ts';
@@ -279,6 +280,16 @@ app.delete('/api/projects/:id/research/jobs/:jobId', safe(async (req, res) => {
   if (!job || job.projectId !== String(req.params.id)) { res.status(404).json({ error: { message: 'Job not found' } }); return; }
   res.json({ job });
 }));
+app.get('/api/projects/:id/provider-crosscheck', safe(async (req, res) => {
+  const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
+  if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
+  const [venues, coinGlass] = await Promise.all([projectVenueSnapshots(project.markets), coinglass.project(project)]);
+  res.json({
+    generatedAt: Date.now(), projectId: project.id,
+    coinGlass: coinglass.health(),
+    checks: buildProviderChecks(project.id, venues.snapshots, coinGlass.oi.data, coinGlass.funding.data),
+  });
+}));
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
@@ -333,6 +344,7 @@ app.get('/api/data-health/center', safe(async (_req, res) => {
       pendingBytes: storage.capacity?.pendingBytes ?? null,
       rows: storage.databaseRowsAcknowledged ?? null,
     },
+    providers: [{ ...coinglass.health() }],
     collectors: collector.status().map((item) => ({ projectId: item.projectId, mode: item.mode ?? 'unknown', error: item.error, checkedAt: item.checkedAt })),
     l2: { ...l2Collector.health(), feeds: l2Collector.feedSnapshots() },
     breakers: venueBreakers.snapshot(),

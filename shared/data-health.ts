@@ -51,6 +51,7 @@ export interface DataHealthReport {
   issues: HealthIssue[];
   storage: { mode: string; connected: boolean; state: StorageState; journalBytes: number | null; pendingBytes: number | null; rows: number | null };
   collectors: Array<{ projectId: string; mode: string; error: string | null; checkedAt: number | null }>;
+  providers: Array<{ provider: string; state: HealthState; configured: boolean; lastSuccessAt: number | null; lastFailureAt: number | null; lastLatencyMs: number | null; lastReason: string | null }>;
   l2: {
     activeFeeds: number; sampled: number; lastPersistAt: number | null; state: HealthState;
     feeds: Array<{ venue: string; symbol: string; state: string; sequence: number | null; epoch: number | null; verified: boolean; integrity: string; gaps: number; resyncs: number; lastMessageAt: number | null }>;

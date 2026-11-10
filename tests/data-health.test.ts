@@ -70,3 +70,16 @@ test('L2 health requires fresh verified integrity, not just an active feed', () 
   assert.equal(classifyL2([{ ...feed, lastMessageAt: now - 120_000 }], now), 'UNAVAILABLE');
   assert.equal(classifyL2([feed, { ...feed, venue: 'bybit', verified: false }], now), 'PARTIAL');
 });
+
+test('provider health produces explicit issues and is reported', () => {
+  const report = buildDataHealth(base([venue()], {
+    providers: [
+      { provider: 'CoinGlass', state: 'UNAVAILABLE', configured: true, lastSuccessAt: null, lastFailureAt: now - 1000, lastLatencyMs: 20, lastReason: 'HTTP 429' },
+      { provider: 'Other', state: 'NOT VERIFIED', configured: false, lastSuccessAt: null, lastFailureAt: null, lastLatencyMs: null, lastReason: null },
+    ],
+  }));
+  assert.equal(report.providers.length, 2);
+  const categories = report.issues.map((issue) => issue.category);
+  assert.ok(categories.includes('provider-error'));
+  assert.ok(categories.includes('provider-not-configured'));
+});

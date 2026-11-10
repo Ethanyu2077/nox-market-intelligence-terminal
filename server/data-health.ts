@@ -4,6 +4,7 @@ export interface HealthInputs {
   now: number;
   storage: { mode: string; connected: boolean; journalBytes?: number | null; pendingBytes?: number | null; rows?: number | null };
   collectors: Array<{ projectId: string; mode: string; error: string | null; checkedAt: number | null }>;
+  providers?: Array<{ provider: string; state: HealthState; configured: boolean; lastSuccessAt: number | null; lastFailureAt: number | null; lastLatencyMs: number | null; lastReason: string | null }>;
   l2: { activeFeeds: number; sampled: number; lastPersistAt: number | null; feeds?: Array<{ venue: string; symbol: string; state: string; sequence: number | null; epoch: number | null; verified: boolean; integrity: string; gaps: number; resyncs: number; lastMessageAt: number | null }> };
   breakers: Array<{ exchange: string; family: string; state: string; lastError?: string | null; lastFailureAt?: number | null; lastSuccessAt?: number | null }>;
   projects: Array<{
@@ -117,6 +118,12 @@ export function buildDataHealth(inputs: HealthInputs): DataHealthReport {
   if (inputs.l2.activeFeeds === 0) issues.push({ severity: 'info', category: 'l2-idle', source: 'l2', detail: 'no active L2 feeds (projects are Standard or unsupported venue)', firstSeen: null, lastSeen: now, recovery: 'open' });
   else if (l2State !== 'LIVE') issues.push({ severity: 'warning', category: 'l2-degraded', source: 'l2', detail: `L2 feeds are ${l2State.toLowerCase()} (stale, partial or unverified)`, firstSeen: null, lastSeen: now, recovery: 'open' });
 
+  for (const provider of inputs.providers ?? []) {
+    if (!provider.configured) issues.push({ severity: 'info', category: 'provider-not-configured', source: provider.provider, detail: 'no API key configured', firstSeen: null, lastSeen: now, recovery: 'open' });
+    else if (provider.state === 'UNAVAILABLE') issues.push({ severity: 'warning', category: 'provider-error', source: provider.provider, detail: provider.lastReason ?? 'provider unavailable', firstSeen: provider.lastFailureAt, lastSeen: now, recovery: 'open' });
+    else if (provider.state === 'PARTIAL') issues.push({ severity: 'info', category: 'provider-partial', source: provider.provider, detail: provider.lastReason ?? 'some sections failed', firstSeen: null, lastSeen: now, recovery: 'open' });
+  }
+
   const states = sources.map((source) => source.state);
   const count = (state: HealthState) => states.filter((item) => item === state).length;
 
@@ -130,6 +137,7 @@ export function buildDataHealth(inputs: HealthInputs): DataHealthReport {
     sources, projects, issues,
     storage: { mode: inputs.storage.mode, connected: inputs.storage.connected, state: storageStatus, journalBytes: inputs.storage.journalBytes ?? null, pendingBytes: inputs.storage.pendingBytes ?? null, rows: inputs.storage.rows ?? null },
     collectors: inputs.collectors,
+    providers: inputs.providers ?? [],
     l2: { activeFeeds: inputs.l2.activeFeeds, sampled: inputs.l2.sampled, lastPersistAt: inputs.l2.lastPersistAt, state: l2State, feeds: l2Feeds },
   };
 }

@@ -19,7 +19,7 @@ export default function AuthDialog({language,onClose,onSuccess}:{language:string
   };
   return <div className="auth-dialog-backdrop"><section className="auth-card panel" role="dialog" aria-modal="true" aria-label={zh?'登录':'Sign in'} ref={dialog} tabIndex={-1}>
     <div className="auth-brand"><img src="/nox.png" alt="NOX Ventures"/><div><strong>NOX Ventures</strong><span>MARKET INTELLIGENCE</span></div><button type="button" aria-label={zh?'关闭登录':'Close sign in'} onClick={onClose}>×</button></div>
-    <h1>{status?.setupRequired?(zh?'创建管理员账号':'Create administrator account'):(zh?'登录':'Sign in')}</h1>
+    <h1>{status?.setupRequired?(zh?'创建超级管理员账号':'Create super administrator account'):(zh?'登录':'Sign in')}</h1>
     <p>{zh?'登录后可创建项目、编辑监控和管理采集设置。':'Sign in to create projects and manage monitoring settings.'}</p>
     {status?.user?<><p>{zh?'当前已登录':'Signed in as'}: {status.user.name}</p><button className="primary-button auth-submit" onClick={onClose}>{zh?'返回工作区':'Return to workspace'}</button></>:
     <form onSubmit={event=>void submit(event)}>

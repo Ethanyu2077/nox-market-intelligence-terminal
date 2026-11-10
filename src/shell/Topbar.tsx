@@ -67,14 +67,14 @@ export function Topbar({ pageLabel, projectName, onMenu, onOpenPalette, onOpenAi
           <div className="account" ref={wrap}>
             <button className="account-trigger" onClick={() => setMenu((value) => !value)} aria-expanded={menu} aria-haspopup="menu">
               <span className="account-avatar">{user ? user.name.slice(0, 1).toUpperCase() : <UserRound size={12} />}</span>
-              <span>{user ? user.role : zh ? '访客' : 'Guest'}</span>
+              <span>{user ? (user.isSuperAdmin ? (zh ? '超级管理员' : 'Super administrator') : user.role) : zh ? '访客' : 'Guest'}</span>
               <ChevronDown size={11} />
             </button>
             {menu && (
               <div className="account-menu" role="menu">
                 <header>
                   <strong>{user ? user.name : zh ? '只读访客' : 'Read-only guest'}</strong>
-                  <small>{user ? user.role.toUpperCase() : zh ? '只读 · 修改需登录' : 'Read-only · sign in to mutate'}</small>
+                  <small>{user ? (user.isSuperAdmin ? (zh ? '超级管理员' : 'Super administrator') : user.role.toUpperCase()) : zh ? '只读 · 修改需登录' : 'Read-only · sign in to mutate'}</small>
                 </header>
                 {user
                   ? <button role="menuitem" onClick={() => { setMenu(false); void onSignOut(); }}><LogOut size={13} />{zh ? '退出登录' : 'Sign out'}</button>

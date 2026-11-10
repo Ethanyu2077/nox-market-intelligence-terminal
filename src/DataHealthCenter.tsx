@@ -5,7 +5,7 @@ import type { ProviderCheck } from '../shared/provider-crosscheck';
 const stateClass = (state: HealthState | string) => state.toLowerCase().replace(/[^a-z]/g, '');
 
 /** Read-only Data Health Center; every field is backed by the health API. */
-export function DataHealthCenter() {
+export function DataHealthCenter({ canUseCoinGlass }: { canUseCoinGlass: boolean }) {
   const [report, setReport] = useState<DataHealthReport | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -33,7 +33,7 @@ export function DataHealthCenter() {
 
   const selectedProject = checkProject || report?.projects[0]?.projectId || '';
   useEffect(() => {
-    if (!selectedProject) return;
+    if (!canUseCoinGlass || !selectedProject) return;
     let active = true;
     setCheckBusy(true);
     fetch(`/api/projects/${selectedProject}/provider-crosscheck`, { headers: { Accept: 'application/json' } })
@@ -42,7 +42,7 @@ export function DataHealthCenter() {
       .catch(() => { if (active) setChecks([]); })
       .finally(() => { if (active) setCheckBusy(false); });
     return () => { active = false; };
-  }, [selectedProject]);
+  }, [canUseCoinGlass, selectedProject]);
 
   const overall = report?.overall;
   return (
@@ -121,7 +121,7 @@ export function DataHealthCenter() {
             </tbody></table></div>
           </div>
 
-          <div className="dh-section">
+          {canUseCoinGlass && <div className="dh-section">
             <h4>Native vs CoinGlass <small>{checkBusy ? 'loading…' : `${checks.filter((check) => check.status === 'diverge').length} divergences`}</small></h4>
             <div className="dh-controls dh-inline">
               <label>Project
@@ -146,7 +146,7 @@ export function DataHealthCenter() {
                 ))}
               </tbody></table></div>
             )}
-          </div>
+          </div>}
 
           <div className="dh-section">
             <h4>Diagnostics <small>{report.issues.length} issues</small></h4>

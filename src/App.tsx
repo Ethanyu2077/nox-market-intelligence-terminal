@@ -1,7 +1,7 @@
 import { SettingsHub } from './SettingsHub';
 import { WatchOverview } from './WatchOverview';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, Bell, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Waves, X } from 'lucide-react';
+import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, Bell, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Users, Waves, X } from 'lucide-react';
 import type { CandlePoint, CvdPoint, ExchangeSelection, LinePoint, MarketProject, MarketSeries, OiDeltaPoint, OnchainProjectSnapshot, Overview, PositionFlowSignal, ProjectDiscoveryResult, ProjectMarket, ProjectResearchContext, ProjectVenueResponse, VolumeFlowPoint } from '../shared/types';
 import type { VolumeBarsResponse, VolumeMatrixResponse, VolumeShareHistory } from '../shared/volume';
 import type { AlignmentHistoryResponse, AlignmentOutcomeResponse, TimeframeAlignmentResponse } from '../shared/timeframe';
@@ -13,6 +13,7 @@ import {EventStudyPage} from './EventStudyPage';
 import { RegimeV2Panel } from './RegimeV2Panel';
 import {BinanceWeb3Panel,Web3ConnectionStatus} from './BinanceWeb3Panel';
 import {ProviderSettings} from './ProviderSettings';
+import {UserManagement} from './UserManagement';
 import {CoinGlassPanel} from './CoinGlassPanel';
 import {KoreanSpotPanel} from './KoreanSpotPanel';
 import {BinanceExchangePanel} from './BinanceExchangePanel';
@@ -38,7 +39,7 @@ import { AiDrawer } from './ai/AiDrawer';
 import { AiSettingsCard } from './ai/AiSettingsCard';
 import type { ConnectionState } from './shell/labels';
 
-type Page = 'watchOverview' | 'projects' | 'terminal' | 'overview' | 'structure' | 'positionFlow' | 'derivatives' | 'contribution' | 'crossExchange' | 'liquidity' | 'signals' | 'history' | 'settings' | 'research' | 'orderflow';
+type Page = 'watchOverview' | 'projects' | 'terminal' | 'overview' | 'structure' | 'positionFlow' | 'derivatives' | 'contribution' | 'crossExchange' | 'liquidity' | 'signals' | 'history' | 'settings' | 'users' | 'research' | 'orderflow';
 type Interval = '1m' | '5m' | '15m' | '1h' | '4h';
 type Language = 'en' | 'zh';
 type Theme = 'dark' | 'light';
@@ -55,6 +56,7 @@ const ZH: Record<string, string> = {
   'DeepSeek Analyst': 'DeepSeek 分析',
   'TERMINAL': '终端', 'FLOW & VENUES': '资金流与场所', 'INTELLIGENCE': '情报',
   'Research Workspace': '研究工作区',
+  'Account management': '账号管理',
   'Research & Signals': '研究与信号',
   'Exchange': '交易所',
   'Selected markets': '已选市场',
@@ -215,6 +217,8 @@ export default function App() {
   const loadGeneration = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const auth = useAuth();
+  const isAdmin = auth.user?.role === 'admin';
+  useEffect(() => { if (!isAdmin && page === 'users') setPage('projects'); }, [isAdmin, page]);
   const venues = useVenues();
   const selectedProject = useMemo(() => projects.find((project) => project.id === selectedProjectId && !project.archived) ?? null, [projects, selectedProjectId]);
   const t = useCallback((value: string) => translate(value, language), [language]);
@@ -232,7 +236,7 @@ export default function App() {
   const coverage = venueData ? { successful: venueData.aggregate.coverage.successful, requested: venueData.aggregate.coverage.requested } : null;
   // On the watchlist the transport is REST polling by definition; never show a socket state there.
   const displayConnection: ConnectionState = (page === 'projects' || page === 'watchOverview' || page === 'settings') ? 'polling' : connection;
-  const pageLabel = t(NAV_GROUPS.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? 'Project Watchlist');
+  const pageLabel = page === 'users' ? t('Account management') : t(NAV_GROUPS.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? 'Project Watchlist');
 
   const refreshProjects = useCallback(async (preferredId?: string) => {
     const response = await api<{ items: MarketProject[]; selectedProjectId: string | null }>('/projects');
@@ -351,6 +355,7 @@ export default function App() {
   useEffect(()=>{if(page!=='settings'&&window.location.hash.startsWith('#/settings'))window.history.replaceState(null,'',window.location.pathname+window.location.search);},[page]);
 
   const navigate = (id: string) => {
+    if (id === 'users' && !isAdmin) return;
     if (id === 'ai') { setAiOpen(true); setMobileNav(false); return; }
     if(id==='settings')window.location.hash='#/settings';
     setPage(id as Page);
@@ -359,12 +364,13 @@ export default function App() {
 
   const groups: NavGroup[] = useMemo(() => NAV_GROUPS.map((group) => ({
     ...group,
-    items: group.items.map((item) => ({
+    items: [...group.items, ...(isAdmin && group.items.some((item) => item.id === 'settings')
+      ? [{ id: 'users', label: 'Account management', icon: <Users size={15}/> }] : [])].map((item) => ({
       ...item,
       label: t(item.label),
-      disabled: item.id !== 'watchOverview' && item.id !== 'projects' && item.id !== 'settings' && !selectedProject,
+      disabled: item.id !== 'watchOverview' && item.id !== 'projects' && item.id !== 'settings' && item.id !== 'users' && !selectedProject,
     })),
-  })), [selectedProject, t]);
+  })), [isAdmin, selectedProject, t]);
 
   const actions: PaletteAction[] = useMemo(() => [
     { id: 'ai', label: language === 'zh' ? '打开 DeepSeek 分析' : 'Open DeepSeek analyst', hint: '⌘J', run: () => setAiOpen(true) },
@@ -421,19 +427,20 @@ export default function App() {
             {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
             {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language} exchange={exchange}/>}
             {page === 'contribution' && selectedProject && <ExchangeContributionPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/>}
-            {page === 'crossExchange' && selectedProject && <><CrossExchangeAnalysisPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/><KoreanSpotPanel project={selectedProject} language={language}/><CoinGlassPanel project={selectedProject} language={language} onSettings={()=>{window.location.hash='#/settings/coinglass';setPage('settings');}}/></>}
+            {page === 'crossExchange' && selectedProject && <><CrossExchangeAnalysisPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/><KoreanSpotPanel project={selectedProject} language={language}/>{isAdmin && <CoinGlassPanel project={selectedProject} language={language} onSettings={()=>{window.location.hash='#/settings/coinglass';setPage('settings');}}/>}</>}
             {page === 'positionFlow' && selectedProject && <PositionFlowPage overview={overview} series={localizedSeries} interval={interval}/>}
             {page === 'derivatives' && selectedProject && <DerivativesPage overview={overview} series={localizedSeries}/>}
             {page === 'liquidity' && selectedProject && <OnchainLiquidityPage project={selectedProject} interval={interval}/>}
+            {page === 'users' && isAdmin && <UserManagement language={language}/>}
             {page === 'settings' && <SettingsHub language={language} hasProject={!!selectedProject} onManage={()=>setPage('projects')} onOpenWeb3={()=>{setPage('liquidity');requestAnimationFrame(()=>document.getElementById('binance-web3-panel')?.scrollIntoView({block:'start'}));}} panels={{
               deepseek:<AiSettingsCard language={language}/>,
-              coinglass:<ProviderSettings language={language} hasProject={!!selectedProject} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/>,
+              ...(isAdmin ? { coinglass: <ProviderSettings language={language} hasProject={!!selectedProject} onOpenCoinGlass={()=>{setPage('crossExchange');requestAnimationFrame(()=>document.getElementById('coinglass-metrics')?.scrollIntoView({block:'start'}));}}/> } : {}),
               'binance-web3':<Web3ConnectionStatus language={language}/>,
               ccxt:<CcxtPanel language={language}/>,
               collection:<CollectionPanel projects={projects} language={language} onRefresh={refreshProjects}/>,
               coverage:<DataCoveragePanel projects={projects} language={language}/>,
               venues:<VenueCoveragePanel projects={projects} language={language}/>,
-              health:<DataHealthCenter/>,
+              health:<DataHealthCenter key={String(isAdmin)} canUseCoinGlass={isAdmin}/>,
               capabilities:<CapabilityPanel language={language}/>,
             }}/>}
             {page === 'research' && selectedProject && <ResearchWorkspace key={selectedProject.id} project={selectedProject} data={venueData} language={language} chart={<NOXMarketStructureChart overview={overview} series={localizedSeries} interval={interval}/>}/>}

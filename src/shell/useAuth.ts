@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-export interface AuthUser { name: string; role: 'viewer' | 'analyst' | 'admin' }
+export interface AuthUser { name: string; role: 'viewer' | 'analyst' | 'admin'; isSuperAdmin?: boolean }
 
 /** Shared authentication state for the shell. Refreshes on `nox:auth-changed`. */
 export function useAuth() {

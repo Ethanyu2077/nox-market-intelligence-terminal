@@ -1,0 +1,8 @@
+.user-management h1 { margin:0 0 12px; }
+.user-management .provider-key-form select { max-width:560px; width:100%; min-height:29px; padding:0 8px; background:var(--surface); color:var(--text); border:1px solid var(--line); border-radius:1px; font:10px var(--num); }
+.user-management .provider-key-form .ops-controls,.user-management .source-card>.ops-controls { padding:0 16px; }
+.user-management table { width:100%; border-collapse:collapse; text-align:left; }
+.user-management td:first-child { overflow-wrap:anywhere; max-width:240px; }
+.user-management td button { margin:0 !important; }
+.user-management .account-delete-confirm { margin:12px 16px 0; padding:12px; border:1px solid var(--line); background:var(--surface); }
+.user-management .account-delete-confirm p { margin:0; overflow-wrap:anywhere; }

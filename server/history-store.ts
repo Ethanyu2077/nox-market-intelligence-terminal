@@ -213,7 +213,8 @@ export class HistoryStore {
   }
   private async files(kind?: HistoryEvent["kind"]) {
     const output: string[] = [];
-    for (const k of kind ? [kind] : KINDS) {
+    const allowedKinds = kind ? [kind] : KINDS;
+    for (const k of allowedKinds) {
       const legacy = `history-${k}.ndjson`;
       try {
         await stat(path.join(this.directory, legacy));
@@ -224,14 +225,12 @@ export class HistoryStore {
     }
     for (const name of (
       await readdir(path.join(this.directory, "history"))
-    ).sort())
-      if (
-        /^\d{4}-\d{2}-\d{2}-(trade|liquidation|snapshot|regime|volume|alignment)\.ndjson$/.test(
-          name,
-        ) &&
-        (!kind || name.endsWith(`-${kind}.ndjson`))
-      )
+    ).sort()) {
+      const match = /^\d{4}-\d{2}-\d{2}-([a-z0-9]+)\.ndjson$/.exec(name);
+      if (match && allowedKinds.some((allowed) => allowed === match[1])) {
         output.push(`history/${name}`);
+      }
+    }
     return output;
   }
   private async *events(file: string, start = 0) {

@@ -14,7 +14,7 @@ export function SettingsHub({language,panels,onManage,onOpenWeb3,hasProject}:{la
   const venue=exchanges.find(item=>selected===`exchange-${item.exchange}`);
   const groups=[
     {name:t('聚合与分析','Aggregation & research'),items:[
-      {id:'coinglass',name:'CoinGlass V4',tag:'API Key',description:t('跨所持仓、资金费率、清算与历史数据','Cross-venue OI, funding, liquidation and history'),icon:<KeyRound/>},
+      ...(panels.coinglass ? [{id:'coinglass',name:'CoinGlass V4',tag:'API Key',description:t('跨所持仓、资金费率、清算与历史数据','Cross-venue OI, funding, liquidation and history'),icon:<KeyRound/>}] : []),
       {id:'deepseek',name:'DeepSeek',tag:t('AI 分析','AI research'),description:t('服务端与本浏览器密钥、模型连接测试','Server and browser credentials, connection test'),icon:<Sparkles/>},
       {id:'ccxt',name:'CCXT',tag:t('补充与回退','Coverage & fallback'),description:t('交易目录、启用场所与回退状态','Exchange catalogues, enabled venues and fallback status'),icon:<Layers3/>},
     ]},

@@ -11,6 +11,7 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const legacyUser = z.object({ name: z.string().trim().min(3).max(50), role: z.enum(['viewer','analyst','admin']), salt: z.string().regex(/^[a-f0-9]{32}$/), hash: z.string().regex(/^[a-f0-9]{128}$/) });
 type Role = 'viewer' | 'analyst' | 'admin';
 type User = z.infer<typeof legacyUser>;
+type StoredUser = User & {is_super_admin:number};
 export const defaultAuthDirectory = () => path.resolve(process.env.NOX_AUTH_DIR ?? 'var/auth');
 export class AuthStore {
   private db!: DatabaseSync;
@@ -28,10 +29,31 @@ export class AuthStore {
       CREATE TABLE IF NOT EXISTS attempts(address TEXT PRIMARY KEY, count INTEGER NOT NULL, until_time INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS setup(singleton INTEGER PRIMARY KEY CHECK(singleton=1), token_hash TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY);`);
-    try { await this.migrateLegacy(); } catch (error) { this.db.close(); throw error; }
+    try { await this.migrateLegacy(); this.initSuperAdministrator(); } catch (error) { this.db.close(); throw error; }
     if (process.env.NOX_BOOTSTRAP_TOKEN && this.setupRequired()) this.setSetupToken(process.env.NOX_BOOTSTRAP_TOKEN);
     this.db.prepare('DELETE FROM sessions WHERE expires <= ?').run(Date.now());
     this.db.prepare('DELETE FROM attempts WHERE until_time <= ?').run(Date.now());
+  }
+  private initSuperAdministrator() {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if(!this.db.prepare('PRAGMA table_info(users)').all().some(column=>column.name==='is_super_admin')){
+        this.db.exec("ALTER TABLE users ADD COLUMN is_super_admin INTEGER NOT NULL DEFAULT 0 CHECK(is_super_admin IN (0,1) AND (is_super_admin=0 OR role='admin'))");
+      }
+      this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS single_super_administrator ON users(is_super_admin) WHERE is_super_admin=1');
+      if(!this.db.prepare('SELECT 1 FROM migrations WHERE name=?').get('single-super-administrator')){
+        // Existing administrators were protected from deletion; the earliest row is the setup owner.
+        if(!this.db.prepare('SELECT 1 FROM users WHERE is_super_admin=1').get()){
+          const first=this.db.prepare("SELECT name FROM users WHERE role='admin' ORDER BY rowid LIMIT 1").get();
+          if(first)this.db.prepare('UPDATE users SET is_super_admin=1 WHERE name=?').run(first.name);
+        }
+        this.db.prepare('INSERT INTO migrations(name) VALUES(?)').run('single-super-administrator');
+      }
+      if(!this.setupRequired()&&!this.db.prepare('SELECT 1 FROM users WHERE is_super_admin=1').get())throw new Error('Super administrator is missing; restore authentication data');
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS protect_super_administrator_delete BEFORE DELETE ON users WHEN OLD.is_super_admin=1 BEGIN SELECT RAISE(ABORT,'Super administrator cannot be deleted'); END;
+        CREATE TRIGGER IF NOT EXISTS protect_super_administrator_update BEFORE UPDATE OF role,is_super_admin ON users WHEN OLD.is_super_admin=1 AND (NEW.is_super_admin<>1 OR NEW.role<>'admin') BEGIN SELECT RAISE(ABORT,'Super administrator cannot be demoted'); END;`);
+      this.db.exec('COMMIT');
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
   }
   private async migrateLegacy() {
     if (!this.legacyDirectory) return;
@@ -65,8 +87,8 @@ export class AuthStore {
   private cookie(req: Request) { return req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('nox_session='))?.slice(12); }
   user(req: Request) {
     const cookie = this.cookie(req); if (!cookie) return null;
-    const user = this.db.prepare('SELECT u.name,u.role FROM sessions s JOIN users u ON u.name=s.name WHERE s.token_hash=? AND s.expires>?').get(digest(cookie),Date.now()) as {name:string;role:Role}|undefined;
-    return user ? {name:user.name,role:user.role} : null;
+    const user = this.db.prepare('SELECT u.name,u.role,u.is_super_admin FROM sessions s JOIN users u ON u.name=s.name WHERE s.token_hash=? AND s.expires>?').get(digest(cookie),Date.now()) as {name:string;role:Role;is_super_admin:number}|undefined;
+    return user ? {name:user.name,role:user.role,isSuperAdmin:user.is_super_admin===1} : null;
   }
   private issue(res: Response, name: string) {
     const token = randomBytes(32).toString('hex');
@@ -99,27 +121,60 @@ export class AuthStore {
         this.db.exec('BEGIN IMMEDIATE');
         try {
           if(!this.setupRequired()||!validToken()) {this.db.exec('ROLLBACK');res.status(409).json({error:{message:'Setup already completed or code expired'}});return;}
-          this.db.prepare('INSERT INTO users(name,role,salt,hash) VALUES(?,?,?,?)').run(body.data.name,'admin',salt,hash);
+          this.db.prepare('INSERT INTO users(name,role,salt,hash,is_super_admin) VALUES(?,?,?,?,1)').run(body.data.name,'admin',salt,hash);
           this.db.exec('DELETE FROM setup');
           this.issue(res,body.data.name);
           this.db.exec('COMMIT');
         } catch(error) {this.db.exec('ROLLBACK');throw error;}
         this.db.prepare('DELETE FROM attempts WHERE address=?').run(digest(req.ip??'unknown'));
-        res.json({user:{name:body.data.name,role:'admin'}});
+        res.json({user:{name:body.data.name,role:'admin',isSuperAdmin:true}});
       } catch {res.status(503).json({error:{message:'Cannot persist authentication settings'}});}
     });
     app.post('/api/auth/login',async(req,res)=>{
       if(this.throttled(req)){res.status(429).json({error:{message:'Too many attempts; retry in 15 minutes'}});return;}
       const body=z.object({name:z.string().trim().max(50),password:z.string().max(128)}).safeParse(req.body);
-      const user=body.success?this.db.prepare('SELECT * FROM users WHERE name=?').get(body.data.name) as User|undefined:undefined;
+      const user=body.success?this.db.prepare('SELECT * FROM users WHERE name=?').get(body.data.name) as StoredUser|undefined:undefined;
       try {
         const hash=await derive(body.success?body.data.password:'',user?.salt??'nox-invalid-user',64) as Buffer;
         if(!user||!timingSafeEqual(hash,Buffer.from(user.hash,'hex'))){this.failed(req);res.status(401).json({error:{message:'Invalid credentials'}});return;}
         this.db.prepare('DELETE FROM attempts WHERE address=?').run(digest(req.ip??'unknown'));
-        this.issue(res,user.name);res.json({user:{name:user.name,role:user.role}});
+        this.issue(res,user.name);res.json({user:{name:user.name,role:user.role,isSuperAdmin:user.is_super_admin===1}});
       } catch {res.status(503).json({error:{message:'Authentication temporarily unavailable'}});}
     });
     app.post('/api/auth/logout',(req,res)=>{const cookie=this.cookie(req);if(cookie)this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(cookie));res.clearCookie('nox_session',{path:'/'});res.json({ok:true});});
+    app.use('/api/auth/users',(req,res,next)=>{
+      const user=this.user(req);
+      if(!user){res.status(401).json({error:{message:'Sign in to manage accounts'}});return;}
+      if(user.role!=='admin'){res.status(403).json({error:{message:'Requires admin role'}});return;}
+      next();
+    });
+    app.get('/api/auth/users',(req,res)=>{
+      res.json({items:this.db.prepare('SELECT name,role,is_super_admin FROM users ORDER BY name').all().map(user=>({name:user.name,role:user.role,isSuperAdmin:user.is_super_admin===1})),canManageAdministrators:this.user(req)!.isSuperAdmin});
+    });
+    app.post('/api/auth/users',async(req,res)=>{
+      const body=z.object({name:z.string().trim().min(3).max(50),password:z.string().min(8).max(128),role:z.enum(['admin','analyst','viewer']).default('analyst')}).strict().safeParse(req.body);
+      if(!body.success){res.status(400).json({error:{message:'Invalid account details'}});return;}
+      if(body.data.role==='admin'&&!this.user(req)!.isSuperAdmin){res.status(403).json({error:{message:'Requires super administrator'}});return;}
+      try {
+        const salt=randomBytes(16).toString('hex'),hash=(await derive(body.data.password,salt,64) as Buffer).toString('hex');
+        // A logout during hashing must not authorize a subsequent account creation.
+        const actor=this.user(req);
+        if(actor?.role!=='admin'){res.status(401).json({error:{message:'Sign in to manage accounts'}});return;}
+        if(body.data.role==='admin'&&!actor.isSuperAdmin){res.status(403).json({error:{message:'Requires super administrator'}});return;}
+        const result=this.db.prepare('INSERT INTO users(name,role,salt,hash) VALUES(?,?,?,?) ON CONFLICT(name) DO NOTHING').run(body.data.name,body.data.role,salt,hash);
+        if(!result.changes){res.status(409).json({error:{message:'Username already exists'}});return;}
+        res.status(201).json({user:{name:body.data.name,role:body.data.role,isSuperAdmin:false}});
+      } catch {res.status(503).json({error:{message:'Cannot create account'}});}
+    });
+    app.delete('/api/auth/users/:name',(req,res)=>{
+      const target=this.db.prepare('SELECT role,is_super_admin FROM users WHERE name=?').get(req.params.name);
+      if(!target){res.status(404).json({error:{message:'Account not found'}});return;}
+      if(target.is_super_admin===1){res.status(403).json({error:{message:'Super administrator cannot be deleted'}});return;}
+      if(target.role==='admin'&&!this.user(req)!.isSuperAdmin){res.status(403).json({error:{message:'Requires super administrator'}});return;}
+      // Foreign-key cascade revokes every session belonging to this account.
+      this.db.prepare('DELETE FROM users WHERE name=? AND is_super_admin=0').run(req.params.name);
+      res.status(204).end();
+    });
     app.use('/api',(req,res,next)=>{
       // AI routes authenticate themselves: a browser-supplied key may be used anonymously
       // (the caller pays), while the server key requires a session. See server/ai/routes.ts.

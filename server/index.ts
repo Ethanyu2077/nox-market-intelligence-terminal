@@ -14,6 +14,7 @@ import { getProjectOnchainSnapshot } from './dexpaprika.ts';
 import {BinanceWeb3Service} from './binance-web3.ts';
 import {koreanSpot} from './korean-spot.ts';
 import {CoinGlassService,CoinGlassClient} from './coinglass.ts';
+import {installCoinGlassAccess,coinGlassResearchContext} from './coinglass-access.ts';
 import {ProviderCredentials,installProviderSettings} from './provider-credentials.ts';
 import {BinanceExchangeService} from './binance-exchange.ts';
 import { analyzeResearch, READ_ONLY_TOOLS, signalsFromSnapshots } from './research.ts';
@@ -101,6 +102,7 @@ const alerts = new AlertService(dataDirectory, () => store.getAlerts(), () => st
 await alerts.init();
 alerts.start();
 const auth = new AuthStore(defaultAuthDirectory(), dataDirectory); await auth.init(); auth.install(app);
+installCoinGlassAccess(app,auth);
 installProviderSettings(app,auth,providerCredentials,key=>{coinglass=new CoinGlassService(new CoinGlassClient(key));});
 installAiRoutes(app, {
   auth,
@@ -331,9 +333,11 @@ app.get('/api/health', (_req, res) => res.json({ service: 'nox-market-intelligen
 // generic upstream error, and lets an operator see which venue is being cooled down.
 app.get('/api/venues/health', (_req, res) => res.json({ items: venueBreakers.snapshot(), timestamp: Date.now() }));
 
-let dataHealthCache: { at: number; value: unknown } | null = null;
-app.get('/api/data-health/center', safe(async (_req, res) => {
-  if (dataHealthCache && Date.now() - dataHealthCache.at < 10_000) { res.json(dataHealthCache.value); return; }
+const dataHealthCache = new Map<boolean, { at: number; value: ReturnType<typeof buildDataHealth> }>();
+app.get('/api/data-health/center', safe(async (req, res) => {
+  const canUseCoinGlass = auth.user(req)?.role === 'admin';
+  const cached = dataHealthCache.get(canUseCoinGlass);
+  if (cached && Date.now() - cached.at < 10_000) { res.json(cached.value); return; }
   const generatedAt = Date.now();
   const projects = store.getProjects(true);
   const storage = history.status();
@@ -345,7 +349,7 @@ app.get('/api/data-health/center', safe(async (_req, res) => {
       pendingBytes: storage.capacity?.pendingBytes ?? null,
       rows: storage.databaseRowsAcknowledged ?? null,
     },
-    providers: [{ ...coinglass.health() }],
+    providers: canUseCoinGlass ? [coinglass.health()] : [],
     collectors: collector.status().map((item) => ({ projectId: item.projectId, mode: item.mode ?? 'unknown', error: item.error, checkedAt: item.checkedAt })),
     l2: { ...l2Collector.health(), feeds: l2Collector.feedSnapshots() },
     breakers: venueBreakers.snapshot(),
@@ -359,7 +363,7 @@ app.get('/api/data-health/center', safe(async (_req, res) => {
     inputs.projects.push({ id: project.id, name: project.name, mode: project.monitoring.collectionMode ?? 'unknown', venues, coverage });
   }
   const value = buildDataHealth(inputs as never);
-  dataHealthCache = { at: Date.now(), value };
+  dataHealthCache.set(canUseCoinGlass, { at: Date.now(), value });
   res.json(value);
 }));
 app.get('/api/exchanges', (_req, res) => res.json({ items: exchangeCapabilities(), timestamp: Date.now() }));
@@ -440,7 +444,7 @@ app.get('/api/web3/capabilities',(_req,res)=>res.json({provider:'Binance Web3',c
 app.get('/api/projects/:id/research-context', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; }
-  const [centralizedMarkets, onchain, web3, coinGlass, koreanSpotData] = await Promise.all([projectVenueSnapshots(project.markets), getProjectOnchainSnapshot(project),binanceWeb3.project(project),coinglass.project(project),koreanSpot.project(project)]);
+  const [centralizedMarkets, onchain, web3, coinGlass, koreanSpotData] = await Promise.all([projectVenueSnapshots(project.markets), getProjectOnchainSnapshot(project),binanceWeb3.project(project),coinGlassResearchContext(auth,req,()=>coinglass.project(project)),koreanSpot.project(project)]);
   res.json({
     schemaVersion: 'nox.research-context.v1', generatedAt: Date.now(), project, centralizedMarkets, onchain,web3,coinglass:coinGlass,koreanSpot:koreanSpotData,
     interpretationBoundaries: [

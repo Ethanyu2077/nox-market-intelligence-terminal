@@ -23,7 +23,7 @@ test('provider credentials encrypt at rest, survive restart, and do not expose k
 });
 test('only admins can read/save/test/delete provider keys; hot updates and sanitized verification work',async()=>{
   const dir=await mkdtemp(path.join(tmpdir(),'nox-provider-routes-')),auth=new AuthStore(dir),store=new ProviderCredentials(dir);await auth.init();await store.init();
-  const db=new DatabaseSync(path.join(dir,'auth.sqlite'));const salt='a'.repeat(32),hash=scryptSync('fixture-password',salt,64).toString('hex');for(const role of ['admin','analyst','viewer'])db.prepare('INSERT INTO users VALUES(?,?,?,?)').run(role,role,salt,hash);db.close();
+  const db=new DatabaseSync(path.join(dir,'auth.sqlite'));const salt='a'.repeat(32),hash=scryptSync('fixture-password',salt,64).toString('hex');for(const role of ['admin','analyst','viewer'])db.prepare('INSERT INTO users(name,role,salt,hash) VALUES(?,?,?,?)').run(role,role,salt,hash);db.close();
   const app=express();app.use(express.json());auth.install(app);let current='';
   installProviderSettings(app,auth,store,key=>{current=key;},key=>new CoinGlassClient(key,async()=>new Response(JSON.stringify(key==='bad-key'?{code:'401',msg:'never expose fixture-secret'}:{code:'0',data:['TEST']}))),'environment-key');
   const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));const base=`http://127.0.0.1:${(server.address() as {port:number}).port}/api`;

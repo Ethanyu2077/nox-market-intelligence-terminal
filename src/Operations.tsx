@@ -28,19 +28,19 @@ async function request<T>(url: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${url}`, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const data = await response.json(); if (!response.ok) throw new Error(data.error?.message ?? 'Request failed'); return data;
 }
-export function AccessBar({ language }: { language: string }) {
+export function AccessBar({ language, onRoleChange }: { language: string; onRoleChange?: (role: string | null) => void }) {
   const zh = language === 'zh';
-  const [status, setStatus] = useState<{ user: { name: string; role: string } | null } | null>(null);
+  const [status, setStatus] = useState<{ user: { name: string; role: string; isSuperAdmin:boolean } | null } | null>(null);
   const [error,setError] = useState('');
   const [open,setOpen] = useState(false);
-  const refresh = useCallback(() => { void request<typeof status>('/auth/status').then(value=>{setStatus(value);window.dispatchEvent(new Event('nox:auth-changed'));}).catch(() => setError(zh ? '认证状态不可用' : 'Authentication unavailable')); }, [zh]);
+  const refresh = useCallback(() => { void request<typeof status>('/auth/status').then(value=>{setStatus(value);onRoleChange?.(value?.user?.role??null);setError('');window.dispatchEvent(new Event('nox:auth-changed'));}).catch(() => {onRoleChange?.(null);setError(zh ? '认证状态不可用' : 'Authentication unavailable');}); }, [zh,onRoleChange]);
   useEffect(() => {
     refresh();
     const login=()=>{setOpen(true);};
     window.addEventListener('nox:auth-required',login);
     return()=>window.removeEventListener('nox:auth-required',login);
   },[refresh]);
-  return <section className="ops-access"><div><span>{status?.user ? `${status.user.name} · ${status.user.role}` : zh ? '只读访问 · 修改项目需要登录' : 'Read-only · sign in to change projects'}</span>
+  return <section className="ops-access"><div><span>{status?.user ? `${status.user.name} · ${status.user.isSuperAdmin?(zh?'超级管理员':'Super administrator'):status.user.role}` : zh ? '只读访问 · 修改项目需要登录' : 'Read-only · sign in to change projects'}</span>
     <button onClick={()=>status?.user?void request('/auth/logout',{}).then(refresh).catch(()=>setError(zh?'退出失败，请重试':'Sign out failed; please retry')):setOpen(true)}>{status?.user?(zh?'退出':'Sign out'):(zh?'登录':'Sign in')}</button>
     </div>{error&&<p role="alert">{error}</p>}{open&&<AuthDialog language={language} onClose={()=>setOpen(false)} onSuccess={refresh}/>}
   </section>;

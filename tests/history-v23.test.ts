@@ -225,6 +225,30 @@ test("failed transaction does not advance checkpoint and retries idempotently", 
   await store.close();
 });
 
+test("daily L2 journals are read locally and included in database replication", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-l2-history-"));
+  const local = new HistoryStore(dir);
+  await local.init();
+  try {
+    await local.append({ ...event("l2-bucket"), kind: "l2" });
+    const page = await local.page("p", { kind: "l2", asOf: 2000 });
+    assert.deepEqual(page.items.map((item) => item.id), ["l2-bucket"]);
+  } finally {
+    await local.close();
+  }
+
+  const db = database();
+  const replica = new HistoryStore(dir, undefined, db.pool);
+  await replica.init();
+  try {
+    assert.equal(replica.status().connected, true);
+    assert.equal(replica.status().databaseRowsAcknowledged, 1);
+    assert.equal(db.state.inserts, 1);
+  } finally {
+    await replica.close();
+  }
+});
+
 test(
   "real TimescaleDB: migrations, market mapping, indexed query and restart recovery",
   { skip: !process.env.NOX_TEST_DATABASE_URL },

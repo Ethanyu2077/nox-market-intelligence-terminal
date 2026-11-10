@@ -11,6 +11,7 @@ const money=(v:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFr
 export function WatchOverview({projects,language,onOpen,onManage}:{projects:MarketProject[];language:'zh'|'en';onOpen:(id:string)=>void;onManage:()=>void}){
   const zh=language==='zh',t=(cn:string,en:string)=>zh?cn:en;
   const [data,setData]=useState<OverviewData|null>(null),[error,setError]=useState(''),[loading,setLoading]=useState(false),[refresh,setRefresh]=useState(0);
+  const end=data?.end??0;
   const [indicator,setIndicator]=useState<'price'|'cvd'|'flow'|'oi'>('price');
   const [minutes,setMinutes]=useState(60),[benchmark,setBenchmark]=useState('absolute'),[selected,setSelected]=useState<string[]|null>(null),[rank,setRank]=useState('surge'),[market,setMarket]=useState('perpetual');
   const [priceGate,setPriceGate]=useState(1),[volumeGate,setVolumeGate]=useState(2);
@@ -30,13 +31,13 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const names=new Map(projects.map(p=>[p.id,p.tokenSymbol||p.name]));
   const rows=(data?.rows??[]).filter(r=>names.has(r.projectId));
   const reference=data?.benchmarks.find(r=>r.projectId===benchmark);
-  const relative=(r:WatchRow,m=minutes)=>{const value=performance(r.candles,data!.end,m);if(benchmark==='absolute')return value;const ref=reference?performance(reference.candles,data!.end,m):null;return value!==null&&ref!==null?value-ref:null;};
+  const relative=(r:WatchRow,m=minutes)=>{const value=performance(r.candles,end,m);if(benchmark==='absolute')return value;const ref=reference?performance(reference.candles,end,m):null;return value!==null&&ref!==null?value-ref:null;};
   const relativeLabel=(v:number|null)=>v===null?'—':benchmark==='absolute'?pct(v):`${v>0?'+':''}${v.toFixed(2)} pp`;
   const sorted=[...rows].sort((a,b)=>(relative(b)??-Infinity)-(relative(a)??-Infinity));
   const chartRows=(selected!==null?rows.filter(r=>selected.includes(r.projectId)):sorted.slice(0,4)).slice(0,4);
   const chartSeries=chartRows.map((row)=>{
     const color=COLORS[Math.max(0,projects.findIndex(p=>p.id===row.projectId))%COLORS.length];
-    const points=windowPoints(row.candles,data!.end,minutes),ref=reference?windowPoints(reference.candles,data!.end,minutes):null;
+    const points=windowPoints(row.candles,end,minutes),ref=reference?windowPoints(reference.candles,end,minutes):null;
     let values:Array<number|null>|null=null;
     if(indicator==='price'){
       values=points&&(benchmark==='absolute'||ref)?points.map((p,j)=>(p.close/points[0].close-1)*100-(ref?(ref[j].close/ref[0].close-1)*100:0)):null;
@@ -54,15 +55,15 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const vals=chartSeries.flatMap(s=>s.values??[]).filter((v):v is number=>v!=null),max=Math.max(.1,...vals.map(Math.abs));
   const events=useMemo(()=>{
     return (data?.rows??[]).flatMap(row=>row.candles.flatMap((c,i)=>{
-      if(!i||c.time<data!.end-86_400_000||row.candles[i-1].time!==c.time-BUCKET)return[];
+      if(!i||c.time<end-86_400_000||row.candles[i-1].time!==c.time-BUCKET)return[];
       const change=(c.close/row.candles[i-1].close-1)*100,ratio=volumeRatio(row.candles,i);
       return Math.abs(change)>=priceGate||(ratio!==null&&ratio>=volumeGate)?[{row,time:c.time,change,ratio}]:[];
     })).sort((a,b)=>b.time-a.time).slice(0,80);
-  },[data,priceGate,volumeGate]);
+  },[data,end,priceGate,volumeGate]);
   const comparable=rows.filter(r=>r.marketType===market&&r.quote==='USDT'&&!r.error);
   const ranked=comparable.map(row=>{
     const fresh=row.candles.at(-1)?.time===data?.end;
-    const points=rank==='volume'?windowPoints(row.candles,data!.end,1440):null;
+    const points=rank==='volume'?windowPoints(row.candles,end,1440):null;
     const value=rank==='volume'?(points?points.slice(1).reduce((sum,c)=>sum+c.volume,0):null):fresh?volumeRatio(row.candles,row.candles.length-1):null;
     return {row,value};
   }).filter((r):r is {row:WatchRow;value:number}=>r.value!==null&&Number.isFinite(r.value)).sort((a,b)=>b.value-a.value);
@@ -89,23 +90,23 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     {stale&&<div className="wo-notice">{t('数据已延迟，请核对时间后使用。','Data delayed. Check timestamps before use.')}</div>}
     {!projects.some(p=>!p.archived)?<div className="wo-empty"><h2>{t('先添加你的关注项目','Add your first project')}</h2><p>{t('总览只加载已添加的项目，不扫描全市场。','This overview only loads your projects.')}</p><button onClick={onManage}>{t('添加项目','Add project')}</button></div>:<>
     <div className="wo-ticker" aria-label={t('关注行情','Watchlist quotes')}>
-      {rows.map(r=><button key={r.projectId} onClick={()=>onOpen(r.projectId)}><strong>{names.get(r.projectId)}</strong><span>{r.candles.at(-1)?.close.toLocaleString(zh?'zh-CN':'en-US',{maximumSignificantDigits:7})??'—'} <small>{r.quote}</small></span><b className={(performance(r.candles,data!.end,1440)??0)>=0?'wo-up':'wo-down'}>{pct(performance(r.candles,data!.end,1440))}</b></button>)}
+      {rows.map(r=><button key={r.projectId} onClick={()=>onOpen(r.projectId)}><strong>{names.get(r.projectId)}</strong><span>{r.candles.at(-1)?.close.toLocaleString(zh?'zh-CN':'en-US',{maximumSignificantDigits:7})??'—'} <small>{r.quote}</small></span><b className={(performance(r.candles,end,1440)??0)>=0?'wo-up':'wo-down'}>{pct(performance(r.candles,end,1440))}</b></button>)}
     </div>
     <div className="wo-pulse"><span className="wo-scope">{t('关注范围','WATCHLIST')} <b>{rows.length}</b></span><span>{t('上涨','Advancing')} <b className="wo-up">▲ {gainers.length}</b></span><span>{t('下跌','Declining')} <b className="wo-down">▼ {losers.length}</b></span><span>{t('平均','Average')} <b className={(average??0)>=0?'wo-up':'wo-down'}>{relativeLabel(average)}</b></span><span>{t('有效样本','Valid samples')} <b>{valid.length}/{rows.length}</b></span><span className="wo-pulse-end">{minutes<60?`${minutes}m`:`${minutes/60}h`} · {benchmark==='absolute'?t('绝对涨跌','Absolute'):benchmark.replace('USDT','')} · {t('5m 收盘','5m close')}</span></div>
     <section className={`wo-panel wo-main-panel ${fullscreen?'wo-fullscreen':''}`}><div className="wo-panel-head"><h2><i>01</i>{t('相对强弱','Relative strength')}</h2><div className="wo-controls"><select aria-label={t('指标','Indicator')} value={indicator} onChange={e=>{setIndicator(e.target.value as typeof indicator);setHover(null);}}><option value="price">{t('价格强弱','Price strength')}</option><option value="cvd">CVD</option><option value="flow">{t('主动净额','Flow Δ')}</option><option value="oi">{t('OI 变化','OI Δ')}</option></select><div className="wo-tabs">{[5,15,60,240,1440].map(m=><button key={m} aria-pressed={minutes===m} onClick={()=>{setMinutes(m);setHover(null);}}>{m<60?`${m}m`:`${m/60}h`}</button>)}</div><select aria-label={t('比较基准','Benchmark')} value={benchmark} onChange={e=>setBenchmark(e.target.value)}><option value="absolute">{t('绝对涨跌','Absolute return')}</option><option value="BTCUSDT">vs BTC</option><option value="ETHUSDT">vs ETH</option></select></div></div>
     <div className="wo-strength"><div className="wo-chart"><div className="wo-legend">{rows.map(row=>{const series=chartSeries.find(s=>s.row.projectId===row.projectId);return <button key={row.projectId} aria-pressed={!!series} onClick={()=>toggle(row.projectId)} style={{color:series?.color}}><span className="wo-dot"/>{names.get(row.projectId)} <b>{series?.values?indicatorLabel(series.values[hover??series.values.length-1]):'—'}</b></button>;})}<small>{t('最多选 4 个','Up to 4')}</small></div>
     {vals.length?<svg viewBox="0 0 820 370" role="img" aria-label={t('同一时间起点的涨跌幅比较','Returns from a common starting time')} onMouseLeave={()=>setHover(null)} onMouseMove={event=>{const rect=event.currentTarget.getBoundingClientRect();const count=chartSeries.find(s=>s.values)?.values?.length??1;setHover(Math.round(Math.max(0,Math.min(1,((event.clientX-rect.left)/rect.width*820-46)/624))*(count-1)));}}>
       {[-1,-.5,0,.5,1].map(factor=><g key={factor}><line x1="46" x2="670" y1={y(max*factor)} y2={y(max*factor)} className={factor===0?'wo-zero':'wo-grid'}/><text x="3" y={y(max*factor)-5}>{(max*factor).toFixed(1)}{unit}</text></g>)}
-      {[0,.25,.5,.75,1].map(factor=><g key={factor}><line x1={46+624*factor} x2={46+624*factor} y1="28" y2="326" className="wo-grid"/><text x={46+624*factor} y="357" textAnchor={factor===0?'start':factor===1?'end':'middle'}>{stamp(data!.end-minutes*60_000*(1-factor))}</text></g>)}
+      {[0,.25,.5,.75,1].map(factor=><g key={factor}><line x1={46+624*factor} x2={46+624*factor} y1="28" y2="326" className="wo-grid"/><text x={46+624*factor} y="357" textAnchor={factor===0?'start':factor===1?'end':'middle'}>{stamp(end-minutes*60_000*(1-factor))}</text></g>)}
       {chartSeries.filter(s=>s.values).flatMap(s=>segments(s.values!).map((segment,index)=><polyline key={`${s.row.projectId}-${index}`} fill="none" stroke={s.color} strokeWidth="1.8" vectorEffect="non-scaling-stroke" points={segment.map(p=>`${p.x},${p.y}`).join(' ')}/>))}
       {endpoints.map(s=><g className="wo-end-label" key={s.row.projectId}><circle cx="670" cy={y(lastOf(s.values!))} r="3" fill={s.color}/><path d={`M674 ${y(lastOf(s.values!))} L689 ${s.target}`} fill="none" stroke={s.color} opacity=".6"/><rect x="692" y={s.target-10} width="124" height="20" rx="2" fill={s.color} opacity=".12"/><text x="698" y={s.target+4} style={{fill:s.color}}>{names.get(s.row.projectId)} {indicatorLabel(lastOf(s.values!))}</text></g>)}
-      {hover!==null&&<g><line x1={46+hover/((chartSeries.find(s=>s.values)?.values?.length??2)-1)*624} x2={46+hover/((chartSeries.find(s=>s.values)?.values?.length??2)-1)*624} y1="28" y2="326" className="wo-cursor"/>{chartSeries.filter(s=>s.values&&s.values[hover]!=null).map(s=><circle key={s.row.projectId} cx={46+hover/(s.values!.length-1)*624} cy={y(s.values![hover])} r="3" fill={s.color}/>)}<text x="46" y="18">{stamp(data!.end-minutes*60_000+hover*BUCKET)}</text></g>}
+      {hover!==null&&<g><line x1={46+hover/((chartSeries.find(s=>s.values)?.values?.length??2)-1)*624} x2={46+hover/((chartSeries.find(s=>s.values)?.values?.length??2)-1)*624} y1="28" y2="326" className="wo-cursor"/>{chartSeries.filter(s=>s.values&&s.values[hover]!=null).map(s=><circle key={s.row.projectId} cx={46+hover/(s.values!.length-1)*624} cy={y(s.values![hover])} r="3" fill={s.color}/>)}<text x="46" y="18">{stamp(end-minutes*60_000+hover*BUCKET)}</text></g>}
     </svg>:<div className="wo-empty wo-chart-empty">{loading?t('正在加载已收盘行情…','Loading closed candles…'):t('选择标的以对比连续历史','Select projects with continuous history')}</div>}
     <div className="wo-chart-foot"><span>{t('共同起点 · 收益率归零','Common origin · Returns rebased to zero')}</span><button onClick={()=>setTableOpen(!tableOpen)} aria-expanded={tableOpen}>{tableOpen?t('收起周期矩阵 ↑','Hide matrix ↑'):t('周期矩阵 ↓','Timeframe matrix ↓')}</button></div></div>
     <aside className="wo-leaders">{[{title:t('强势榜','Leaders'),items:gainers,positive:true},{title:t('弱势榜','Laggards'),items:losers,positive:false}].map(group=><div className="wo-leader-column" key={group.title}><h3 className={group.positive?'wo-up':'wo-down'}>{group.positive?'↗':'↘'} {group.title}<small>{unit}</small></h3>{group.items.slice(0,10).map((r,i)=><button className="wo-leader-row" key={r.projectId} onClick={()=>toggle(r.projectId)} aria-pressed={chartRows.some(c=>c.projectId===r.projectId)} title={t('点击加入或移出图表','Toggle chart comparison')}><em>{i+1}</em><strong>{names.get(r.projectId)}</strong><b className={group.positive?'wo-up':'wo-down'}>{relativeLabel(relative(r))}</b><span className={group.positive?'wo-meter wo-positive':'wo-meter wo-negative'} style={{width:`${Math.min(100,Math.abs(relative(r)??0)/Math.max(.01,...valid.map(Math.abs))*100)}%`}}/></button>)}{!group.items.length&&<div className="wo-small-empty">{t('暂无符合标的','No matching projects')}</div>}</div>)}</aside></div>
     {tableOpen&&<div className="wo-table-scroll"><table><thead><tr><th>{t('标的 / 研究','Project / Research')}</th>{[15,60,240,1440].map(m=><th key={m}>{m<60?`${m}m`:`${m/60}h`}</th>)}</tr></thead><tbody>{sorted.map(r=><tr key={r.projectId}><td><button className="wo-link" onClick={()=>onOpen(r.projectId)}>{names.get(r.projectId)} ↗</button><small title={r.error??''}>{r.venue} · {r.marketType==='spot'?t('现货','Spot'):t('永续','Perp')}{r.error?' · !':''}</small></td>{[15,60,240,1440].map(m=>{const v=relative(r,m);return <td key={m} className={v===null?'':v>=0?'wo-up':'wo-down'}>{relativeLabel(v)}</td>;})}</tr>)}</tbody></table></div>}
     </section>
-    <div className="wo-bottom wo-dock">{cardsOpen&&<FlowCards rows={rows} names={names} end={data!.end} language={language}/>}
+    <div className="wo-bottom wo-dock">{cardsOpen&&<FlowCards rows={rows} names={names} end={end} language={language}/>}
     {flowOpen&&<CapitalFlowVisual rows={chartRows} names={names} colors={COLORS} language={language}/>}
     <section className="wo-panel"><div className="wo-panel-head"><h2><i>02</i>{t('异动流','Anomaly flow')}</h2><span>{t('最近 24h','Last 24h')}</span></div><div className="wo-tabs wo-dock-tabs">{[['all',t('全部','All')],['up',t('急涨','Rising')],['down',t('急跌','Falling')],['volume',t('放量','Volume')]].map(([id,label])=><button key={id} aria-pressed={feedFilter===id} onClick={()=>setFeedFilter(id)}>{label}</button>)}</div>
     <div className="wo-feed">{visibleEvents.map(e=><button className="wo-event wo-tape-row" key={`${e.row.projectId}:${e.time}`} onClick={()=>onOpen(e.row.projectId)} title={`${e.row.venue} · ${e.row.symbol} · ${new Date(e.time).toLocaleString()}`}><time>{stamp(e.time)}</time><strong>{names.get(e.row.projectId)}</strong><span className={Math.abs(e.change)>=priceGate?(e.change>0?'wo-tag wo-up':'wo-tag wo-down'):'wo-tag'}>{Math.abs(e.change)>=priceGate?(e.change>0?t('急涨','Rise'):t('急跌','Fall')):t('放量','Volume')}</span><b className={e.change>=0?'wo-up':'wo-down'}>{pct(e.change)}</b><small>{e.ratio!==null&&e.ratio>=volumeGate?`${e.ratio.toFixed(1)}×`:''}</small></button>)}{!visibleEvents.length&&<div className="wo-empty">{t('暂无满足条件的观测','No matching observations')}</div>}</div>

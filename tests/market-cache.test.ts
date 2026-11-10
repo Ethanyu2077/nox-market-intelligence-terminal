@@ -1,36 +1,55 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-
+import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
+import { setImmediate } from 'node:timers/promises';
+
 import { MarketCache } from '../server/market-cache.ts';
 
-const cache = () => new MarketCache(path.join(os.tmpdir(), `nox-cache-${Date.now()}-${Math.random()}`));
-
-test('concurrent cold requests share one loader', async () => {
-  const c = cache(); let calls = 0;
-  const load = async () => { calls += 1; await new Promise((r) => setTimeout(r, 20)); return { n: 1 }; };
-  const [a, b] = await Promise.all([c.get('k', { ttlMs: 1000, load }), c.get('k', { ttlMs: 1000, load })]);
+test('concurrent cold requests share the payload and timestamp', async (t) => {
+  const cache = new MarketCache(null);
+  t.after(() => cache.close());
+  let calls = 0;
+  const load = async () => { calls += 1; return { n: calls }; };
+  const [a, b] = await Promise.all([cache.get('k', { ttlMs: 1_000, load }), cache.get('k', { ttlMs: 1_000, load })]);
   assert.equal(calls, 1);
-  assert.deepEqual(a.value, b.value);
+  assert.deepEqual(a, b);
 });
 
-test('stale hits return the old value immediately and refresh once', async () => {
-  const c = cache(); let calls = 0;
-  const load = async () => ({ n: ++calls });
-  await c.get('k', { ttlMs: 0, staleMs: 60_000, load });
-  const stale = await c.get('k', { ttlMs: 0, staleMs: 60_000, load });
-  assert.equal(stale.stale, true);
-  assert.equal(stale.value.n, 1);
+test('active keys refresh on the server clock and idle keys stop', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const cache = new MarketCache(null, 100);
+  t.after(() => cache.close());
+  let calls = 0;
+  const options = { ttlMs: 30, load: async () => ++calls };
+
+  const first = await cache.get('k', options);
+  t.mock.timers.tick(29);
+  assert.deepEqual(await cache.get('k', options), first);
+  t.mock.timers.tick(1);
+  const duringRefresh = await cache.get('k', options);
+  assert.equal(duringRefresh.value, first.value);
+  assert.equal(duringRefresh.stale, true);
+  await setImmediate();
+  assert.equal((await cache.get('k', options)).value, 2);
+  t.mock.timers.tick(110);
   assert.equal(calls, 2);
+  assert.equal((await cache.get('k', options)).value, 3);
 });
 
-test('loader failure serves the last persisted value when stale', async () => {
-  const dir = path.join(os.tmpdir(), `nox-cache-fail-${Date.now()}`);
+test('an old on-disk snapshot remains available when its scheduled refresh fails', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'nox-market-cache-'));
   const first = new MarketCache(dir);
-  await first.get('k', { ttlMs: 1000, load: async () => ({ ok: true }) });
   const restarted = new MarketCache(dir);
-  const result = await restarted.get('k', { ttlMs: 0, staleMs: 1, load: async () => { throw new Error('upstream down'); } });
-  assert.deepEqual(result.value, { ok: true });
-  assert.equal(result.stale, true);
+  t.after(async () => { first.close(); restarted.close(); await rm(dir, { recursive: true, force: true }); });
+  const published = await first.get('k', { ttlMs: 1_000, load: async () => ({ ok: true }) });
+  first.close();
+  let failed!: () => void;
+  const attempted = new Promise<void>(resolve => { failed = resolve; });
+  const options = { ttlMs: 0, load: async () => { failed(); throw new Error('upstream down'); } };
+  const stale = await restarted.get('k', options);
+  await attempted;
+  assert.deepEqual(stale, { ...published, stale: true });
+  assert.deepEqual(await restarted.get('k', options), stale);
 });

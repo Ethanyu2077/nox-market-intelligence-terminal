@@ -9,6 +9,7 @@
 import type { DepthVenue, OrderBookLevel, OrderBookSnapshot } from '../shared/orderbook.ts';
 import { venueBreakers } from './venue-health.ts';
 import { binanceGovernor } from './binance-governor.ts';
+import { MarketCache } from './market-cache.ts';
 
 export type { DepthVenue, OrderBookLevel, OrderBookSnapshot } from '../shared/orderbook.ts';
 
@@ -18,7 +19,7 @@ const ENDPOINTS: Record<DepthVenue, string> = {
 };
 
 const REQUEST_TIMEOUT = 8_000;
-const CACHE_TTL = 2_000;
+const CACHE_TTL = 4_000;
 const LIMITATIONS = [
   'REST depth snapshot at a single moment; the venue book can change before it is rendered.',
   'Not a sequenced L2 feed: missed updates cannot be detected, and hidden/iceberg size is never observable.',
@@ -72,7 +73,11 @@ export function parseDepth(exchange: DepthVenue, symbol: string, payload: unknow
   };
 }
 
-const cache = new Map<string, { at: number; value: Promise<OrderBookSnapshot> }>();
+const cache = new MarketCache(null, 10_000);
+const transportCaches = new WeakMap<typeof fetch, MarketCache>();
+
+export function closeDepthCache() { cache.close(); }
+
 
 export function isDepthVenue(exchange: string): exchange is DepthVenue {
   return exchange === 'binance' || exchange === 'aster';
@@ -82,9 +87,12 @@ export async function orderBookSnapshot(exchange: string, symbol: string, limit 
   if (!isDepthVenue(exchange)) throw new Error(`${exchange} has no verified depth adapter`);
   const depthLimit = Math.min(50, Math.max(5, Math.trunc(limit)));
   const key = `${exchange}:${symbol.toUpperCase()}:${depthLimit}`;
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL) return hit.value;
-  const value = (async () => {
+  let selectedCache = cache;
+  if (transport !== fetch) {
+    selectedCache = transportCaches.get(transport) ?? new MarketCache(null, 10_000);
+    transportCaches.set(transport, selectedCache);
+  }
+  const load = async () => {
     if (!venueBreakers.allow(exchange, 'depth')) throw new Error(`${exchange} depth is in an open-circuit cooldown`);
     try {
       const url = `${ENDPOINTS[exchange]}/fapi/v1/depth?symbol=${encodeURIComponent(symbol.toUpperCase())}&limit=${depthLimit}`;
@@ -102,9 +110,7 @@ export async function orderBookSnapshot(exchange: string, symbol: string, limit 
       venueBreakers.failure(exchange, error instanceof Error ? error.message : 'depth failed', 'depth');
       throw error;
     }
-  })();
-  cache.set(key, { at: Date.now(), value });
-  if (cache.size > 200) { for (const [id, row] of cache) if (Date.now() - row.at > CACHE_TTL * 4) cache.delete(id); }
-  value.catch(() => { if (cache.get(key)?.value === value) cache.delete(key); });
-  return value;
+  };
+  const { value, stale } = await selectedCache.get(key, { ttlMs: CACHE_TTL, timeoutMs: REQUEST_TIMEOUT, load });
+  return stale && value.quality === 'live' ? { ...value, quality: 'stale' } : value;
 }

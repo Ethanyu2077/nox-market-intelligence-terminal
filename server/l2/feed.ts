@@ -8,7 +8,7 @@ import { BinanceCooldownError, binanceGovernor } from '../binance-governor.ts';
  * applied. A sequence gap forces a full resync; the book never bridges a gap.
  *
  * This is intentionally separate from `orderbook.ts` (single REST snapshot): the snapshot
- * endpoint keeps its own 2s TTL and is not backed by this continuous state.
+ * endpoint has its own refresh clock and is not backed by this continuous state.
  */
 
 interface Delta { bids: Array<[string, string]>; asks: Array<[string, string]>; first: number | null; last: number; previous: number | null; previousLast?: number | null; checksum?: number | null; eventTime: number }

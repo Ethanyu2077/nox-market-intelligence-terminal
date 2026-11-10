@@ -54,5 +54,5 @@ test('snapshot fetch parses a venue response and caches it', async () => {
   const second = await orderBookSnapshot('binance', 'BTCUSDT', 5, transport);
   assert.equal(first.bestBid, 100);
   assert.equal(second.lastUpdateId, 42);
-  assert.equal(calls, 1, 'second call hits the 2s cache');
+  assert.equal(calls, 1, 'second call hits the shared cache');
 });

@@ -4,11 +4,12 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { getInstruments, marketSeries, openMarketStream, overview, scanner } from './binance.ts';
+import { getInstruments, marketSeries, overview, scanner } from './binance.ts';
 import { marketSeries as asterMarketSeries } from './aster.ts';
 import { discoverAcrossExchanges, exchangeCapabilities, getExchangeInstruments, projectVenueSnapshots } from './exchanges.ts';
 import { openExchangeStream } from './exchange-streams.ts';
-import { EXCHANGE_IDS, type ExchangeId } from '../shared/types.ts';
+import { EXCHANGE_IDS, type ExchangeId, type MarketProject } from '../shared/types.ts';
+import type { L2Metrics, L2Snapshot } from '../shared/l2.ts';
 import { FileStore } from './store.ts';
 import { getProjectOnchainSnapshot } from './dexpaprika.ts';
 import {BinanceWeb3Service} from './binance-web3.ts';
@@ -45,7 +46,7 @@ import { watchOverview } from './watch-overview.ts';
 import { watchlistQuotes } from './watchlist.ts';
 import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
 import { venueBreakers } from './venue-health.ts';
-import { isDepthVenue, orderBookSnapshot } from './orderbook.ts';
+import { closeDepthCache, isDepthVenue, orderBookSnapshot } from './orderbook.ts';
 import { capabilityRegistry } from './capability-registry.ts';
 import { acquireL2 } from './l2/feed.ts';
 import { analyzeLeadLag } from './leadlag.ts';
@@ -58,6 +59,7 @@ import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
 import { buildProviderChecks } from './provider-crosscheck.ts';
 import { marketCache } from './market-cache.ts';
+import { LiveSnapshots } from './live-snapshots.ts';
 import { validateContractIdentity } from './web3-contract.ts';
 import { assessResearchQuality } from './research-quality.ts';
 import { binanceGovernor } from './binance-governor.ts';
@@ -329,22 +331,43 @@ app.get('/api/projects/:id/signal-lab', safe(async (req, res) => {
   const asOf = Math.min(query.asOf ?? Date.now(), Date.now()), id = String(req.params.id);
   res.json(signalLab(await history.read(id, 'regime', asOf), await history.read(id, 'snapshot', asOf, 10_000), query.horizon, query.costBps, asOf));
 }));
+type FlowQuery = z.infer<typeof flowQuery>;
+const flowFrames = new LiveSnapshots<ReturnType<OrderFlowService['snapshot']>>('orderflow', 2_000);
+function flowSource(project: MarketProject, interval: FlowQuery['interval'], reset: FlowQuery['reset']) {
+  const signature = (item: MarketProject) => JSON.stringify([item.markets, item.monitoring.collectionMode, item.monitoring.streamingEnabled]);
+  const configuration = signature(project);
+  return {
+    key: JSON.stringify([project.id, interval, reset, configuration]),
+    create: () => ({
+      release: orderFlow.acquire(project),
+      sample: () => {
+        const current = store.getProjects(true).find(p => p.id === project.id);
+        if (!current || current.archived || current.monitoring.collectionMode === 'paused' || signature(current) !== configuration) return null;
+        return orderFlow.snapshot(current, interval, reset);
+      },
+    }),
+  };
+}
 app.get('/api/projects/:id/orderflow', safe(async (req, res) => {
   const project = store.getProjects(true).find(p => p.id === String(req.params.id) && !p.archived);
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
-  const query = flowQuery.parse(req.query);
-  res.json(orderFlow.snapshot(project, query.interval, query.reset, Math.min(query.at ?? Date.now(), Date.now())));
+  const { interval, reset, at } = flowQuery.parse(req.query);
+  if (at !== undefined || project.monitoring.collectionMode === 'paused') {
+    res.json(orderFlow.snapshot(project, interval, reset, Math.min(at ?? Date.now(), Date.now())));
+    return;
+  }
+  const source = flowSource(project, interval, reset);
+  res.json(flowFrames.read(source.key, source.create));
 }));
-app.get('/api/projects/:id/orderflow/stream', (req, res) => {
+app.get('/api/projects/:id/orderflow/stream', safe((req, res) => {
   const project = store.getProjects(true).find(p => p.id === String(req.params.id) && !p.archived);
   const query = flowQuery.safeParse(req.query);
   if (!project || !query.success) { res.status(400).json({ error: { message: 'Invalid project or interval' } }); return; }
   res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
-  const release = orderFlow.acquire(project);
-  const send = () => { const current = store.getProjects(true).find(p => p.id === project.id); if (!current || current.archived || current.monitoring.collectionMode === 'paused' || JSON.stringify(current.markets) !== JSON.stringify(project.markets)) { res.end(); release(); return; } if (!res.destroyed && res.writableLength < 1_000_000) res.write(`event: orderflow\ndata: ${JSON.stringify(orderFlow.snapshot(project, query.data.interval, query.data.reset))}\n\n`); };
-  send(); const timer = setInterval(send, 2000);
-  req.on('close', () => { clearInterval(timer); release(); });
-});
+  if (project.monitoring.collectionMode === 'paused') { res.end(); return; }
+  const source = flowSource(project, query.data.interval, query.data.reset);
+  flowFrames.subscribe(source.key, source.create, res);
+}));
 
 app.get('/api/health', (_req, res) => res.json({ service: 'nox-market-intelligence-api', status: 'ok', mode: 'live-public', venues: EXCHANGE_IDS, timestamp: Date.now() }));
 // Per-venue breaker state: lets the UI explain a fast-failing venue instead of showing a
@@ -429,19 +452,33 @@ app.get('/api/data-health', async (_req, res) => {
 app.get('/api/instruments', safe(async (req, res) => { const q = String(req.query.search ?? '').toUpperCase(); const exchange = exchangeSchema.catch('binance').parse(req.query.exchange) as ExchangeId; const items = (await getExchangeInstruments(exchange)).filter((i) => !q || i.nativeSymbol.includes(q) || i.base.includes(q)).slice(0, 50); res.json({ items, total: items.length, exchange, timestamp: Date.now() }); }));
 app.get('/api/projects', (_req, res) => res.json({ items: store.getProjects(true), selectedProjectId: store.getSelectedProjectId() }));
 // Hydrated quotes for every active project, so the watchlist is a price board and not a
-// list of dashes. Short server-side TTL; partial coverage is explicit per row.
+// list of dashes. The server refreshes active windows independently of client polling.
 app.get('/api/watchlist/overview', safe(async (req, res) => {
   const minutes = z.coerce.number().int().min(5).max(1440).default(60).parse(req.query.minutes ?? 60);
   const cached = await marketCache.get(`overview:${minutes}`, {
-    ttlMs: 15_000, staleMs: 10 * 60_000, timeoutMs: 20_000,
+    ttlMs: 60_000, timeoutMs: 20_000,
     load: () => watchOverview(store.getProjects(true), orderFlow, history, undefined, minutes),
   });
   res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
   res.json({ ...cached.value, cache: { stale: cached.stale, at: cached.at } });
 }));
-app.get('/api/watchlist/quotes', safe(async (_req, res) => res.json(await watchlistQuotes(store.getProjects(true)))));
+app.get('/api/watchlist/quotes', safe(async (_req, res) => {
+  const cached = await marketCache.get('watchlist:quotes', {
+    ttlMs: 60_000, load: () => watchlistQuotes(store.getProjects(true)),
+  });
+  res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
+  res.json(cached.value);
+}));
 app.post('/api/projects/discover', safe(async (req, res) => { const body = z.object({ query: z.string().trim().min(1).max(100) }).parse(req.body); res.json(await discoverAcrossExchanges(body.query)); }));
-app.get('/api/projects/:id/venues', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } res.json(await projectVenueSnapshots(project.markets)); }));
+app.get('/api/projects/:id/venues', safe(async (req, res) => {
+  const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
+  if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; }
+  const cached = await marketCache.get(`venues:${project.id}:${JSON.stringify(project.markets)}`, {
+    ttlMs: 30_000, timeoutMs: 15_000, load: () => projectVenueSnapshots(project.markets),
+  });
+  res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
+  res.json(cached.value);
+}));
 app.get('/api/projects/:id/korean-spot',safe(async(req,res)=>{const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}res.json(await koreanSpot.project(project));}));
 app.get('/api/projects/:id/binance',safe(async(req,res)=>{const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}res.json(await binanceExchange.project(project));}));
 app.get('/api/projects/:id/venue-coverage', safe(async (req, res) => { const project = store.getProjects(true).find((item) => item.id === String(req.params.id)); if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; } const limit = z.coerce.number().int().min(1).max(2000).default(500).parse(req.query.limit ?? 500); const asOf = Math.min(z.coerce.number().finite().min(1e12).optional().parse(req.query.asOf) ?? Date.now(), Date.now()); res.json(await venueCoverage(history, project, asOf, limit)); }));
@@ -502,36 +539,54 @@ app.get('/api/scanner', safe(async (req, res) => { const limit = Math.min(Number
 app.get('/api/market/:symbol/overview', safe(async (req, res) => res.json(await overview(String(req.params.symbol)))));
 app.get('/api/market/:symbol/series', safe(async (req, res) => { const interval = z.enum(['1m', '5m', '15m', '1h', '4h']).catch('5m').parse(req.query.interval); res.json(await marketSeries(String(req.params.symbol), interval)); }));
 // Venue-scoped series so a non-Binance primary feed (e.g. Aster) can drive the native charts.
+class SeriesCooldownError extends Error {}
 app.get('/api/market/:exchange/:symbol/series', safe(async (req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange);
   if (!exchange.success) { res.status(400).json({ error: { message: 'Unsupported exchange' } }); return; }
   const interval = z.enum(['1m', '5m', '15m', '1h', '4h']).catch('5m').parse(req.query.interval);
   if (exchange.data !== 'binance' && exchange.data !== 'aster') { res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } }); return; }
-  if (!venueBreakers.allow(exchange.data, 'series')) { res.status(503).json({ error: { message: `${exchange.data} series is in an open-circuit cooldown` } }); return; }
+  const venue = exchange.data;
+  const symbol = String(req.params.symbol).toUpperCase();
   try {
-    const symbol = String(req.params.symbol).toUpperCase();
-    const cached = await marketCache.get(`series:${exchange.data}:${symbol}:${interval}`, {
-      ttlMs: 15_000, staleMs: 15 * 60_000, timeoutMs: 9_000,
-      load: () => exchange.data === 'binance' ? marketSeries(symbol, interval) : asterMarketSeries(symbol, interval),
+    const cached = await marketCache.get(`series:${venue}:${symbol}:${interval}`, {
+      ttlMs: 30_000, timeoutMs: 9_000,
+      load: async () => {
+        if (!venueBreakers.allow(venue, 'series')) throw new SeriesCooldownError(`${venue} series is in an open-circuit cooldown`);
+        try {
+          const series = await (venue === 'binance' ? marketSeries(symbol, interval) : asterMarketSeries(symbol, interval));
+          venueBreakers.success(venue, 'series');
+          return series;
+        } catch (error) {
+          venueBreakers.failure(venue, error instanceof Error ? error.message : 'series failed', 'series');
+          throw error;
+        }
+      },
     });
-    venueBreakers.success(exchange.data, 'series');
     res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
     res.json({ ...cached.value, cache: { stale: cached.stale, at: cached.at } });
   } catch (error) {
-    venueBreakers.failure(exchange.data, error instanceof Error ? error.message : 'series failed', 'series');
-    throw error;
+    if (!(error instanceof SeriesCooldownError)) throw error;
+    res.status(503).json({ error: { message: error.message } });
   }
-  res.status(501).json({ error: { message: `${exchange.data} has no native historical series adapter` } });
 }));
 const l2VenueSchema = z.enum(['binance', 'bybit', 'okx']);
-app.get('/api/market/:exchange/:symbol/book', safe(async (req, res) => {
+function bookSource(venue: z.infer<typeof l2VenueSchema>, symbol: string) {
+  const { feed, release } = acquireL2(venue, symbol);
+  return {
+    release,
+    sample: () => ({ snapshot: feed.snapshot(), metrics: feed.book.metricHistory().slice(-120) }),
+  };
+}
+const bookFrames = new LiveSnapshots<{ snapshot: L2Snapshot; metrics: L2Metrics[] }>(
+  'book', 250, ({ snapshot, metrics }) => ({ snapshot, metrics: metrics.at(-1) ?? null }),
+);
+app.get('/api/market/:exchange/:symbol/book', safe((req, res) => {
   const venue = l2VenueSchema.safeParse(req.params.exchange);
   if (!venue.success) { res.status(501).json({ error: { code: 'L2_UNAVAILABLE', message: 'Continuous L2 is implemented for binance, bybit and okx', timestamp: Date.now() } }); return; }
-  const { feed, release } = acquireL2(venue.data, String(req.params.symbol).toUpperCase());
-  try { res.json({ snapshot: feed.snapshot(), metrics: feed.book.metricHistory().slice(-120) }); }
-  finally { release(); }
+  const symbol = String(req.params.symbol).toUpperCase();
+  res.json(bookFrames.read(`${venue.data}:${symbol}`, () => bookSource(venue.data, symbol)));
 }));
-app.get('/api/market/:exchange/:symbol/book/stream', (req, res) => {
+app.get('/api/market/:exchange/:symbol/book/stream', safe((req, res) => {
   const venue = l2VenueSchema.safeParse(req.params.exchange);
   if (!venue.success) { res.status(501).json({ error: { code: 'L2_UNAVAILABLE', message: 'Continuous L2 is implemented for binance, bybit and okx', timestamp: Date.now() } }); return; }
   res.setHeader('Content-Type', 'text/event-stream');
@@ -539,15 +594,9 @@ app.get('/api/market/:exchange/:symbol/book/stream', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-  const { feed, release } = acquireL2(venue.data, String(req.params.symbol).toUpperCase());
-  const send = () => {
-    if (res.writableEnded || res.destroyed) return;
-    res.write(`event: book\ndata: ${JSON.stringify({ snapshot: feed.snapshot(), metrics: feed.book.metricHistory().slice(-1)[0] ?? null })}\n\n`);
-  };
-  send();
-  const timer = setInterval(send, 250);
-  req.on('close', () => { clearInterval(timer); release(); });
-});
+  const symbol = String(req.params.symbol).toUpperCase();
+  bookFrames.subscribe(`${venue.data}:${symbol}`, () => bookSource(venue.data, symbol), res);
+}));
 app.get('/api/market/:exchange/:symbol/depth', safe(async (req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange);
   if (!exchange.success) { res.status(400).json({ error: { code: 'INVALID_EXCHANGE', message: 'Unsupported exchange', timestamp: Date.now() } }); return; }
@@ -556,21 +605,22 @@ app.get('/api/market/:exchange/:symbol/depth', safe(async (req, res) => {
   if (!limit.success) { res.status(400).json({ error: { code: 'INVALID_LIMIT', message: 'Depth limit must be 5-50', timestamp: Date.now() } }); return; }
   res.json(await orderBookSnapshot(exchange.data, String(req.params.symbol), limit.data));
 }));
-app.get('/api/market/:exchange/:symbol/stream', (req, res) => {
+function sendMarketStream(venue: ExchangeId, symbol: string, res: express.Response) {
+  res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
+  const send = (event: string, payload: unknown) => {
+    if (!res.writableEnded && !res.destroyed && !res.writableNeedDrain) res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  const stop = openExchangeStream(venue, symbol.toUpperCase(), (payload) => send('market', payload), (state, detail) => send('connection', { state, detail, timestamp: Date.now() }));
+  const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 15_000);
+  res.once('close', () => { clearInterval(heartbeat); stop(); });
+}
+app.get('/api/market/:exchange/:symbol/stream', safe((req, res) => {
   const exchange = exchangeSchema.safeParse(req.params.exchange); if (!exchange.success) { res.status(400).json({ error: { code: 'INVALID_EXCHANGE', message: 'Unsupported exchange', timestamp: Date.now() } }); return; }
-  res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
-  const send = (event: string, payload: unknown) => { if (res.writableEnded || res.destroyed) return; res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); };
-  const stop = openExchangeStream(exchange.data, String(req.params.symbol), (payload) => send('market', payload), (state, detail) => send('connection', { state, detail, timestamp: Date.now() }));
-  const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 15_000);
-  req.on('close', () => { clearInterval(heartbeat); stop(); });
-});
-app.get('/api/market/:symbol/stream', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
-  const send = (event: string, payload: unknown) => { if (res.writableEnded || res.destroyed) return; res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); };
-  const stop = openMarketStream(String(req.params.symbol), (payload) => send('market', payload), (state, detail) => send('connection', { state, detail, timestamp: Date.now() }));
-  const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 15_000);
-  req.on('close', () => { clearInterval(heartbeat); stop(); });
-});
+  sendMarketStream(exchange.data, String(req.params.symbol), res);
+}));
+app.get('/api/market/:symbol/stream', safe((req, res) => {
+  sendMarketStream('binance', String(req.params.symbol), res);
+}));
 app.get('/api/watchlists', (_req, res) => res.json({ symbols: store.getWatchlist() }));
 app.post('/api/watchlists', safe(async (req, res) => { const body = z.object({ symbols: z.array(z.string().regex(/^[A-Z0-9]{5,20}$/)).max(100) }).parse(req.body); res.json({ symbols: await store.setWatchlist(body.symbols) }); }));
 const alertScopeSchema = z.object({
@@ -625,6 +675,6 @@ const server = app.listen(port, host, () => console.log(`NOX API listening on ht
   }
 }
 let shuttingDown = false;
-const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; try { await l2Collector.flush(); } catch { /* audit flush best effort */ } researchJobs.close(); l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
+const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; marketCache.close(); closeDepthCache(); bookFrames.close(); flowFrames.close(); try { await l2Collector.flush(); } catch { /* audit flush best effort */ } researchJobs.close(); l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

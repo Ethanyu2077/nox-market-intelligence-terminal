@@ -60,17 +60,29 @@ function flowOf(service: OrderFlowService | undefined, project: MarketProject, e
   if (!service) return null;
   try {
     const snapshot = service.snapshot(project, '5m', 'window', end);
-    const perp = snapshot.aggregates.perpetual, spot = snapshot.aggregates.spot;
-    const sum = (rows: typeof perp.buckets, key: 'buy' | 'sell' | 'delta') => {
+    const perp = snapshot.aggregates.perpetual;
+    const sum = (rows: Array<{ buy: number | null; sell: number | null; delta: number | null }>, key: 'buy' | 'sell' | 'delta') => {
       const values = rows.map((row) => row[key]).filter((value): value is number => value != null && Number.isFinite(value));
       return values.length ? values.reduce((total, value) => total + value, 0) : null;
     };
-    const perpBuckets = perp.buckets.map((row) => ({ time: row.time, buy: row.buy, sell: row.sell, delta: row.delta, cvd: row.cvd }));
-    const lastCvd = [...perp.buckets].reverse().find((row) => row.cvd != null)?.cvd ?? null;
+    // Aggregate buckets are null unless every requested venue is covered; per-venue buckets
+    // still carry real trades. Sum those and expose coverage separately instead of hiding data.
+    const perpVenues = snapshot.venues.filter((venue) => venue.market.marketType === 'perpetual');
+    const spotVenues = snapshot.venues.filter((venue) => venue.market.marketType !== 'perpetual');
+    const perpBuckets = [...snapshot.venues.filter((venue) => venue.market.marketType === 'perpetual')
+      .flatMap((venue) => venue.buckets).reduce((map, row) => {
+        if (row.buy == null && row.sell == null && row.delta == null) return map;
+        const current = map.get(row.time) ?? { time: row.time, buy: 0, sell: 0, delta: 0 };
+        current.buy += row.buy ?? 0; current.sell += row.sell ?? 0; current.delta += row.delta ?? 0;
+        map.set(row.time, current); return map;
+      }, new Map<number, { time: number; buy: number; sell: number; delta: number }>()).values()]
+      .sort((a, b) => a.time - b.time);
+    let runningCvd = 0;
+    const perpBucketsWithCvd = perpBuckets.map((row) => ({ ...row, cvd: (runningCvd += row.delta) }));
     return {
-      buy: sum(perp.buckets, 'buy'), sell: sum(perp.buckets, 'sell'), delta: sum(perp.buckets, 'delta'),
-      cvd: lastCvd, spotDelta: sum(spot.buckets, 'delta'), perpDelta: sum(perp.buckets, 'delta'),
-      buckets: perpBuckets,
+      buy: sum(perpBuckets, 'buy'), sell: sum(perpBuckets, 'sell'), delta: sum(perpBuckets, 'delta'),
+      cvd: perpBucketsWithCvd.at(-1)?.cvd ?? null, spotDelta: sum(spotVenues.flatMap((venue) => venue.buckets), 'delta'), perpDelta: sum(perpVenues.flatMap((venue) => venue.buckets), 'delta'),
+      buckets: perpBucketsWithCvd,
       venues: snapshot.venues.map((venue) => {
         const sum = (key: 'buy' | 'sell' | 'delta') => {
           const values = venue.buckets.map((row) => row[key]).filter((value): value is number => value != null && Number.isFinite(value));

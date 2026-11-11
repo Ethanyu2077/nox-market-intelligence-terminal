@@ -503,7 +503,7 @@ app.get('/api/projects/:id/coinglass',safe(async(req,res)=>{
   const history=z.enum(['1h','4h','1d']).optional().safeParse(req.query.history);if(!history.success){res.status(400).json({error:{message:'Invalid history interval'}});return;}
   res.json(await coinglass.project(project,range.data,history.data));
 }));
-app.get('/api/web3/capabilities',(_req,res)=>res.json({provider:'Binance Web3',configured:binanceWeb3.configured,mode:'read-only',signing:'server-side HMAC-SHA256',wallets:false,trading:false,publishing:false}));
+app.get('/api/web3/capabilities',(_req,res)=>res.json({provider:'Binance Spot Alpha',configured:binanceWeb3.configured,mode:'read-only',scope:'spot-alpha',defi:false,wallets:false,signing:false,trading:false}));
 app.get('/api/projects/:id/research-context', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; }

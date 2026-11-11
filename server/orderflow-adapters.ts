@@ -200,7 +200,16 @@ export function openFlowStream(market: ProjectMarket, instrument: Instrument, on
     })();
     return () => { stop(); stopLiquidation(); };
   }
-  if (market.exchange === 'mexc') { onState('partial', 'REST-only: Protobuf spot WebSocket not implemented'); return () => {}; }
+  if (instrument.marketType !== 'spot') { onState('stale', 'Spot instrument required'); return () => {}; }
+  return openSpotFlowStream(market, onTrade, onState);
+}
+
+export function openSpotFlowStream(market: ProjectMarket, onTrade: (trade: FlowTrade) => void, onState: (state: string, detail?: string) => void) {
+  const capability = orderFlowCapability(market);
+  if (market.marketType !== 'spot' || !capability.available || market.exchange === 'aster') {
+    onState('partial', !capability.available ? capability.reason : 'No verified spot WebSocket adapter');
+    return () => {};
+  }
   let stopped = false; let stopSocket: (() => void) | undefined;
   const setup = async () => {
     const symbol = market.symbol;
@@ -208,7 +217,7 @@ export function openFlowStream(market: ProjectMarket, instrument: Instrument, on
     switch (market.exchange) {
       case 'binance': url = `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@aggTrade`; messages = []; break;
       case 'bybit': url = 'wss://stream.bybit.com/v5/public/spot'; messages = [{ op: 'subscribe', args: [`publicTrade.${symbol}`] }]; ping = { op: 'ping' }; break;
-      case 'okx': url = 'wss://ws.okx.com:8443/ws/v5/public'; messages = [{ op: 'subscribe', args: [{ channel: 'trades', instId: symbol }] }]; ping = 'ping'; break;
+      case 'okx': url = 'wss://ws.okx.com:443/ws/v5/public'; messages = [{ op: 'subscribe', args: [{ channel: 'trades', instId: symbol }] }]; ping = 'ping'; break;
       case 'bitget': url = 'wss://ws.bitget.com/v2/ws/public'; messages = [{ op: 'subscribe', args: [{ instType: 'SPOT', channel: 'trade', instId: symbol }] }]; ping = 'ping'; break;
       case 'gate': url = 'wss://api.gateio.ws/ws/v4/'; messages = [{ time: Math.floor(Date.now() / 1000), channel: 'spot.trades', event: 'subscribe', payload: [symbol] }]; break;
       case 'kucoin': {
@@ -226,10 +235,10 @@ export function openFlowStream(market: ProjectMarket, instrument: Instrument, on
       else if (market.exchange === 'gate') list = message.channel === 'spot.trades' && message.event === 'update' ? [message.result as Row] : [];
       else if (market.exchange === 'kucoin') list = String(message.topic).startsWith('/market/match:') ? [message.data as Row] : [];
       else list = rows(message.data);
-      for (const row of list) { const trade = normalizeFlowTrade(market, row, instrument.marketType === 'spot' ? 1 : null, 'websocket'); if (trade) onTrade(trade); }
+      for (const row of list) { const trade = normalizeFlowTrade(market, row, 1, 'websocket'); if (trade) onTrade(trade); }
     }, onState);
   };
-  void setup().catch(error => onState('stale', String(error)));
+  void setup().catch(error => { if (!stopped) onState('stale', String(error)); });
   return () => { stopped = true; stopSocket?.(); };
 }
 

@@ -39,6 +39,7 @@ export class L2Feed {
   private generation = 0;
   private resyncTask: Promise<void> | null = null;
   private retryTimer: NodeJS.Timeout | null = null;
+  private startTimer: NodeJS.Timeout | null = null;
   readonly metrics = { bootstrapAttempts: 0, bootstrapFailures: 0, successfulResyncs: 0, disconnects: 0, cooldowns: 0, lastVerifiedAt: null as number | null };
 
   constructor(readonly venue: L2Venue, readonly symbol: string) {
@@ -47,7 +48,9 @@ export class L2Feed {
 
   start(): void {
     if (this.stopped) return;
-    this.connect();
+    // Spread simultaneous feed bootstraps so one process cannot burst all depth snapshots.
+    this.startTimer = setTimeout(() => { this.startTimer = null; if (!this.stopped) this.connect(); }, Math.floor(Math.random() * 3_000));
+    this.startTimer.unref?.();
     this.watchdog = setInterval(() => {
       const last = this.book.snapshot(this.now()).lastMessageAt;
       if (last != null && this.now() - last > 12_000) this.book.markStale();
@@ -58,6 +61,7 @@ export class L2Feed {
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.startTimer) clearTimeout(this.startTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.watchdog) clearInterval(this.watchdog);
     this.socket?.terminate();

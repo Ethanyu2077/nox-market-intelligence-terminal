@@ -662,7 +662,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 const host = process.env.HOST ?? '127.0.0.1';
 const server = app.listen(port, host, () => console.log(`NOX API listening on http://${host}:${port}`));
-createLiveHub(server, () => store.getProjects(true));
+createLiveHub(server, () => store.getProjects(true), { flowTick: (project, at) => orderFlow.tick(project, at) });
 
 // CCXT catalogues are large (HTX ~2.5k markets) and slow on a cold cache. Warm them in
 // the background so the first project discovery is not blocked by a 20s loadMarkets().

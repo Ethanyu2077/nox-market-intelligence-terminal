@@ -5,6 +5,7 @@ import { openExchangeStream } from './exchange-streams.ts';
 
 export type LiveChannel = 'quotes' | 'flow' | 'edge' | 'depth';
 export const LIVE_CHANNELS: LiveChannel[] = ['quotes', 'flow', 'edge', 'depth'];
+export interface LiveFlow { projectId: string; at: number; windowMs: number; buy: number; sell: number; delta: number; cvd: number; spotDelta: number; perpDelta: number; trades: number }
 export interface LiveTick { projectId: string; symbol: string; price: number | null; change24hPct: number | null; fundingRate: number | null; at: number; stale: boolean }
 
 export function parseLiveEvent(payload: unknown, at: number): Omit<LiveTick, 'projectId' | 'symbol'> | null {
@@ -22,7 +23,7 @@ export function parseLiveEvent(payload: unknown, at: number): Omit<LiveTick, 'pr
 interface Client { socket: WebSocket; projects: Set<string>; channels: Set<LiveChannel>; seq: Record<string, number>; alive: boolean }
 interface Feed { stop: () => void; tick: LiveTick }
 
-export function createLiveHub(server: Server, projects: () => MarketProject[], options: { intervalMs?: number } = {}) {
+export function createLiveHub(server: Server, projects: () => MarketProject[], options: { intervalMs?: number; flowTick?: (project: MarketProject, at: number) => LiveFlow } = {}) {
   const wss = new WebSocketServer({ server, path: '/ws/live', maxPayload: 4_096 });
   const clients = new Set<Client>();
   const feeds = new Map<string, Feed>();
@@ -33,6 +34,7 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
     if (client.socket.readyState !== WebSocket.OPEN || client.socket.bufferedAmount > 1_000_000) return;
     client.socket.send(JSON.stringify(payload));
   };
+  const flowsFor = (client: Client) => options.flowTick ? [...client.projects].map((id) => { const project = projects().find((item) => item.id === id); return project ? options.flowTick!(project, Date.now()) : null; }).filter((flow): flow is LiveFlow => Boolean(flow)) : [];
   const ticksFor = (client: Client) => [...client.projects].map((id) => feeds.get(id)?.tick).filter((tick): tick is LiveTick => Boolean(tick));
   const publish = (channel: LiveChannel) => {
     if (!clients.size) return;
@@ -46,10 +48,20 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
   };
   const snapshot = (client: Client, channel: LiveChannel) => {
     client.seq[channel] = (client.seq[channel] ?? 0) + 1;
-    send(client, { type: 'snapshot', channel, seq: client.seq[channel], asOf: Date.now(), ticks: ticksFor(client) });
+    if (channel === 'flow') send(client, { type: 'snapshot', channel, seq: client.seq[channel], asOf: Date.now(), flows: flowsFor(client) });
+    else send(client, { type: 'snapshot', channel, seq: client.seq[channel], asOf: Date.now(), ticks: ticksFor(client) });
   };
 
-  const timers = [setInterval(() => publish('quotes'), quotesEvery), setInterval(() => publish('edge'), edgeEvery)];
+  const publishFlow = () => {
+    if (!clients.size || !options.flowTick) return;
+    for (const client of clients) {
+      if (!client.channels.has('flow')) continue;
+      const flows = flowsFor(client);
+      client.seq.flow = (client.seq.flow ?? 0) + 1;
+      send(client, { type: 'tick', channel: 'flow', seq: client.seq.flow, asOf: Date.now(), flows });
+    }
+  };
+  const timers = [setInterval(() => publish('quotes'), quotesEvery), setInterval(() => publish('edge'), edgeEvery), setInterval(publishFlow, quotesEvery)];
   timers.forEach((timer) => timer.unref?.());
 
   const ensureFeed = (project: MarketProject) => {
@@ -89,7 +101,7 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
         if (Array.isArray(message.channels)) client.channels = new Set(message.channels.filter((channel): channel is LiveChannel => LIVE_CHANNELS.includes(channel as LiveChannel)));
         for (const id of client.projects) ensureFeed(byId.get(id)!);
         for (const channel of client.channels) {
-          if (channel === 'quotes' || channel === 'edge') snapshot(client, channel);
+          if (channel === 'quotes' || channel === 'edge' || channel === 'flow') snapshot(client, channel);
           else send(client, { type: 'status', channel, state: 'UNAVAILABLE', reason: `${channel} live channel is not implemented yet` });
         }
       } else if (message.op === 'resync' && typeof message.channel === 'string' && LIVE_CHANNELS.includes(message.channel as LiveChannel)) {

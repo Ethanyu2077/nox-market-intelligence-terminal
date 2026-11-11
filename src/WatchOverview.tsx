@@ -19,6 +19,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const [feedFilter,setFeedFilter]=useState('all'),[tableOpen,setTableOpen]=useState(false),[hover,setHover]=useState<number|null>(null);
   const [flowOpen,setFlowOpen]=useState(true), [cardsOpen,setCardsOpen]=useState(true), [fullscreen,setFullscreen]=useState(false);
   const [live,setLive]=useState<Record<string,{price:number|null;change:number|null;stale:boolean;at:number}>>({});
+  const [liveFlow,setLiveFlow]=useState<Record<string,{buy:number;sell:number;delta:number;cvd:number;spotDelta:number;perpDelta:number}>>({});
   const signature=projects.map(p=>`${p.id}:${p.updatedAt}`).join('|');
   useEffect(()=>{
     let alive=true,controller:AbortController|null=null;
@@ -37,8 +38,9 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     const connect=()=>{
       const proto=window.location.protocol==='https:'?'wss':'ws';
       socket=new WebSocket(`${proto}://${window.location.host}/ws/live`);
-      socket.onopen=()=>{retry=1_000;socket?.send(JSON.stringify({op:'subscribe',projects:projectKey.split(','),channels:['quotes','edge']}));};
-      socket.onmessage=(event)=>{try{const msg=JSON.parse(String(event.data));const channel=typeof msg.channel==='string'?msg.channel:null;if(msg.type==='tick'&&channel&&typeof msg.seq==='number'){if(seq[channel]&&msg.seq>seq[channel]+1)socket?.send(JSON.stringify({op:'resync',channel}));seq[channel]=msg.seq;}if(msg.type==='snapshot'&&channel&&typeof msg.seq==='number')seq[channel]=msg.seq;const ticks=Array.isArray(msg.ticks)?msg.ticks:[];if(!ticks.length)return;setLive(current=>{const next={...current};for(const tick of ticks){if(typeof tick.projectId!=='string')continue;next[tick.projectId]={price:Number.isFinite(tick.price)?tick.price:null,change:Number.isFinite(tick.change24hPct)?tick.change24hPct:null,stale:tick.stale===true,at:Number(tick.at)||Date.now()};}return next;});}catch{/* ignore malformed */}};
+      socket.onopen=()=>{retry=1_000;socket?.send(JSON.stringify({op:'subscribe',projects:projectKey.split(','),channels:['quotes','edge','flow']}));};
+      socket.onmessage=(event)=>{try{const msg=JSON.parse(String(event.data));const channel=typeof msg.channel==='string'?msg.channel:null;if(msg.type==='tick'&&channel&&typeof msg.seq==='number'){if(seq[channel]&&msg.seq>seq[channel]+1)socket?.send(JSON.stringify({op:'resync',channel}));seq[channel]=msg.seq;}if(msg.type==='snapshot'&&channel&&typeof msg.seq==='number')seq[channel]=msg.seq;if(msg.channel==='flow'&&Array.isArray(msg.flows)){setLiveFlow(current=>{const next={...current};for(const flow of msg.flows){if(typeof flow.projectId!=='string')continue;next[flow.projectId]={buy:flow.buy,sell:flow.sell,delta:flow.delta,cvd:flow.cvd,spotDelta:flow.spotDelta,perpDelta:flow.perpDelta};}return next;});}
+      const ticks=Array.isArray(msg.ticks)?msg.ticks:[];if(!ticks.length)return;setLive(current=>{const next={...current};for(const tick of ticks){if(typeof tick.projectId!=='string')continue;next[tick.projectId]={price:Number.isFinite(tick.price)?tick.price:null,change:Number.isFinite(tick.change24hPct)?tick.change24hPct:null,stale:tick.stale===true,at:Number(tick.at)||Date.now()};}return next;});}catch{/* ignore malformed */}};
       socket.onclose=()=>{if(closed)return;timer=window.setTimeout(connect,retry);retry=Math.min(15_000,retry*1.7);};
       socket.onerror=()=>{socket?.close();};
     };
@@ -53,6 +55,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const relativeLabel=(v:number|null)=>v===null?'—':benchmark==='absolute'?pct(v):`${v>0?'+':''}${v.toFixed(2)} pp`;
   const sorted=[...rows].sort((a,b)=>(relative(b)??-Infinity)-(relative(a)??-Infinity));
   const chartRows=(selected!==null?rows.filter(r=>selected.includes(r.projectId)):sorted.slice(0,4)).slice(0,4);
+  const withLiveFlow=(row:WatchRow):WatchRow=>liveFlow[row.projectId]?{...row,flow:{...(row.flow??{buy:null,sell:null,delta:null,cvd:null,spotDelta:null,perpDelta:null,buckets:[],venues:[],covered:0,requested:0,source:'orderflow' as const}),...liveFlow[row.projectId]}}:row;
   const chartSeries=chartRows.map((row)=>{
     const color=COLORS[Math.max(0,projects.findIndex(p=>p.id===row.projectId))%COLORS.length];
     const points=windowPoints(row.candles,end,minutes),ref=reference?windowPoints(reference.candles,end,minutes):null;
@@ -129,9 +132,9 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     {tableOpen&&<div className="wo-table-scroll"><table><thead><tr><th>{t('标的 / 研究','Project / Research')}</th>{[15,60,240,1440].map(m=><th key={m}>{m<60?`${m}m`:`${m/60}h`}</th>)}</tr></thead><tbody>{sorted.map(r=><tr key={r.projectId}><td><button className="wo-link" onClick={()=>onOpen(r.projectId)}>{names.get(r.projectId)} ↗</button><small title={r.error??''}>{r.venue} · {r.marketType==='spot'?t('现货','Spot'):t('永续','Perp')}{r.error?' · !':''}</small></td>{[15,60,240,1440].map(m=>{const v=relative(r,m);return <td key={m} className={v===null?'':v>=0?'wo-up':'wo-down'}>{relativeLabel(v)}</td>;})}</tr>)}</tbody></table></div>}
     </section>
     <div className="wo-bottom wo-dock">
-    {flowOpen&&<CapitalFlowVisual rows={chartRows} names={names} colors={COLORS} language={language}/>}
+    {flowOpen&&<CapitalFlowVisual rows={chartRows.map(withLiveFlow)} names={names} colors={COLORS} language={language}/>}
     <LiveFlowEvents rows={rows} names={names} end={end} onOpen={onOpen} language={language}/>
-    {cardsOpen&&<FlowCards rows={rows} names={names} end={end} language={language}/>}
+    {cardsOpen&&<FlowCards rows={rows.map(withLiveFlow)} names={names} end={end} language={language}/>}
     <section className="wo-panel"><div className="wo-panel-head"><h2><i>02</i>{t('异动流','Anomaly flow')}</h2><span>{t('最近 24h','Last 24h')}</span></div><div className="wo-tabs wo-dock-tabs">{[['all',t('全部','All')],['up',t('急涨','Rising')],['down',t('急跌','Falling')],['volume',t('放量','Volume')]].map(([id,label])=><button key={id} aria-pressed={feedFilter===id} onClick={()=>setFeedFilter(id)}>{label}</button>)}</div>
     <div className="wo-feed">{visibleEvents.map(e=><button className="wo-event wo-tape-row" key={`${e.row.projectId}:${e.time}`} onClick={()=>onOpen(e.row.projectId)} title={`${e.row.venue} · ${e.row.symbol} · ${new Date(e.time).toLocaleString()}`}><time>{stamp(e.time)}</time><strong>{names.get(e.row.projectId)}</strong><span className={Math.abs(e.change)>=priceGate?(e.change>0?'wo-tag wo-up':'wo-tag wo-down'):'wo-tag'}>{Math.abs(e.change)>=priceGate?(e.change>0?t('急涨','Rise'):t('急跌','Fall')):t('放量','Volume')}</span><b className={e.change>=0?'wo-up':'wo-down'}>{pct(e.change)}</b><small>{e.ratio!==null&&e.ratio>=volumeGate?`${e.ratio.toFixed(1)}×`:''}</small></button>)}{!visibleEvents.length&&<div className="wo-empty">{t('暂无满足条件的观测','No matching observations')}</div>}</div>
     <details className="wo-method"><summary>{t('阈值与口径 · 5m 已收盘','Thresholds · Closed 5m candles')}</summary><div className="wo-thresholds"><label>{t('涨跌 ≥','Move ≥')}<input type="number" min="0.1" step="0.1" max="100" value={priceGate} onChange={e=>setPriceGate(Math.min(100,Math.max(.1,Number(e.target.value)||.1)))}/>%</label><label>{t('放量 ≥','Volume ≥')}<input type="number" min="1" step="0.5" max="100" value={volumeGate} onChange={e=>setVolumeGate(Math.min(100,Math.max(1,Number(e.target.value)||1)))}/>×</label></div><p>{t('5m 成交额 / 前 12 根中位数；每根合并一条，最多 80 条。','5m turnover / prior 12-candle median. One observation per candle, latest 80.')}</p></details></section>

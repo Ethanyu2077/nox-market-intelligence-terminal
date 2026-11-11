@@ -106,6 +106,22 @@ export class OrderFlowService {
     } catch (error) { feed.state = 'stale'; feed.detail = String(error); }
     finally { feed.loading = false; }
   }
+  /** 1s live display aggregate; separate from the persisted 1m/5m research buckets. */
+  tick(project: MarketProject, at = Date.now(), windowMs = 1_000) {
+    const feeds = [...new Map(project.markets.map(m => [flowKey(m), m])).values()]
+      .map(m => this.feeds.get(flowKey(m))).filter((feed): feed is Feed => Boolean(feed));
+    let buy = 0, sell = 0, spotDelta = 0, perpDelta = 0, trades = 0;
+    for (const feed of feeds) for (const trade of feed.trades) {
+      if (trade.time < at - windowMs) continue;
+      const notional = trade.notional;
+      if (trade.side === 'buy') buy += notional; else sell += notional;
+      if (trade.marketType === 'spot') spotDelta += (trade.side === 'buy' ? notional : -notional);
+      else perpDelta += (trade.side === 'buy' ? notional : -notional);
+      trades += 1;
+    }
+    return { projectId: project.id, at, windowMs, buy, sell, delta: buy - sell, cvd: buy - sell, spotDelta, perpDelta, trades };
+  }
+
   snapshot(project: MarketProject, interval: FlowInterval, reset: FlowReset, at = Date.now()): OrderFlowResponse {
     const times = timeGrid(at, interval);
     const markets = [...new Map(project.markets.map(m => [flowKey(m), m])).values()];

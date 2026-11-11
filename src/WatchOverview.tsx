@@ -6,7 +6,6 @@ import './watch-overview.css';
 import { CapitalFlowVisual } from './CapitalFlowVisual';
 import { FlowCards } from './FlowCards';
 import { LiveFlowEvents } from './LiveFlowEvents';
-import { LiveStrengthChart } from './LiveStrengthChart';
 const COLORS=Array.from({length:8},(_,i)=>`var(--series-${i+1})`);
 const pct=(v:number|null)=>v===null?'—':`${v>0?'+':''}${v.toFixed(2)}%`;
 const money=(v:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:2}).format(v);
@@ -18,7 +17,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const [minutes,setMinutes]=useState(60),[benchmark,setBenchmark]=useState('absolute'),[selected,setSelected]=useState<string[]|null>(null),[rank,setRank]=useState('surge'),[market,setMarket]=useState('perpetual');
   const [priceGate,setPriceGate]=useState(1),[volumeGate,setVolumeGate]=useState(2);
   const [feedFilter,setFeedFilter]=useState('all'),[tableOpen,setTableOpen]=useState(false),[hover,setHover]=useState<number|null>(null);
-  const [flowOpen,setFlowOpen]=useState(true), [cardsOpen,setCardsOpen]=useState(true), [fullscreen,setFullscreen]=useState(false), [liveTest,setLiveTest]=useState(false);
+  const [flowOpen,setFlowOpen]=useState(true), [cardsOpen,setCardsOpen]=useState(true), [fullscreen,setFullscreen]=useState(false);
   const [live,setLive]=useState<Record<string,{price:number|null;change:number|null;stale:boolean;at:number}>>({});
   const [liveFlow,setLiveFlow]=useState<Record<string,{buy:number;sell:number;delta:number;cvd:number;spotDelta:number;perpDelta:number}>>({});
   const signature=projects.map(p=>`${p.id}:${p.updatedAt}`).join('|');
@@ -109,8 +108,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   if(endpoints.length&&endpoints.at(-1)!.target>326){const offset=endpoints.at(-1)!.target-326;endpoints.forEach(s=>{s.target-=offset;});}
   const stale=!!data&&(Date.now()-data.end>10*60_000||!!error);
   return <div className="wo">
-    {liveTest&&<div className="live-test-backdrop" role="dialog" aria-modal="true"><div className="live-test-modal"><div className="live-test-head"><strong>{t('S 级相对强弱 · 实时测试','S-level relative strength · live preview')}</strong><button onClick={()=>setLiveTest(false)}>{t('关闭','Close')}</button></div><div className="live-test-body"><LiveStrengthChart projects={projects.map((p,i)=>({id:p.id,name:p.tokenSymbol||p.name,color:COLORS[i%COLORS.length]}))} language={language}/></div><p className="live-test-note">{t('真实 WS 报价 · 60 秒窗口 · 线性插值延伸，仅测试组件','Real /ws/live quotes · 60s window · linear interpolation, test component only')}</p></div></div>}
-    <div className="wo-heading"><div><h1>{t('关注总览','Watchlist Overview')}</h1></div><div className="wo-actions"><span role="status">{loading?t('更新中…','Updating…'):data?<>{data.cache?.stale?'STALE · ':''}{t('截至','As of')} {new Date(data.end).toLocaleTimeString(zh?'zh-CN':'en-GB')}</>:'—'}</span><button onClick={()=>setRefresh(n=>n+1)} disabled={loading}>{t('刷新','Refresh')}</button><button onClick={()=>setFlowOpen(v=>!v)} aria-pressed={flowOpen}>{t('资金流','Flow')}</button><button onClick={()=>setCardsOpen(v=>!v)} aria-pressed={cardsOpen}>{t('流动卡','Cards')}</button><button onClick={()=>setFullscreen(v=>!v)} aria-pressed={fullscreen}>{t('全屏','Fullscreen')}</button><button onClick={()=>setLiveTest(true)}>{t('测试 S 级曲线','Test S-level')}</button><button onClick={onManage}>{t('管理关注','Manage projects')}</button></div></div>
+    <div className="wo-heading"><div><h1>{t('关注总览','Watchlist Overview')}</h1></div><div className="wo-actions"><span role="status">{loading?t('更新中…','Updating…'):data?<>{data.cache?.stale?'STALE · ':''}{t('截至','As of')} {new Date(data.end).toLocaleTimeString(zh?'zh-CN':'en-GB')}</>:'—'}</span><button onClick={()=>setRefresh(n=>n+1)} disabled={loading}>{t('刷新','Refresh')}</button><button onClick={()=>setFlowOpen(v=>!v)} aria-pressed={flowOpen}>{t('资金流','Flow')}</button><button onClick={()=>setCardsOpen(v=>!v)} aria-pressed={cardsOpen}>{t('流动卡','Cards')}</button><button onClick={()=>setFullscreen(v=>!v)} aria-pressed={fullscreen}>{t('全屏','Fullscreen')}</button><button onClick={onManage}>{t('管理关注','Manage projects')}</button></div></div>
     {error&&<div className="wo-notice" role="alert">{t('更新失败，保留上次数据：','Update failed; retaining previous data: ')}{error}</div>}
     {stale&&<div className="wo-notice">{t('数据已延迟，请核对时间后使用。','Data delayed. Check timestamps before use.')}</div>}
     {!projects.some(p=>!p.archived)?<div className="wo-empty"><h2>{t('先添加你的关注项目','Add your first project')}</h2><p>{t('总览只加载已添加的项目，不扫描全市场。','This overview only loads your projects.')}</p><button onClick={onManage}>{t('添加项目','Add project')}</button></div>:<>

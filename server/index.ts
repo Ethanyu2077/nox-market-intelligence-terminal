@@ -58,6 +58,7 @@ import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
 import { buildProviderChecks } from './provider-crosscheck.ts';
+import { createLiveHub } from './live-hub.ts';
 import { marketCache } from './market-cache.ts';
 import { LiveSnapshots } from './live-snapshots.ts';
 import { validateContractIdentity } from './web3-contract.ts';
@@ -661,6 +662,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 const host = process.env.HOST ?? '127.0.0.1';
 const server = app.listen(port, host, () => console.log(`NOX API listening on http://${host}:${port}`));
+createLiveHub(server, () => store.getProjects(true));
 
 // CCXT catalogues are large (HTX ~2.5k markets) and slow on a cold cache. Warm them in
 // the background so the first project discovery is not blocked by a 20s loadMarkets().

@@ -18,6 +18,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const [priceGate,setPriceGate]=useState(1),[volumeGate,setVolumeGate]=useState(2);
   const [feedFilter,setFeedFilter]=useState('all'),[tableOpen,setTableOpen]=useState(false),[hover,setHover]=useState<number|null>(null);
   const [flowOpen,setFlowOpen]=useState(true), [cardsOpen,setCardsOpen]=useState(true), [fullscreen,setFullscreen]=useState(false);
+  const [live,setLive]=useState<Record<string,{price:number|null;change:number|null;stale:boolean;at:number}>>({});
   const signature=projects.map(p=>`${p.id}:${p.updatedAt}`).join('|');
   useEffect(()=>{
     let alive=true,controller:AbortController|null=null;
@@ -29,6 +30,22 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     void load();const timer=window.setInterval(()=>void load(),60_000);document.addEventListener('visibilitychange',load);
     return()=>{alive=false;controller?.abort();clearInterval(timer);document.removeEventListener('visibilitychange',load);};
   },[signature,refresh,minutes]);
+  const projectKey=projects.map(p=>p.id).join(',');
+  useEffect(()=>{
+    if(!projectKey||typeof window==='undefined')return;
+    let socket:WebSocket|null=null,retry=1_000,closed=false,timer:number|undefined;
+    const connect=()=>{
+      const proto=window.location.protocol==='https:'?'wss':'ws';
+      socket=new WebSocket(`${proto}://${window.location.host}/ws/live`);
+      socket.onopen=()=>{retry=1_000;socket?.send(JSON.stringify({op:'subscribe',projects:projectKey.split(',')}));};
+      socket.onmessage=(event)=>{try{const msg=JSON.parse(String(event.data));const ticks=Array.isArray(msg.ticks)?msg.ticks:[];if(!ticks.length)return;setLive(current=>{const next={...current};for(const tick of ticks){if(typeof tick.projectId!=='string')continue;next[tick.projectId]={price:Number.isFinite(tick.price)?tick.price:null,change:Number.isFinite(tick.change24hPct)?tick.change24hPct:null,stale:tick.stale===true,at:Number(tick.at)||Date.now()};}return next;});}catch{/* ignore malformed */}};
+      socket.onclose=()=>{if(closed)return;timer=window.setTimeout(connect,retry);retry=Math.min(15_000,retry*1.7);};
+      socket.onerror=()=>{socket?.close();};
+    };
+    connect();
+    return()=>{closed=true;if(timer)window.clearTimeout(timer);socket?.close();};
+  },[projectKey]);
+
   const names=new Map(projects.map(p=>[p.id,p.tokenSymbol||p.name]));
   const rows=(data?.rows??[]).filter(r=>names.has(r.projectId));
   const reference=data?.benchmarks?.find(r=>r.projectId===benchmark);
@@ -93,7 +110,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     {stale&&<div className="wo-notice">{t('数据已延迟，请核对时间后使用。','Data delayed. Check timestamps before use.')}</div>}
     {!projects.some(p=>!p.archived)?<div className="wo-empty"><h2>{t('先添加你的关注项目','Add your first project')}</h2><p>{t('总览只加载已添加的项目，不扫描全市场。','This overview only loads your projects.')}</p><button onClick={onManage}>{t('添加项目','Add project')}</button></div>:<>
     <div className="wo-ticker" aria-label={t('关注行情','Watchlist quotes')}>
-      {rows.map(r=><button key={r.projectId} onClick={()=>onOpen(r.projectId)}><strong>{names.get(r.projectId)}</strong><span>{r.candles.at(-1)?.close.toLocaleString(zh?'zh-CN':'en-US',{maximumSignificantDigits:7})??'—'} <small>{r.quote} · {watchStatus(r)}</small></span><b className={(performance(r.candles,end,1440)??0)>=0?'wo-up':'wo-down'}>{pct(performance(r.candles,end,1440))}</b></button>)}
+      {rows.map(r=><button key={r.projectId} onClick={()=>onOpen(r.projectId)}><strong>{names.get(r.projectId)}</strong><span>{(live[r.projectId]?.price??r.candles.at(-1)?.close)?.toLocaleString(zh?'zh-CN':'en-US',{maximumSignificantDigits:7})??'—'} <small>{r.quote} · {live[r.projectId]?.stale?'STALE':watchStatus(r)}</small></span><b className={(live[r.projectId]?.change??performance(r.candles,end,1440)??0)>=0?'wo-up':'wo-down'}>{pct(live[r.projectId]?.change??performance(r.candles,end,1440))}</b></button>)}
     </div>
     <div className="wo-pulse"><span className="wo-scope">{t('关注范围','WATCHLIST')} <b>{rows.length}</b></span><span>{t('上涨','Advancing')} <b className="wo-up">▲ {gainers.length}</b></span><span>{t('下跌','Declining')} <b className="wo-down">▼ {losers.length}</b></span><span>{t('平均','Average')} <b className={(average??0)>=0?'wo-up':'wo-down'}>{relativeLabel(average)}</b></span><span>{t('有效样本','Valid samples')} <b>{valid.length}/{rows.length}</b></span><span className="wo-pulse-end">{minutes<60?`${minutes}m`:`${minutes/60}h`} · {benchmark==='absolute'?t('绝对涨跌','Absolute'):benchmark.replace('USDT','')} · {t('5m 收盘','5m close')}</span></div>
     <section className={`wo-panel wo-main-panel ${fullscreen?'wo-fullscreen':''}`}><div className="wo-panel-head"><h2><i>01</i>{t('相对强弱','Relative strength')}</h2><div className="wo-controls"><select aria-label={t('指标','Indicator')} value={indicator} onChange={e=>{setIndicator(e.target.value as typeof indicator);setHover(null);}}><option value="price">{t('价格强弱','Price strength')}</option><option value="cvd">CVD</option><option value="flow">{t('主动净额','Flow Δ')}</option><option value="oi">{t('OI 变化','OI Δ')}</option></select><div className="wo-tabs">{[5,15,60,240,1440].map(m=><button key={m} aria-pressed={minutes===m} onClick={()=>{setMinutes(m);setHover(null);}}>{m<60?`${m}m`:`${m/60}h`}</button>)}</div><select aria-label={t('比较基准','Benchmark')} value={benchmark} onChange={e=>setBenchmark(e.target.value)}><option value="absolute">{t('绝对涨跌','Absolute return')}</option><option value="BTCUSDT">vs BTC</option><option value="ETHUSDT">vs ETH</option></select></div></div>

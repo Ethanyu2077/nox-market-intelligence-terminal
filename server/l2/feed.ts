@@ -36,6 +36,10 @@ export class L2Feed {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private watchdog: NodeJS.Timeout | null = null;
   private backoff = 1_000;
+  private generation = 0;
+  private resyncTask: Promise<void> | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  readonly metrics = { bootstrapAttempts: 0, bootstrapFailures: 0, successfulResyncs: 0, disconnects: 0, cooldowns: 0, lastVerifiedAt: null as number | null };
 
   constructor(readonly venue: L2Venue, readonly symbol: string) {
     this.book = new L2Book(venue, symbol);
@@ -54,6 +58,7 @@ export class L2Feed {
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.watchdog) clearInterval(this.watchdog);
     this.socket?.terminate();
     this.socket = null;
@@ -64,16 +69,21 @@ export class L2Feed {
 
   private connect(): void {
     if (this.stopped) return;
+    const generation = ++this.generation;
     this.book.markConnecting();
+    this.buffer = [];
     const socket = new WebSocket(this.url(), { handshakeTimeout: 10_000 });
     this.socket = socket;
+    const stale = () => generation !== this.generation || this.socket !== socket;
     socket.on('open', () => {
+      if (stale()) return;
       this.backoff = 1_000;
       const subscription = this.subscription();
       if (subscription) socket.send(JSON.stringify(subscription));
       void this.resync();
     });
     socket.on('message', (raw) => {
+      if (stale()) return;
       let message: Record<string, unknown>;
       try { message = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
       if (message.op === 'pong' || message.event === 'subscribe') return;
@@ -93,8 +103,8 @@ export class L2Feed {
       const result = this.book.applyDelta(delta, this.now());
       if (result.reason === 'gap' || result.reason === 'checksum' || (result.reason === 'not-synced' && !this.syncing)) void this.resync();
     });
-    socket.on('close', () => this.scheduleReconnect());
-    socket.on('error', () => { socket.terminate(); this.scheduleReconnect(); });
+    socket.on('close', () => { if (stale()) return; this.metrics.disconnects += 1; this.scheduleReconnect(); });
+    socket.on('error', () => { if (stale()) return; socket.terminate(); this.scheduleReconnect(); });
   }
 
   private scheduleReconnect(): void {
@@ -107,9 +117,16 @@ export class L2Feed {
     this.backoff = Math.min(30_000, Math.round(this.backoff * 1.8));
   }
 
-  private async resync(attempt = 0): Promise<void> {
+  private resync(attempt = 0): Promise<void> {
+    if (this.resyncTask) return this.resyncTask;
+    this.resyncTask = this.doResync(attempt).finally(() => { this.resyncTask = null; });
+    return this.resyncTask;
+  }
+
+  private async doResync(attempt = 0): Promise<void> {
     if (this.stopped) return;
     this.syncing = true;
+    if (attempt === 0) this.metrics.bootstrapAttempts += 1;
     this.book.markResyncing();
     try {
       let payload: unknown;
@@ -120,21 +137,25 @@ export class L2Feed {
         payload = await response.json();
       }
       this.book.applySnapshot(this.parseRest(payload), this.now());
+      this.metrics.successfulResyncs += 1;
+      this.metrics.lastVerifiedAt = this.now();
       const pending = this.buffer;
       this.buffer = [];
       this.syncing = false;
       for (const delta of pending) {
         const result = this.book.applyDelta(delta, this.now());
-        if (result.reason === 'gap') { if (attempt < 2) void this.resync(attempt + 1); return; }
+        if (result.reason === 'gap') { if (attempt < 2) void this.doResync(attempt + 1); return; }
       }
     } catch (error) {
       this.syncing = false;
+      if (attempt === 0) this.metrics.bootstrapFailures += 1;
       if (error instanceof BinanceCooldownError) {
+        this.metrics.cooldowns += 1;
         // Respect the exchange cooldown instead of re-requesting snapshots in a loop.
-        setTimeout(() => { if (!this.stopped) void this.resync(0); }, Math.min(error.retryAfterMs, 300_000));
+        this.retryTimer = setTimeout(() => { if (!this.stopped) void this.resync(0); }, Math.min(error.retryAfterMs, 300_000));
         return;
       }
-      if (attempt < 2) { await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1))); void this.resync(attempt + 1); }
+      if (attempt < 2) { await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1))); void this.doResync(attempt + 1); }
       else this.scheduleReconnect();
     }
   }

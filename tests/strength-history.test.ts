@@ -71,10 +71,14 @@ test('cursor reads the last observed value only within its freshness interval', 
   const points = [{ t: 2000, value: 0 }, { t: 3000, value: 4 }, { t: 10_000, value: -6 }];
   assert.equal(strengthValueAt(points, 1999), null);
   assert.equal(strengthValueAt(points, 2999), 0);
-  assert.equal(strengthValueAt(points, 8000), 4);
+  assert.equal(strengthValueAt(points, 3000), 4);
+  assert.equal(strengthValueAt(points, 3001), null);
+  assert.equal(strengthValueAt(points, 8000), null);
   assert.equal(strengthValueAt(points, 8001), null);
   assert.equal(strengthValueAt(points, 10_000, 0), -6);
   assert.equal(strengthValueAt(points, 10_001, 0), null);
+  assert.equal(strengthValueAt(points, 15_000), -6);
+  assert.equal(strengthValueAt(points, 15_001), null);
   assert.equal(strengthValueAt([...points, { t: 11_000, value: null }], 11_040), null);
 });
 

@@ -30,39 +30,43 @@ export function performance(candles: WatchCandle[], end: number, minutes: number
 
 export type WatchIndicator = 'price' | 'cvd' | 'flow' | 'oi';
 
+function observedCloses(candles: WatchCandle[]) {
+  return new Map(candles.filter(candle => Number.isFinite(candle.close) && candle.close > 0)
+    .map(candle => [candle.time, candle.close]));
+}
+
 export function historicalStrengthPoints(
   row: WatchRow, reference: WatchRow | undefined, end: number, minutes: number,
   indicator: WatchIndicator, benchmark: string,
 ): { t: number; value: number }[] {
-  const candles = windowPoints(row.candles, end, minutes);
-  if (!candles) return [];
-  if (indicator === 'price') {
-    const ref = benchmark !== 'absolute' && reference ? windowPoints(reference.candles, end, minutes) : null;
-    if (benchmark !== 'absolute' && !ref) return [];
-    return candles.map((candle, index) => ({
-      t: candle.time,
-      value: (candle.close / candles[0].close - 1) * 100 - (ref ? (ref[index].close / ref[0].close - 1) * 100 : 0),
-    }));
-  }
-
-  const observations = indicator === 'oi'
+  const start = end - minutes * 60_000;
+  const observations = indicator === 'price' ? observedCloses(row.candles) : indicator === 'oi'
     ? new Map(row.oiSeries?.map(point => [point.time, point.oiUsd]))
     : new Map(row.flow?.buckets.map(bucket => [bucket.time, indicator === 'flow' ? bucket.delta : bucket.cvd]));
+  const benchmarkCloses = indicator === 'price' && benchmark !== 'absolute' ? observedCloses(reference?.candles ?? []) : null;
   let first: number | undefined;
+  let firstBenchmark: number | undefined;
   let running = 0;
   const result: { t: number; value: number }[] = [];
-  for (const candle of candles) {
-    const observation = observations.get(candle.time);
+  for (const [t, observation] of [...observations].sort(([a], [b]) => a - b)) {
+    if (t < start || t > end || (end - t) % BUCKET !== 0) continue;
     if (observation == null || !Number.isFinite(observation)) continue;
+    const benchmarkClose = benchmarkCloses?.get(t);
+    if (benchmarkCloses && benchmarkClose === undefined) continue;
+    // Each comparison starts at its first observed bucket shared by both markets.
     first ??= observation;
     if (indicator === 'oi' && first === 0) return [];
     let value = observation - first;
-    if (indicator === 'oi') value = (observation / first - 1) * 100;
+    if (indicator === 'oi' || indicator === 'price') value = (observation / first - 1) * 100;
+    if (benchmarkClose !== undefined) {
+      firstBenchmark ??= benchmarkClose;
+      value -= (benchmarkClose / firstBenchmark - 1) * 100;
+    }
     if (indicator === 'flow') {
       running += observation;
       value = running;
     }
-    result.push({ t: candle.time, value });
+    result.push({ t, value });
   }
   return result;
 }

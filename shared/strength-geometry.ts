@@ -48,7 +48,7 @@ export function observedStrengthGap(points: readonly { t: number }[], time: numb
   const next = points.findIndex(point => point.t >= time);
   if (next <= 0 || points[next].t === time) return null;
   const from = points[next - 1].t;
-  return time - from > tolerance ? { from, to: points[next].t } : null;
+  return points[next].t - from > tolerance ? { from, to: points[next].t } : null;
 }
 
 type ProjectedPoint = { x: number; y: number; t: number };
@@ -68,8 +68,9 @@ export function strengthPath(points: readonly ProjectedPoint[], gapMs: number): 
     let end = start;
     while (end + 1 < points.length && points[end + 1].t - points[end].t <= gapMs && points[end + 1].x > points[end].x) end++;
     const first = points[start];
-    commands.push('M' + coord(first.x, first.y));
-    if (end === start) commands.push('h0');
+    // Bridge missing time with a straight segment; fit smooth curves only inside observed runs.
+    commands.push((start === 0 ? 'M' : 'L') + coord(first.x, first.y));
+    if (points.length === 1) commands.push('h0');
     let leftSlope = start < end ? slope(first, points[start + 1]) : 0;
     for (let i = start; i < end; i++) {
       const a = points[i], b = points[i + 1];

@@ -24,15 +24,27 @@ test('historical price points use matching 5m timestamps and benchmark percentag
     { t: 0, value: 0 }, { t: BUCKET, value: 18.75 }, { t: end, value: 37.5 },
   ]);
   assert.equal(historicalStrengthPoints(chartRow, reference, end, 10, 'price', 'absolute').at(-1)?.value, 50);
-  const partial = { ...reference, candles: reference.candles.slice(1) };
-  assert.deepEqual(historicalStrengthPoints(chartRow, partial, end, 10, 'price', 'BTCUSDT'), []);
-  assert.deepEqual(historicalStrengthPoints(partial, reference, end, 10, 'price', 'absolute'), []);
+  assert.deepEqual(historicalStrengthPoints(chartRow, undefined, end, 10, 'price', 'BTCUSDT'), []);
+});
+
+test('sparse price curves align only valid closes and rebase at the first shared sample', () => {
+  const candles = (buckets: number[][]) => buckets.map(([bucket, close]) => ({ time: bucket * BUCKET, close, volume: 1 }));
+  const row = { ...chartRow, candles: candles([[4, 12], [1, 8], [5, 99], [2, 0], [3, 10], [0, 99], [2.5, 18]]) };
+  const reference = { ...chartRow, candles: candles([[0, 0], [1, 16], [2, 10], [4, 20]]) };
+  assert.deepEqual(historicalStrengthPoints(row, reference, 4 * BUCKET, 20, 'price', 'BTCUSDT'), [
+    { t: BUCKET, value: 0 }, { t: 4 * BUCKET, value: 25 },
+  ]);
+  assert.deepEqual(historicalStrengthPoints(row, undefined, 4 * BUCKET, 15, 'price', 'absolute'), [
+    { t: BUCKET, value: 0 }, { t: 3 * BUCKET, value: 25 }, { t: 4 * BUCKET, value: 50 },
+  ]);
+  assert.equal(performance(row.candles, 4 * BUCKET, 15), null);
 });
 
 test('historical CVD, net flow and OI keep observed timestamps, including gaps and zero values', () => {
   const end = 2 * BUCKET;
   const row: WatchRow = {
     ...chartRow,
+    candles: [], // OI and order flow have their own observed timestamps.
     flow: {
       buy: 0, sell: 0, delta: 0, cvd: 0, spotDelta: 0, perpDelta: 0, covered: 1, requested: 1,
       source: 'orderflow', venues: [], buckets: [

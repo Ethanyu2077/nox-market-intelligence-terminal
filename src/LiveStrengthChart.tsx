@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { observedStrengthGap, spreadLabels, strengthDomain, strengthPath } from '../shared/strength-geometry';
-import { liveStrengthReturns, STRENGTH_GAP_MS, STRENGTH_WINDOW_MS, strengthValueAt, type StrengthPoint } from '../shared/strength-history';
+import { STRENGTH_WINDOW_MS, strengthValueAt } from '../shared/strength-history';
 import './live-strength.css';
 
-type Project = { id: string; name: string; color: string };
 type Language = 'zh' | 'en';
 type Unit = '%' | 'pp' | 'USDT';
-export type StrengthLine = Project & {
+type StrengthLine = {
+  id: string;
+  name: string;
+  color: string;
   points: readonly { t: number; value: number }[];
   stale?: boolean;
 };
@@ -21,7 +23,6 @@ type PlotProps = {
   ariaLabel?: string;
   hoverTime?: number | null;
   onHoverTime?: (time: number | null) => void;
-  preview?: boolean;
 };
 
 const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
@@ -58,7 +59,7 @@ function cursorGapLabel(lines: readonly StrengthLine[], time: number, tolerance:
     ? `${gaps.length} 个项目同时缺报 ${seconds} 秒` : `${gaps.length} projects · ${seconds}s quote gap`;
 }
 
-export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLabel, emptyText, hoverTime = null, onHoverTime, preview = false }: PlotProps) {
+export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLabel, emptyText, hoverTime = null, onHoverTime }: PlotProps) {
   const viewport = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
@@ -85,7 +86,7 @@ export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLab
   const duration = end - start;
   const live = duration === STRENGTH_WINDOW_MS;
   const timeLabel = (time: number) => live ? clock.format(time) : clock.format(time).slice(0, 5);
-  const drawingWidth = preview ? width : Math.min(width, height * 820 / 370);
+  const drawingWidth = Math.min(width, height * 820 / 370);
   const inset = (width - drawingWidth) / 2;
   const compact = drawingWidth < 540;
   const fontSize = compact ? 10 : 12;
@@ -95,7 +96,7 @@ export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLab
   const digits = Math.max(2, Math.min(8, Math.ceil(-Math.log10(domain.ticks[1] - domain.ticks[0])) + 1));
   const axisText = domain.ticks.map(v => formatValue(v, unit, digits));
   const axisWidth = Math.max(...axisText.map(text => text.length)) * 6.2 + 10;
-  const left = inset + (preview ? 8 : axisWidth + 3);
+  const left = inset + axisWidth + 3;
   const labels = ranked.map(line => {
     const maxChars = compact ? 7 : 13;
     const name = line.name.length > maxChars ? line.name.slice(0, maxChars - 1) + '…' : line.name;
@@ -103,7 +104,7 @@ export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLab
   });
   const labelWidth = Math.max(compact ? 76 : 100, ...labels.map(label => label.length * fontSize * .64 + 11));
   const labelX = inset + drawingWidth - labelWidth - 4;
-  const right = Math.max(left + 1, labelX - (preview && !compact ? axisWidth + 12 : 18));
+  const right = Math.max(left + 1, labelX - 18);
   const x = (t: number) => left + (t - start) / duration * (right - left);
   const y = (v: number) => bottom - (v - domain.min) / (domain.max - domain.min) * (bottom - top);
   const fresh = ranked.filter(line => !line.stale);
@@ -124,8 +125,8 @@ export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLab
 
   const gapNote = live && cursor !== null ? cursorGapLabel(ranked, cursor, gapMs, language) : '';
 
-  return <div className={preview ? 'strength-live-scroll' : 'strength-live-inline'}>
-    <div ref={viewport} className="strength-live-plot" style={preview ? { minHeight: Math.max(160, (ranked.length - 1) * gap + 52) } : undefined}>
+  return <div className="strength-live-inline">
+    <div ref={viewport} className="strength-live-plot">
       {width > 0 && height > 0 && duration > 0 && <svg className="strength-svg" viewBox={`0 0 ${width} ${height}`} role="img"
         aria-label={ariaLabel ?? (language === 'zh' ? '关注项目相对强弱曲线' : 'Watchlist relative strength')}
         onPointerMove={onHoverTime && (event => {
@@ -138,11 +139,10 @@ export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLab
         onPointerLeave={onHoverTime && (() => onHoverTime(null))}>
         {domain.ticks.map((value, i) => <g key={value} className={value === 0 ? 'strength-grid strength-zero' : 'strength-grid'}>
           <line x1={left} x2={right} y1={y(value)} y2={y(value)}/>
-          <text x={preview ? (compact ? left + 2 : right + 6) : left - 7} y={y(value) + (preview && compact ? -4 : 3)}
-            textAnchor={preview ? 'start' : 'end'}>{axisText[i]}</text>
+          <text x={left - 7} y={y(value) + 3} textAnchor="end">{axisText[i]}</text>
         </g>)}
         {ticks.map(t => <g key={t} className="strength-time">
-          <line x1={x(t)} x2={x(t)} y1={preview ? bottom : top} y2={bottom + 4}/>
+          <line x1={x(t)} x2={x(t)} y1={top} y2={bottom + 4}/>
           <text x={Math.max(left + 18, Math.min(right - 18, x(t)))} y={height - 7} textAnchor="middle">{timeLabel(t)}</text>
         </g>)}
         {[...traces].sort((a, b) => Number(a.strong) - Number(b.strong)).map(({ line, path, strong }) =>
@@ -151,12 +151,12 @@ export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLab
               strokeWidth={strong ? 2.7 : 1.8} strokeLinecap="round" strokeLinejoin="round"/>
             <circle cx={x(line.last.t)} cy={y(line.last.value)} r={strong ? 4 : 2.8} fill="currentColor"/>
           </g>)}
-        {traces.map(({ line, label, labelY, strong }) => <g key={line.id} color={line.color} opacity={line.stale ? .55 : 1}>
+        {traces.map(({ line, label, labelY }) => <g key={line.id} color={line.color} opacity={line.stale ? .55 : 1}>
           <title>{line.name} {formatValue(line.last.value, unit, digits)} · {timeLabel(line.last.t)}{line.stale ? (language === 'zh' ? ' · 已延迟' : ' · Delayed') : ''}</title>
           <line x1={x(line.last.t) + 3} y1={y(line.last.value)} x2={labelX - 3} y2={labelY} stroke="currentColor" opacity={.46}/>
-          {(!preview || strong) && <rect x={labelX} y={labelY - gap / 2 + 1} width={labelWidth} height={gap - 2} rx={preview ? 0 : 2} fill="currentColor" opacity={preview ? 1 : .12}/>}
+          <rect x={labelX} y={labelY - gap / 2 + 1} width={labelWidth} height={gap - 2} rx={2} fill="currentColor" opacity={.12}/>
           <text className="strength-value" x={labelX + 5} y={labelY} dominantBaseline="central"
-            style={{ fontSize, fill: preview && strong ? '#070b0a' : 'currentColor' }}>{label}</text>
+            style={{ fontSize, fill: 'currentColor' }}>{label}</text>
         </g>)}
         {cursor !== null && <g className="strength-cursor">
           <line className="wo-cursor" x1={x(cursor)} x2={x(cursor)} y1={top} y2={bottom}/>
@@ -170,27 +170,4 @@ export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLab
       {!ranked.length && <span className="strength-live-empty" role="status">{emptyText}</span>}
     </div>
   </div>;
-}
-
-type PreviewProps = {
-  projects: readonly Project[];
-  language: Language;
-  series: ReadonlyMap<string, readonly StrengthPoint[]>;
-  now: number;
-  staleIds: ReadonlySet<string>;
-  connected: boolean;
-};
-
-export function LiveStrengthChart({ projects, language, series, now, staleIds, connected }: PreviewProps) {
-  const lines = useMemo(() => {
-    const returns = liveStrengthReturns(series, now, staleIds, connected);
-    return projects.map(project => {
-      const observed = returns.get(project.id);
-      return { ...project, points: observed?.points ?? [], stale: observed?.stale };
-    });
-  }, [projects, series, now, staleIds, connected]);
-  const zh = language === 'zh';
-  const empty = projects.length ? (zh ? '等待实时报价…' : 'Waiting for live quotes…') : (zh ? '暂无关注项目' : 'No watchlist projects');
-  return <StrengthPlot preview lines={lines} start={now - STRENGTH_WINDOW_MS} end={now} gapMs={STRENGTH_GAP_MS} unit="%"
-    language={language} emptyText={empty} ariaLabel={zh ? '关注项目最近 60 秒相对涨跌幅' : 'Watchlist returns over the last 60 seconds'} />;
 }

@@ -50,7 +50,7 @@ export function liveStrengthReturns(
   return returns;
 }
 
-/** Read an observed value at or before the cursor. A missing bucket or an expired quote has no value. */
+/** Read a recent observed value, except inside a confirmed gap between quotes. */
 export function strengthValueAt(
   points: readonly { t: number; value: number | null }[],
   time: number,
@@ -58,7 +58,11 @@ export function strengthValueAt(
 ): number | null {
   for (let i = points.length - 1; i >= 0; i--) {
     const point = points[i];
-    if (point.t <= time) return time - point.t <= maxGapMs ? point.value : null;
+    if (point.t > time) continue;
+    if (point.t === time) return point.value;
+    const next = points[i + 1];
+    if (next && next.t - point.t > maxGapMs) return null;
+    return time - point.t <= maxGapMs ? point.value : null;
   }
   return null;
 }

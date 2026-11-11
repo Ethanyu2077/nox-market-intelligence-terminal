@@ -19,7 +19,7 @@ const ENDPOINTS: Record<DepthVenue, string> = {
 };
 
 const REQUEST_TIMEOUT = 8_000;
-const CACHE_TTL = 4_000;
+const CACHE_TTL = 8_000;
 const LIMITATIONS = [
   'REST depth snapshot at a single moment; the venue book can change before it is rendered.',
   'Not a sequenced L2 feed: missed updates cannot be detected, and hidden/iceberg size is never observable.',

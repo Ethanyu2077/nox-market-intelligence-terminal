@@ -1,80 +1,149 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MarketProject } from '../shared/types';
-import { buildWatchMetrics, performance, windowPoints, volumeRatio, watchStatus, BUCKET, type WatchOverview as OverviewData, type WatchRow } from '../shared/watch-overview';
+import { buildWatchMetrics, historicalStrengthPoints, performance, windowPoints, volumeRatio, watchStatus, BUCKET, type WatchOverview as OverviewData, type WatchRow, type WatchIndicator } from '../shared/watch-overview';
 import { api } from './api';
 import './watch-overview.css';
 import { CapitalFlowVisual } from './CapitalFlowVisual';
 import { FlowCards } from './FlowCards';
 import { LiveFlowEvents } from './LiveFlowEvents';
-import { LiveStrengthChart } from './LiveStrengthChart';
+import { LiveStrengthChart, StrengthPlot } from './LiveStrengthChart';
+import { liveStrengthReturns, strengthMarketKey, strengthValueAt, STRENGTH_WINDOW_MS, STRENGTH_GAP_MS } from '../shared/strength-history';
+import { useStrengthFeed } from './useStrengthFeed';
+import { connectWatchLive, type WatchLiveState } from './watch-live-connection';
+
+const LIVE_PROJECT_LIMIT = 12; // /ws/live subscription limit
+const LIVE_COLORS = [
+  '#3ddc97', '#4aa8ff', '#ffb020', '#ff5d8f', '#b388ff', '#00d4d4', '#ff8a3d', '#c6f432',
+];
 const COLORS=Array.from({length:8},(_,i)=>`var(--series-${i+1})`);
 const pct=(v:number|null)=>v===null?'—':`${v>0?'+':''}${v.toFixed(2)}%`;
+const windows = [1, 5, 15, 60, 240, 1440] as const;
+const windowLabel = (minutes: number) => minutes === 1 ? '60s' : minutes < 60 ? `${minutes}m` : `${minutes / 60}h`;
 const money=(v:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:2}).format(v);
 export function WatchOverview({projects,language,onOpen,onManage}:{projects:MarketProject[];language:'zh'|'en';onOpen:(id:string)=>void;onManage:()=>void}){
   const zh=language==='zh',t=(cn:string,en:string)=>zh?cn:en;
   const [data,setData]=useState<OverviewData|null>(null),[error,setError]=useState(''),[loading,setLoading]=useState(false),[refresh,setRefresh]=useState(0);
   const end=data?.end??0;
-  const [indicator,setIndicator]=useState<'price'|'cvd'|'flow'|'oi'>('price');
-  const [minutes,setMinutes]=useState(60),[benchmark,setBenchmark]=useState('absolute'),[selected,setSelected]=useState<string[]|null>(null),[rank,setRank]=useState('surge'),[market,setMarket]=useState('perpetual');
+  const [indicator,setIndicator]=useState<WatchIndicator>('price');
+  const [minutes,setMinutes]=useState(1),[benchmark,setBenchmark]=useState('absolute'),[selected,setSelected]=useState<string[]|null>(null),[rank,setRank]=useState('surge'),[market,setMarket]=useState('perpetual');
   const [priceGate,setPriceGate]=useState(1),[volumeGate,setVolumeGate]=useState(2);
   const [feedFilter,setFeedFilter]=useState('all'),[tableOpen,setTableOpen]=useState(false),[hover,setHover]=useState<number|null>(null);
   const [flowOpen,setFlowOpen]=useState(true), [cardsOpen,setCardsOpen]=useState(true), [fullscreen,setFullscreen]=useState(false), [liveTest,setLiveTest]=useState(false);
+  const liveWindow = minutes === 1;
+  // The other overview panels use closed 5m buckets, including while the price plot is live.
+  const historyMinutes = liveWindow ? 60 : minutes;
+  const closeChart = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!liveTest) return;
+    const previous = document.activeElement;
+    closeChart.current?.focus();
+    return () => { if (previous instanceof HTMLElement) previous.focus(); };
+  }, [liveTest]);
+  const [connection, setConnection] = useState<WatchLiveState>('connecting');
+  const liveConnected = connection === 'live' || connection === 'syncing';
+  const activeProjects = useMemo(() => projects.filter(project =>
+    !project.archived && project.monitoring.collectionMode !== 'paused'), [projects]);
+  const liveProjects = useMemo(() => {
+    if (activeProjects.length <= LIVE_PROJECT_LIMIT) return activeProjects;
+    const ids = new Set(selected ?? []);
+    const selectedProjects = activeProjects.filter(project => ids.has(project.id));
+    const rest = activeProjects.filter(project => !ids.has(project.id));
+    const subscribed = new Set([...selectedProjects, ...rest].slice(0, LIVE_PROJECT_LIMIT).map(project => project.id));
+    return activeProjects.filter(project => subscribed.has(project.id));
+  }, [activeProjects, selected]);
+  const chartProjects = useMemo(() => liveProjects.map((project, i) => ({
+    id: project.id,
+    name: project.tokenSymbol || project.name,
+    color: LIVE_COLORS[i % LIVE_COLORS.length],
+  })), [liveProjects]);
+  const { series, now, staleIds, ingest, restore } = useStrengthFeed(liveProjects, liveWindow || liveTest);
+  const liveReturns = useMemo(() => liveStrengthReturns(series, now, staleIds, liveConnected),
+    [series, now, staleIds, liveConnected]);
   const [live,setLive]=useState<Record<string,{price:number|null;change:number|null;stale:boolean;at:number}>>({});
   const [liveFlow,setLiveFlow]=useState<Record<string,{buy:number;sell:number;delta:number;cvd:number;spotDelta:number;perpDelta:number}>>({});
   const signature=projects.map(p=>`${p.id}:${p.updatedAt}`).join('|');
   useEffect(()=>{
     let alive=true,controller:AbortController|null=null;
     async function load(){if(document.hidden)return;controller=new AbortController();setLoading(true);
-      try {const value=await api<OverviewData>(`/watchlist/overview?minutes=${minutes}`,{signal:controller.signal});if(alive){setData(value);setError('');}}
+      try {const value=await api<OverviewData>(`/watchlist/overview?minutes=${historyMinutes}`,{signal:controller.signal});if(alive){setData(value);setError('');}}
       catch(e){if(alive&&!(e instanceof DOMException&&e.name==='AbortError'))setError(e instanceof Error?e.message:String(e));}
       finally{if(alive)setLoading(false);}
     }
     void load();const timer=window.setInterval(()=>void load(),60_000);document.addEventListener('visibilitychange',load);
     return()=>{alive=false;controller?.abort();clearInterval(timer);document.removeEventListener('visibilitychange',load);};
-  },[signature,refresh,minutes]);
-  const projectKey=projects.map(p=>p.id).join(',');
-  useEffect(()=>{
-    if(!projectKey||typeof window==='undefined')return;
-    let socket:WebSocket|null=null,retry=1_000,closed=false,timer:number|undefined;const seq:Record<string,number>={};
-    const connect=()=>{
-      const proto=window.location.protocol==='https:'?'wss':'ws';
-      socket=new WebSocket(`${proto}://${window.location.host}/ws/live`);
-      socket.onopen=()=>{retry=1_000;socket?.send(JSON.stringify({op:'subscribe',projects:projectKey.split(','),channels:['quotes','edge','flow']}));};
-      socket.onmessage=(event)=>{try{const msg=JSON.parse(String(event.data));const channel=typeof msg.channel==='string'?msg.channel:null;if(msg.type==='tick'&&channel&&typeof msg.seq==='number'){if(seq[channel]&&msg.seq>seq[channel]+1)socket?.send(JSON.stringify({op:'resync',channel}));seq[channel]=msg.seq;}if(msg.type==='snapshot'&&channel&&typeof msg.seq==='number')seq[channel]=msg.seq;if(msg.channel==='flow'&&Array.isArray(msg.flows)){setLiveFlow(current=>{const next={...current};for(const flow of msg.flows){if(typeof flow.projectId!=='string')continue;next[flow.projectId]={buy:flow.buy,sell:flow.sell,delta:flow.delta,cvd:flow.cvd,spotDelta:flow.spotDelta,perpDelta:flow.perpDelta};}return next;});}
-      const ticks=Array.isArray(msg.ticks)?msg.ticks:[];if(!ticks.length)return;setLive(current=>{const next={...current};for(const tick of ticks){if(typeof tick.projectId!=='string')continue;next[tick.projectId]={price:Number.isFinite(tick.price)?tick.price:null,change:Number.isFinite(tick.change24hPct)?tick.change24hPct:null,stale:tick.stale===true,at:Number(tick.at)||Date.now()};}return next;});}catch{/* ignore malformed */}};
-      socket.onclose=()=>{if(closed)return;timer=window.setTimeout(connect,retry);retry=Math.min(15_000,retry*1.7);};
-      socket.onerror=()=>{socket?.close();};
-    };
-    connect();
-    return()=>{closed=true;if(timer)window.clearTimeout(timer);socket?.close();};
-  },[projectKey]);
+  },[signature,refresh,historyMinutes]);
+  const subscriptionKey = JSON.stringify(liveProjects.map(project => [project.id, strengthMarketKey(project)]));
+  useEffect(() => {
+    const subscriptions: [string, string | null][] = JSON.parse(subscriptionKey);
+    const ids = subscriptions.filter(([, key]) => key !== null).map(([id]) => id);
+    return connectWatchLive(ids, frame => {
+      if (frame.channel === 'quotes') {
+        if (frame.type === 'snapshot' && Array.isArray(frame.replay)) restore(frame.replay);
+        if (Array.isArray(frame.ticks)) ingest(frame.ticks);
+      }
+      if (frame.channel === 'flow' && Array.isArray(frame.flows)) {
+        const flows = frame.flows;
+        setLiveFlow(current => {
+          const next = { ...current };
+          for (const flow of flows) {
+            if (typeof flow?.projectId !== 'string') continue;
+            next[flow.projectId] = {
+              buy: flow.buy, sell: flow.sell, delta: flow.delta, cvd: flow.cvd,
+              spotDelta: flow.spotDelta, perpDelta: flow.perpDelta,
+            };
+          }
+          return next;
+        });
+      }
+      if (!Array.isArray(frame.ticks) || !frame.ticks.length) return;
+      const ticks = frame.ticks;
+      setLive(current => {
+        const next = { ...current };
+        for (const tick of ticks) {
+          if (typeof tick?.projectId !== 'string') continue;
+          next[tick.projectId] = {
+            price: Number.isFinite(tick.price) ? tick.price : null,
+            change: Number.isFinite(tick.change24hPct) ? tick.change24hPct : null,
+            stale: tick.stale === true,
+            at: Number(tick.priceAt ?? tick.at) || Date.now(),
+          };
+        }
+        return next;
+      });
+    }, setConnection);
+  }, [subscriptionKey, ingest, restore]);
 
-  const names=new Map(projects.map(p=>[p.id,p.tokenSymbol||p.name]));
-  const rows=(data?.rows??[]).filter(r=>names.has(r.projectId));
-  const reference=data?.benchmarks?.find(r=>r.projectId===benchmark);
-  const relative=(r:WatchRow,m=minutes)=>{const value=performance(r.candles,end,m);if(benchmark==='absolute')return value;const ref=reference?performance(reference.candles,end,m):null;return value!==null&&ref!==null?value-ref:null;};
-  const relativeLabel=(v:number|null)=>v===null?'—':benchmark==='absolute'?pct(v):`${v>0?'+':''}${v.toFixed(2)} pp`;
-  const sorted=[...rows].sort((a,b)=>(relative(b)??-Infinity)-(relative(a)??-Infinity));
-  const chartRows=(selected!==null?rows.filter(r=>selected.includes(r.projectId)):sorted.slice(0,4)).slice(0,4);
-  const withLiveFlow=(row:WatchRow):WatchRow=>liveFlow[row.projectId]?{...row,flow:{...(row.flow??{buy:null,sell:null,delta:null,cvd:null,spotDelta:null,perpDelta:null,buckets:[],venues:[],covered:0,requested:0,source:'orderflow' as const}),...liveFlow[row.projectId]}}:row;
-  const chartSeries=chartRows.map((row)=>{
-    const color=COLORS[Math.max(0,projects.findIndex(p=>p.id===row.projectId))%COLORS.length];
-    const points=windowPoints(row.candles,end,minutes),ref=reference?windowPoints(reference.candles,end,minutes):null;
-    let values:Array<number|null>|null=null;
-    if(indicator==='price'){
-      values=points&&(benchmark==='absolute'||ref)?points.map((p,j)=>(p.close/points[0].close-1)*100-(ref?(ref[j].close/ref[0].close-1)*100:0)):null;
-    } else if((indicator==='cvd'||indicator==='flow')&&row.flow&&points){
-      const map=new Map(row.flow.buckets.map(b=>[b.time,b]));
-      let base:number|null=null, running=0;
-      values=points.map(p=>{const b=map.get(p.time);const v=indicator==='cvd'?(b?.cvd??null):(b?.delta??null);if(v==null)return null;if(indicator==='flow'){running+=v;return running;}base??=v;return v-base;});
-    } else if(indicator==='oi'&&row.oiSeries&&points){
-      const map=new Map(row.oiSeries.map(o=>[o.time,o.oiUsd]));
-      const base=points.map(p=>map.get(p.time)).find(v=>v!=null)??null;
-      values=base?points.map(p=>{const v=map.get(p.time);return v==null?null:(v/base-1)*100;}):null;
-    }
-    return {row,color,values};
+  const names = new Map(projects.map(project => [project.id, project.tokenSymbol || project.name]));
+  const projectColors = new Map(projects.map((project, index) => [project.id, COLORS[index % COLORS.length]]));
+  const rows = (data?.rows ?? []).filter(row => names.has(row.projectId));
+  const reference = data?.benchmarks?.find(row => row.projectId === benchmark);
+  const historicalReturn = (row: WatchRow, period: number) => {
+    const value = performance(row.candles, end, period);
+    if (benchmark === 'absolute' || value === null) return value;
+    const ref = reference ? performance(reference.candles, end, period) : null;
+    return ref === null ? null : value - ref;
+  };
+  const relativeLabel = (v: number | null) => v === null ? '—' : benchmark === 'absolute'
+    ? pct(v) : `${v > 0 ? '+' : ''}${v.toFixed(2)} pp`;
+  const returns = new Map(rows.map(row => [row.projectId, liveWindow
+    ? liveReturns.get(row.projectId)?.latest ?? null : historicalReturn(row, minutes)]));
+  const relative = (row: WatchRow) => returns.get(row.projectId) ?? null;
+  const sorted = [...rows].sort((a, b) => {
+    const left = relative(a), right = relative(b);
+    if (left !== right) return (right ?? -Infinity) - (left ?? -Infinity);
+    // During an outage keep previously observed traces ahead of projects with no samples.
+    return liveWindow ? Number(liveReturns.has(b.projectId)) - Number(liveReturns.has(a.projectId)) : 0;
   });
-  const vals=chartSeries.flatMap(s=>s.values??[]).filter((v):v is number=>v!=null),max=Math.max(.1,...vals.map(Math.abs));
+  const chartRows = selected === null ? sorted.slice(0, 4) : rows.filter(row => selected.includes(row.projectId));
+  const withLiveFlow=(row:WatchRow):WatchRow=>liveFlow[row.projectId]?{...row,flow:{...(row.flow??{buy:null,sell:null,delta:null,cvd:null,spotDelta:null,perpDelta:null,buckets:[],venues:[],covered:0,requested:0,source:'orderflow' as const}),...liveFlow[row.projectId]}}:row;
+  const chartLines = chartRows.map(row => {
+    const observed = liveReturns.get(row.projectId);
+    return {
+      id: row.projectId, name: names.get(row.projectId)!, color: projectColors.get(row.projectId)!,
+      points: liveWindow ? observed?.points ?? [] : historicalStrengthPoints(row, reference, end, minutes, indicator, benchmark),
+      stale: liveWindow && !!observed?.stale,
+    };
+  });
   const events=useMemo(()=>{
     return (data?.rows??[]).flatMap(row=>row.candles.flatMap((c,i)=>{
       if(!i||c.time<end-86_400_000||row.candles[i-1].time!==c.time-BUCKET)return[];
@@ -98,18 +167,40 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const visibleEvents=events.filter(e=>names.has(e.row.projectId)&&(feedFilter==='all'||feedFilter==='up'&&e.change>=priceGate||feedFilter==='down'&&e.change<=-priceGate||feedFilter==='volume'&&e.ratio!==null&&e.ratio>=volumeGate));
   const stamp=(time:number)=>new Date(time).toLocaleTimeString(zh?'zh-CN':'en-GB',{hour:'2-digit',minute:'2-digit'});
   const toggle=(id:string)=>setSelected(current=>{const ids=current??chartRows.map(c=>c.projectId);return ids.includes(id)?ids.filter(value=>value!==id):[...ids.slice(-3),id];});
-  const unit=indicator==='price'?(benchmark==='absolute'?'%':'pp'):indicator==='oi'?'%':indicator==='cvd'?'USDT':'USDT';
+  const unit = indicator === 'price' && benchmark !== 'absolute' ? 'pp'
+    : indicator === 'price' || indicator === 'oi' ? '%' : 'USDT';
   const indicatorLabel=(value:number|null)=>value==null?'—':indicator==='price'?relativeLabel(value):indicator==='oi'?`${value>0?'+':''}${value.toFixed(2)}%`:`${value>0?'+':''}${money(value)}`;
-  const y=(value:number|null)=>value==null?326:180-value/max*143;
-  const lastOf=(values:(number|null)[]):number|null=>{for(let i=values.length-1;i>=0;i--)if(values[i]!=null)return values[i];return null;};
-  const segments=(values:(number|null)[])=>{const out:Array<Array<{x:number;y:number}>>=[];let current:Array<{x:number;y:number}>=[];values.forEach((value,index)=>{if(value==null){if(current.length)out.push(current);current=[];}else current.push({x:46+index/(values.length-1)*624,y:y(value)});});if(current.length)out.push(current);return out;};
-  // Place endpoint labels independently of their lines to keep close returns legible.
-  const endpoints=chartSeries.filter(s=>s.values&&lastOf(s.values)!==null).map(s=>({...s,target:y(lastOf(s.values!))})).sort((a,b)=>a.target-b.target);
-  endpoints.forEach((s,i)=>{s.target=Math.max(28,s.target,i?endpoints[i-1].target+22:0);});
-  if(endpoints.length&&endpoints.at(-1)!.target>326){const offset=endpoints.at(-1)!.target-326;endpoints.forEach(s=>{s.target-=offset;});}
+  const hasRecentQuote = chartLines.some(line => !line.stale && line.points.length > 0);
+  const waitingForQuote = liveWindow && !hasRecentQuote && chartLines.some(line => line.points.length > 0);
+  const connectionNote = {
+    live: waitingForQuote ? t('报价通道已连接，等待所选项目的新报价', 'Connected · Waiting for fresh quotes for selected projects') : '',
+    offline: t('网络离线', 'Network offline'),
+    connecting: t('正在连接报价服务', 'Connecting to quotes'),
+    reconnecting: t('报价连接中断，正在重连', 'Reconnecting to quotes'),
+    syncing: t('正在同步最近报价', 'Resynchronizing recent quotes'),
+  }[connection];
+  const plotEnd = liveWindow ? now : end;
+  const plotStart = plotEnd - (liveWindow ? STRENGTH_WINDOW_MS : minutes * 60_000);
+  const canShowLive = indicator === 'price' && benchmark === 'absolute';
+  const setWindow = (period: number) => { setMinutes(period); setHover(null); };
   const stale=!!data&&(Date.now()-data.end>10*60_000||!!error);
   return <div className="wo">
-    {liveTest&&<div className="live-test-backdrop" role="dialog" aria-modal="true"><div className="live-test-modal"><div className="live-test-head"><strong>{t('S 级相对强弱 · 实时测试','S-level relative strength · live preview')}</strong><button onClick={()=>setLiveTest(false)}>{t('关闭','Close')}</button></div><div className="live-test-body"><LiveStrengthChart projects={projects.map((p,i)=>({id:p.id,name:p.tokenSymbol||p.name,color:COLORS[i%COLORS.length]}))} language={language}/></div><p className="live-test-note">{t('真实 WS 报价 · 60 秒窗口 · 线性插值延伸，仅测试组件','Real /ws/live quotes · 60s window · linear interpolation, test component only')}</p></div></div>}
+    {liveTest && <div className="live-test-backdrop" role="dialog" aria-modal="true" aria-labelledby="strength-dialog-title"
+      onKeyDown={event => {
+        if (event.key === 'Escape') setLiveTest(false);
+        if (event.key === 'Tab' && event.target === closeChart.current) event.preventDefault();
+      }}>
+      <div className="live-test-modal">
+        <div className="live-test-head">
+          <strong id="strength-dialog-title">{t('S 级相对强弱 · 实时测试', 'S-level relative strength · live preview')}</strong>
+          <button ref={closeChart} onClick={() => setLiveTest(false)}>{t('关闭', 'Close')}</button>
+        </div>
+        <div className="live-test-body">
+          <LiveStrengthChart projects={chartProjects} language={language} series={series} now={now} staleIds={staleIds} connected={liveConnected}/>
+        </div>
+        <p className="live-test-note">{t('真实 WS 报价 · 60 秒窗口 · 每秒更新', 'Live WS quotes · 60s window · Updated every second')}</p>
+      </div>
+    </div>}
     <div className="wo-heading"><div><h1>{t('关注总览','Watchlist Overview')}</h1></div><div className="wo-actions"><span role="status">{loading?t('更新中…','Updating…'):data?<>{data.cache?.stale?'STALE · ':''}{t('截至','As of')} {new Date(data.end).toLocaleTimeString(zh?'zh-CN':'en-GB')}</>:'—'}</span><button onClick={()=>setRefresh(n=>n+1)} disabled={loading}>{t('刷新','Refresh')}</button><button onClick={()=>setFlowOpen(v=>!v)} aria-pressed={flowOpen}>{t('资金流','Flow')}</button><button onClick={()=>setCardsOpen(v=>!v)} aria-pressed={cardsOpen}>{t('流动卡','Cards')}</button><button onClick={()=>setFullscreen(v=>!v)} aria-pressed={fullscreen}>{t('全屏','Fullscreen')}</button><button onClick={()=>setLiveTest(true)}>{t('测试 S 级曲线','Test S-level')}</button><button onClick={onManage}>{t('管理关注','Manage projects')}</button></div></div>
     {error&&<div className="wo-notice" role="alert">{t('更新失败，保留上次数据：','Update failed; retaining previous data: ')}{error}</div>}
     {stale&&<div className="wo-notice">{t('数据已延迟，请核对时间后使用。','Data delayed. Check timestamps before use.')}</div>}
@@ -117,21 +208,53 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     <div className="wo-ticker" aria-label={t('关注行情','Watchlist quotes')}>
       {rows.map(r=><button key={r.projectId} onClick={()=>onOpen(r.projectId)}><strong>{names.get(r.projectId)}</strong><span>{(live[r.projectId]?.price??r.candles.at(-1)?.close)?.toLocaleString(zh?'zh-CN':'en-US',{maximumSignificantDigits:7})??'—'} <small>{r.quote} · {live[r.projectId]?.stale?'STALE':watchStatus(r)}</small></span><b className={(live[r.projectId]?.change??performance(r.candles,end,1440)??0)>=0?'wo-up':'wo-down'}>{pct(live[r.projectId]?.change??performance(r.candles,end,1440))}</b></button>)}
     </div>
-    <div className="wo-pulse"><span className="wo-scope">{t('关注范围','WATCHLIST')} <b>{rows.length}</b></span><span>{t('上涨','Advancing')} <b className="wo-up">▲ {gainers.length}</b></span><span>{t('下跌','Declining')} <b className="wo-down">▼ {losers.length}</b></span><span>{t('平均','Average')} <b className={(average??0)>=0?'wo-up':'wo-down'}>{relativeLabel(average)}</b></span><span>{t('有效样本','Valid samples')} <b>{valid.length}/{rows.length}</b></span><span className="wo-pulse-end">{minutes<60?`${minutes}m`:`${minutes/60}h`} · {benchmark==='absolute'?t('绝对涨跌','Absolute'):benchmark.replace('USDT','')} · {t('5m 收盘','5m close')}</span></div>
-    <section className={`wo-panel wo-main-panel ${fullscreen?'wo-fullscreen':''}`}><div className="wo-panel-head"><h2><i>01</i>{t('相对强弱','Relative strength')}</h2><div className="wo-controls"><select aria-label={t('指标','Indicator')} value={indicator} onChange={e=>{setIndicator(e.target.value as typeof indicator);setHover(null);}}><option value="price">{t('价格强弱','Price strength')}</option><option value="cvd">CVD</option><option value="flow">{t('主动净额','Flow Δ')}</option><option value="oi">{t('OI 变化','OI Δ')}</option></select><div className="wo-tabs">{[5,15,60,240,1440].map(m=><button key={m} aria-pressed={minutes===m} onClick={()=>{setMinutes(m);setHover(null);}}>{m<60?`${m}m`:`${m/60}h`}</button>)}</div><select aria-label={t('比较基准','Benchmark')} value={benchmark} onChange={e=>setBenchmark(e.target.value)}><option value="absolute">{t('绝对涨跌','Absolute return')}</option><option value="BTCUSDT">vs BTC</option><option value="ETHUSDT">vs ETH</option></select></div></div>
-    <div className="wo-strength"><div className="wo-chart"><div className="wo-legend">{rows.map(row=>{const series=chartSeries.find(s=>s.row.projectId===row.projectId);return <button key={row.projectId} aria-pressed={!!series} onClick={()=>toggle(row.projectId)} style={{color:series?.color}}><span className="wo-dot"/>{names.get(row.projectId)} <b>{series?.values?indicatorLabel(series.values[hover??series.values.length-1]):'—'}</b></button>;})}<small>{t('最多选 4 个','Up to 4')}</small></div>
-    {vals.length?<svg viewBox="0 0 820 370" role="img" aria-label={t('同一时间起点的涨跌幅比较','Returns from a common starting time')} onMouseLeave={()=>setHover(null)} onMouseMove={event=>{const rect=event.currentTarget.getBoundingClientRect();const count=chartSeries.find(s=>s.values)?.values?.length??1;setHover(Math.round(Math.max(0,Math.min(1,((event.clientX-rect.left)/rect.width*820-46)/624))*(count-1)));}}>
-      {[-1,-.5,0,.5,1].map(factor=><g key={factor}><line x1="46" x2="670" y1={y(max*factor)} y2={y(max*factor)} className={factor===0?'wo-zero':'wo-grid'}/><text x="3" y={y(max*factor)-5}>{(max*factor).toFixed(1)}{unit}</text></g>)}
-      {[0,.25,.5,.75,1].map(factor=><g key={factor}><line x1={46+624*factor} x2={46+624*factor} y1="28" y2="326" className="wo-grid"/><text x={46+624*factor} y="357" textAnchor={factor===0?'start':factor===1?'end':'middle'}>{stamp(end-minutes*60_000*(1-factor))}</text></g>)}
-      <defs><filter id="wo-line-glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
-      {chartSeries.filter(s=>s.values).flatMap(s=>segments(s.values!).map((segment,index)=><g key={`${s.row.projectId}-${index}-${end}`}><polyline className="wo-line" fill="none" stroke={s.color} strokeWidth="1.8" vectorEffect="non-scaling-stroke" filter="url(#wo-line-glow)" points={segment.map(p=>`${p.x},${p.y}`).join(' ')}/><polyline className="wo-flow-line" fill="none" stroke={s.color} strokeWidth="2.4" strokeLinecap="round" vectorEffect="non-scaling-stroke" filter="url(#wo-line-glow)" points={segment.map(p=>`${p.x},${p.y}`).join(' ')}/></g>))}
-      {endpoints.map(s=><g className="wo-end-label" key={s.row.projectId}><circle cx="670" cy={y(lastOf(s.values!))} r="3" fill={s.color}/><path d={`M674 ${y(lastOf(s.values!))} L689 ${s.target}`} fill="none" stroke={s.color} opacity=".6"/><rect x="692" y={s.target-10} width="124" height="20" rx="2" fill={s.color} opacity=".12"/><text x="698" y={s.target+4} style={{fill:s.color}}>{names.get(s.row.projectId)} {indicatorLabel(lastOf(s.values!))}</text></g>)}
-      {hover!==null&&<g><line x1={46+hover/((chartSeries.find(s=>s.values)?.values?.length??2)-1)*624} x2={46+hover/((chartSeries.find(s=>s.values)?.values?.length??2)-1)*624} y1="28" y2="326" className="wo-cursor"/>{chartSeries.filter(s=>s.values&&s.values[hover]!=null).map(s=><circle key={s.row.projectId} cx={46+hover/(s.values!.length-1)*624} cy={y(s.values![hover])} r="3" fill={s.color}/>)}<text x="46" y="18">{stamp(end-minutes*60_000+hover*BUCKET)}</text></g>}
-    </svg>:<div className="wo-empty wo-chart-empty">{loading?t('正在加载已收盘行情…','Loading closed candles…'):t('选择标的以对比连续历史','Select projects with continuous history')}</div>}
-    <div className="wo-chart-foot"><span>{t('共同起点 · 收益率归零','Common origin · Returns rebased to zero')}</span><button onClick={()=>setTableOpen(!tableOpen)} aria-expanded={tableOpen}>{tableOpen?t('收起周期矩阵 ↑','Hide matrix ↑'):t('周期矩阵 ↓','Timeframe matrix ↓')}</button></div></div>
-    <aside className="wo-leaders">{[{title:t('强势榜','Leaders'),items:gainers,positive:true},{title:t('弱势榜','Laggards'),items:losers,positive:false}].map(group=><div className="wo-leader-column" key={group.title}><h3 className={group.positive?'wo-up':'wo-down'}>{group.positive?'↗':'↘'} {group.title}<small>{unit}</small></h3>{group.items.slice(0,10).map((r,i)=><button className="wo-leader-row" key={r.projectId} onClick={()=>toggle(r.projectId)} aria-pressed={chartRows.some(c=>c.projectId===r.projectId)} title={t('点击加入或移出图表','Toggle chart comparison')}><em>{i+1}</em><strong>{names.get(r.projectId)}</strong><b className={group.positive?'wo-up':'wo-down'}>{relativeLabel(relative(r))}</b><span className={group.positive?'wo-meter wo-positive':'wo-meter wo-negative'} style={{width:`${Math.min(100,Math.abs(relative(r)??0)/Math.max(.01,...valid.map(Math.abs))*100)}%`}}/></button>)}{!group.items.length&&<div className="wo-small-empty">{t('暂无符合标的','No matching projects')}</div>}</div>)}</aside></div>
+    <div className="wo-pulse"><span className="wo-scope">{t('关注范围','WATCHLIST')} <b>{rows.length}</b></span><span>{t('上涨','Advancing')} <b className="wo-up">▲ {gainers.length}</b></span><span>{t('下跌','Declining')} <b className="wo-down">▼ {losers.length}</b></span><span>{t('平均','Average')} <b className={(average??0)>=0?'wo-up':'wo-down'}>{relativeLabel(average)}</b></span><span>{t('有效样本','Valid samples')} <b>{valid.length}/{rows.length}</b></span><span className="wo-pulse-end">{windowLabel(minutes)} · {benchmark==='absolute'?t('绝对涨跌','Absolute'):benchmark.replace('USDT','')} · {liveWindow ? t('秒级报价','Live quotes') : t('5m 收盘','5m close')}</span></div>
+    <section className={`wo-panel wo-main-panel ${fullscreen?'wo-fullscreen':''}`}>
+      <div className="wo-panel-head"><h2><i>01</i>{t('相对强弱','Relative strength')}</h2>
+        <div className="wo-controls">
+          <select aria-label={t('指标','Indicator')} value={indicator} onChange={event => {
+            const next = event.target.value as WatchIndicator;
+            setIndicator(next);
+            if (liveWindow && next !== 'price') setMinutes(5);
+            setHover(null);
+          }}>
+            <option value="price">{t('价格强弱','Price strength')}</option><option value="cvd">CVD</option>
+            <option value="flow">{t('主动净额','Flow Δ')}</option><option value="oi">{t('OI 变化','OI Δ')}</option>
+          </select>
+          <div className="wo-tabs">{windows.map(period => <button key={period}
+            disabled={period === 1 && !canShowLive} aria-pressed={minutes === period}
+            title={period === 1 ? t('60 秒实时价格涨跌幅', 'Live 60-second price return') : undefined}
+            onClick={() => setWindow(period)}>{windowLabel(period)}</button>)}</div>
+          <select aria-label={t('比较基准','Benchmark')} value={benchmark} onChange={event => {
+            const next = event.target.value;
+            setBenchmark(next);
+            if (liveWindow && next !== 'absolute') setMinutes(5);
+            setHover(null);
+          }}>
+            <option value="absolute">{t('绝对涨跌','Absolute return')}</option><option value="BTCUSDT">vs BTC</option><option value="ETHUSDT">vs ETH</option>
+          </select>
+        </div>
+      </div>
+      <div className="wo-strength"><div className="wo-chart">
+        <div className="wo-legend">{rows.map(row => {
+          const line = chartLines.find(item => item.id === row.projectId);
+          const value = !line ? null : hover !== null && hover >= plotStart && hover <= plotEnd
+            ? strengthValueAt(line.points, hover, liveWindow ? STRENGTH_GAP_MS : 0)
+            : liveWindow ? relative(row) : strengthValueAt(line.points, plotEnd, 0);
+          return <button key={row.projectId} aria-pressed={!!line} onClick={() => toggle(row.projectId)} style={{ color: line?.color }}>
+            <span className="wo-dot"/>{names.get(row.projectId)} <b>{indicatorLabel(value)}</b>
+          </button>;
+        })}<small>{t('最多选 4 个','Up to 4')}</small></div>
+        <StrengthPlot lines={chartLines} start={plotStart} end={plotEnd} gapMs={liveWindow ? STRENGTH_GAP_MS : BUCKET}
+          unit={unit} language={language} hoverTime={hover} onHoverTime={setHover}
+          ariaLabel={liveWindow ? t('关注项目最近 60 秒相对涨跌幅','Watchlist returns over the last 60 seconds') : t('同一时间起点的指标比较','Indicator comparison over the selected window')}
+          emptyText={!chartRows.length ? t('选择标的以对比走势','Select projects to compare')
+            : liveWindow ? t('等待实时报价…','Waiting for live quotes…')
+            : t('所选标的暂无连续历史','No continuous history for the selected projects')}/>
+    <div className="wo-chart-foot"><span>{liveWindow ? (connectionNote || t('最近 60 秒 · 每秒更新 · 窗口首笔报价归零','Last 60s · 1s updates · First quote rebased to zero')) : t('共同起点 · 收益率归零','Common origin · Returns rebased to zero')}</span><button onClick={()=>setTableOpen(!tableOpen)} aria-expanded={tableOpen}>{tableOpen?t('收起周期矩阵 ↑','Hide matrix ↑'):t('周期矩阵 ↓','Timeframe matrix ↓')}</button></div></div>
+    <aside className="wo-leaders">{[{title:t('强势榜','Leaders'),items:gainers,positive:true},{title:t('弱势榜','Laggards'),items:losers,positive:false}].map(group=><div className="wo-leader-column" key={group.title}><h3 className={group.positive?'wo-up':'wo-down'}>{group.positive?'↗':'↘'} {group.title}<small>{benchmark === 'absolute' ? '%' : 'pp'}</small></h3>{group.items.slice(0,10).map((r,i)=><button className="wo-leader-row" key={r.projectId} onClick={()=>toggle(r.projectId)} aria-pressed={chartRows.some(c=>c.projectId===r.projectId)} title={t('点击加入或移出图表','Toggle chart comparison')}><em>{i+1}</em><strong>{names.get(r.projectId)}</strong><b className={group.positive?'wo-up':'wo-down'}>{relativeLabel(relative(r))}</b><span className={group.positive?'wo-meter wo-positive':'wo-meter wo-negative'} style={{width:`${Math.min(100,Math.abs(relative(r)??0)/Math.max(.01,...valid.map(Math.abs))*100)}%`}}/></button>)}{!group.items.length&&<div className="wo-small-empty">{t('暂无符合标的','No matching projects')}</div>}</div>)}</aside></div>
     <details className="wo-coverage wo-metric-coverage"><summary>{t('指标覆盖详情','Metric coverage')}</summary><div className="wo-metric-grid">{rows.map(r=><div key={r.projectId} className="wo-metric-row"><strong>{names.get(r.projectId)}</strong>{Object.entries(buildWatchMetrics(r)).map(([name,metric])=><span key={name} className={metric.state==='LIVE'?'ok':'off'} title={`${metric.state}${metric.at?` · ${new Date(metric.at).toLocaleTimeString()}`:''}${metric.error?` · ${metric.error}`:''}${metric.source?` · ${metric.source}`:''}`}>{name}</span>)}</div>)}</div></details>
-    {tableOpen&&<div className="wo-table-scroll"><table><thead><tr><th>{t('标的 / 研究','Project / Research')}</th>{[15,60,240,1440].map(m=><th key={m}>{m<60?`${m}m`:`${m/60}h`}</th>)}</tr></thead><tbody>{sorted.map(r=><tr key={r.projectId}><td><button className="wo-link" onClick={()=>onOpen(r.projectId)}>{names.get(r.projectId)} ↗</button><small title={r.error??''}>{r.venue} · {r.marketType==='spot'?t('现货','Spot'):t('永续','Perp')}{r.error?' · !':''}</small></td>{[15,60,240,1440].map(m=>{const v=relative(r,m);return <td key={m} className={v===null?'':v>=0?'wo-up':'wo-down'}>{relativeLabel(v)}</td>;})}</tr>)}</tbody></table></div>}
+    {tableOpen&&<div className="wo-table-scroll"><table><thead><tr><th>{t('标的 / 研究','Project / Research')}</th>{[15,60,240,1440].map(m=><th key={m}>{m<60?`${m}m`:`${m/60}h`}</th>)}</tr></thead><tbody>{sorted.map(r=><tr key={r.projectId}><td><button className="wo-link" onClick={()=>onOpen(r.projectId)}>{names.get(r.projectId)} ↗</button><small title={r.error??''}>{r.venue} · {r.marketType==='spot'?t('现货','Spot'):t('永续','Perp')}{r.error?' · !':''}</small></td>{[15,60,240,1440].map(m=>{const v=historicalReturn(r,m);return <td key={m} className={v===null?'':v>=0?'wo-up':'wo-down'}>{relativeLabel(v)}</td>;})}</tr>)}</tbody></table></div>}
     </section>
     <div className="wo-bottom wo-dock">
     {flowOpen&&<CapitalFlowVisual rows={chartRows.map(withLiveFlow)} names={names} colors={COLORS} language={language}/>}

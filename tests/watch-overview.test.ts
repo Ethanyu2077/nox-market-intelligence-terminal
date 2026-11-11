@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUCKET, performance, volumeRatio, windowPoints } from '../shared/watch-overview.ts';
+import { BUCKET, historicalStrengthPoints, performance, volumeRatio, windowPoints, type WatchRow } from '../shared/watch-overview.ts';
 const points=Array.from({length:301},(_,i)=>({time:i*BUCKET,close:100+i,volume:10}));
 test('returns share an exact closed-candle origin and end',()=>{
   assert.equal(performance(points,300*BUCKET,15),(400/397-1)*100);
@@ -11,6 +11,42 @@ test('gaps, duplicates, and nonpositive prices withhold comparison',()=>{
   assert.equal(performance(points.filter((_,i)=>i!==299),300*BUCKET,15),null);
   assert.equal(performance([...points,points[299]],300*BUCKET,15),null);
   assert.equal(performance(points.map((p,i)=>i===299?{...p,close:0}:p),300*BUCKET,15),null);
+});
+
+const chartRow: WatchRow = {
+  projectId: 'sample', venue: 'binance', symbol: 'SAMPLEUSDT', marketType: 'perpetual', quote: 'USDT', error: null,
+  candles: [8, 10, 12].map((close, i) => ({ time: i * BUCKET, close, volume: 1 })),
+};
+test('historical price points use matching 5m timestamps and benchmark percentage points', () => {
+  const end = 2 * BUCKET;
+  const reference = { ...chartRow, candles: chartRow.candles.map((candle, i) => ({ ...candle, close: 16 + i })) };
+  assert.deepEqual(historicalStrengthPoints(chartRow, reference, end, 10, 'price', 'BTCUSDT'), [
+    { t: 0, value: 0 }, { t: BUCKET, value: 18.75 }, { t: end, value: 37.5 },
+  ]);
+  assert.equal(historicalStrengthPoints(chartRow, reference, end, 10, 'price', 'absolute').at(-1)?.value, 50);
+  const partial = { ...reference, candles: reference.candles.slice(1) };
+  assert.deepEqual(historicalStrengthPoints(chartRow, partial, end, 10, 'price', 'BTCUSDT'), []);
+  assert.deepEqual(historicalStrengthPoints(partial, reference, end, 10, 'price', 'absolute'), []);
+});
+
+test('historical CVD, net flow and OI keep observed timestamps, including gaps and zero values', () => {
+  const end = 2 * BUCKET;
+  const row: WatchRow = {
+    ...chartRow,
+    flow: {
+      buy: 0, sell: 0, delta: 0, cvd: 0, spotDelta: 0, perpDelta: 0, covered: 1, requested: 1,
+      source: 'orderflow', venues: [], buckets: [
+        { time: 0, buy: null, sell: null, cvd: 15, delta: -15 },
+        { time: BUCKET, buy: null, sell: null, cvd: null, delta: null },
+        { time: end, buy: null, sell: null, cvd: 0, delta: 0 },
+      ],
+    },
+    oiSeries: [{ time: BUCKET, oiUsd: 20 }, { time: end, oiUsd: 25 }],
+  };
+  assert.deepEqual(historicalStrengthPoints(row, undefined, end, 10, 'cvd', 'absolute'), [{ t: 0, value: 0 }, { t: end, value: -15 }]);
+  assert.deepEqual(historicalStrengthPoints(row, undefined, end, 10, 'flow', 'absolute'), [{ t: 0, value: -15 }, { t: end, value: -15 }]);
+  assert.deepEqual(historicalStrengthPoints(row, undefined, end, 10, 'oi', 'absolute'), [{ t: BUCKET, value: 0 }, { t: end, value: 25 }]);
+  assert.deepEqual(historicalStrengthPoints({ ...row, oiSeries: [{ time: 0, oiUsd: 0 }] }, undefined, end, 10, 'oi', 'absolute'), []);
 });
 test('volume spike compares against prior twelve complete contiguous buckets',()=>{
   const sample=points.slice(0,13).map((p,i)=>({...p,volume:i===12?30:10}));

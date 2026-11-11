@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { aggregateCvd, backtestPositionSignals, computeOiDeltas, computeVolumeFlow, detectPositionFlowSignals, isSeriesStale, openInterestUsd, type RawAggTrade } from './calculations.ts';
 import type { Instrument, MarketSeries, Overview, ProjectDiscoveryResult, ProjectMarket, ScannerRow } from '../shared/types.ts';
-import { binanceGovernor } from './binance-governor.ts';
+import { BinanceCooldownError, binanceGovernor } from './binance-governor.ts';
 
 const REST = process.env.BINANCE_REST_BASE ?? 'https://fapi.binance.com';
 const SPOT_REST = process.env.BINANCE_SPOT_REST_BASE ?? 'https://api.binance.com';
@@ -210,39 +210,126 @@ function intervalToMs(interval: string) {
   return n * (unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000);
 }
 
-export function openMarketStream(symbol: string, onEvent: (payload: unknown) => void, onState: (state: string, detail?: string) => void) {
-  let socket: WebSocket | undefined; let stopped = false; let retry = 1_000; let timer: NodeJS.Timeout; let quietTimer: NodeJS.Timeout; let pollTimer: NodeJS.Timeout; let receivedFrame = false;
+type MarketSocket = Pick<WebSocket, 'readyState' | 'close' | 'terminate'> & {
+  on(event: 'message', listener: (raw: WebSocket.RawData) => void): void;
+  on(event: 'error', listener: (error: Error) => void): void;
+  on(event: 'close', listener: () => void): void;
+};
+const PRICE_SILENCE_MS = 5_000;
+const SOCKET_SILENCE_MS = 15_000;
+const FALLBACK_INTERVAL_MS = 3_000;
+
+export function openMarketStream(symbol: string, onEvent: (payload: unknown) => void, onState: (state: string, detail?: string) => void,
+  deps: { socket?: (url: string) => MarketSocket; json?: typeof getJson } = {}) {
   const lower = symbol.toLowerCase();
-  const stopFallback = () => clearInterval(pollTimer);
-  const pollFallback = async () => {
+  const encoded = encodeURIComponent(symbol.toUpperCase());
+  const json = deps.json ?? getJson;
+  let socket: MarketSocket | undefined;
+  let reconnect: NodeJS.Timeout | undefined;
+  let retry = 1_000;
+  let stopped = false;
+  let lastFrame = Date.now();
+  let lastPrice = lastFrame;
+  let live = false;
+  let fallback = false;
+  let generation = 0;
+  const polling = new Set<'ticker' | 'premium'>();
+  const nextPoll = { ticker: 0, premium: 0 };
+
+  // Keep the two requests independent: a stalled funding endpoint must not delay price sampling.
+  const poll = async (endpoint: 'ticker' | 'premium') => {
+    if (polling.has(endpoint) || Date.now() < nextPoll[endpoint]) return;
+    polling.add(endpoint);
+    nextPoll[endpoint] = Date.now() + FALLBACK_INTERVAL_MS;
+    const epoch = generation;
+    const active = () => !stopped && fallback && epoch === generation;
     try {
-      const encoded = encodeURIComponent(symbol.toUpperCase());
-      const [ticker, premium] = await Promise.all([getJson<Ticker>(`/fapi/v1/ticker/24hr?symbol=${encoded}`), getJson<Premium>(`/fapi/v1/premiumIndex?symbol=${encoded}`)]);
-      onEvent({ stream: `${lower}@ticker`, transport: 'rest-fallback', data: { e: '24hrTicker', E: Number(ticker.closeTime), c: ticker.lastPrice, P: ticker.priceChangePercent, v: ticker.volume, q: ticker.quoteVolume } });
-      onEvent({ stream: `${lower}@markPrice@1s`, transport: 'rest-fallback', data: { e: 'markPriceUpdate', E: premium.time, p: premium.markPrice, r: premium.lastFundingRate, T: premium.nextFundingTime } });
-    } catch (error) { onState('stale', error instanceof Error ? error.message : 'REST fallback failed'); }
+      if (endpoint === 'ticker') {
+        const ticker = await json<Ticker>(`/fapi/v1/ticker/24hr?symbol=${encoded}`);
+        if (!active()) return;
+        const price = Number(ticker.lastPrice), at = Number(ticker.closeTime);
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(at) || at <= 0) throw new Error('Invalid Binance REST ticker');
+        onEvent({ stream: `${lower}@ticker`, transport: 'rest-fallback', data: {
+          e: '24hrTicker', E: at, c: ticker.lastPrice, P: ticker.priceChangePercent, v: ticker.volume, q: ticker.quoteVolume,
+        } });
+      } else {
+        const premium = await json<Premium>(`/fapi/v1/premiumIndex?symbol=${encoded}`);
+        if (!active()) return;
+        onEvent({ stream: `${lower}@markPrice@1s`, transport: 'rest-fallback', data: {
+          e: 'markPriceUpdate', E: premium.time, p: premium.markPrice, r: premium.lastFundingRate, T: premium.nextFundingTime,
+        } });
+      }
+    } catch (error) {
+      if (!active()) return;
+      if (error instanceof BinanceCooldownError) nextPoll[endpoint] = Math.max(nextPoll[endpoint], Date.now() + error.retryAfterMs);
+      if (endpoint === 'ticker') onState('stale', String(error));
+    } finally {
+      polling.delete(endpoint);
+    }
   };
-  const startFallback = () => {
-    if (pollTimer) return;
-    onState('degraded', 'WebSocket connected without frames; using 3s REST fallback');
-    void pollFallback(); pollTimer = setInterval(pollFallback, 3_000);
+
+  const fallbackIfNeeded = () => {
+    if (!fallback) {
+      fallback = true;
+      live = false;
+      onState('degraded', 'Waiting for WebSocket prices; using Binance REST quotes');
+    }
+    void poll('ticker');
+    void poll('premium');
   };
   const connect = () => {
-    receivedFrame = false; onState('connecting');
-    socket = new WebSocket(`${WS}/stream?streams=${lower}@aggTrade/${lower}@markPrice@1s/${lower}@ticker`);
-    socket.on('open', () => { retry = 1_000; quietTimer = setTimeout(startFallback, 5_000); });
-    socket.on('message', (raw) => {
-      if (!receivedFrame) { receivedFrame = true; clearTimeout(quietTimer); stopFallback(); onState('live'); }
-      try { onEvent(JSON.parse(raw.toString())); } catch { onState('degraded', 'Invalid upstream payload'); }
+    if (stopped) return;
+    lastFrame = Date.now();
+    if (!fallback) onState('connecting');
+    const url = `${WS}/stream?streams=${lower}@aggTrade/${lower}@markPrice@1s/${lower}@ticker`;
+    const current = deps.socket ? deps.socket(url) : new WebSocket(url, { handshakeTimeout: SOCKET_SILENCE_MS });
+    socket = current;
+    current.on('message', raw => {
+      if (stopped || current !== socket) return;
+      try {
+        const payload = JSON.parse(raw.toString());
+        const data = payload?.data ?? payload;
+        if (!data || typeof data !== 'object') return;
+        lastFrame = Date.now();
+        const trade = data.e === 'aggTrade' || data.e === 'trade';
+        const price = Number(trade ? data.p : data.c);
+        const at = Number(trade ? data.T ?? data.E : data.E);
+        if (price > 0 && Number.isFinite(price) && Math.abs(lastFrame - at) <= PRICE_SILENCE_MS) {
+          lastPrice = Math.max(lastPrice, Math.min(lastFrame, at));
+          if (fallback) { fallback = false; generation++; }
+          if (!live) { live = true; onState('live'); }
+          retry = 1_000;
+        }
+        onEvent(payload);
+      } catch {
+        live = false;
+        onState('degraded', 'Invalid upstream payload');
+      }
     });
-    socket.on('error', (error) => onState('degraded', error.message));
-    socket.on('close', () => {
-      if (stopped) return;
-      clearTimeout(quietTimer); stopFallback();
-      onState('stale', `Reconnecting in ${Math.round(retry / 1000)}s`);
-      timer = setTimeout(connect, retry); retry = Math.min(retry * 2, 30_000);
+    current.on('error', error => {
+      if (stopped || current !== socket) return;
+      live = false;
+      onState('degraded', error.message);
+    });
+    current.on('close', () => {
+      if (stopped || current !== socket) return;
+      socket = undefined;
+      fallbackIfNeeded();
+      reconnect = setTimeout(connect, retry);
+      retry = Math.min(30_000, retry * 2);
     });
   };
   connect();
-  return () => { stopped = true; clearTimeout(timer); clearTimeout(quietTimer); stopFallback(); socket?.close(); };
+  const watchdog = setInterval(() => {
+    const now = Date.now();
+    if (fallback || now - lastPrice >= PRICE_SILENCE_MS) fallbackIfNeeded();
+    if (socket && socket.readyState < WebSocket.CLOSING && now - lastFrame >= SOCKET_SILENCE_MS) socket.terminate();
+  }, 1_000);
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(watchdog);
+    clearTimeout(reconnect);
+    socket?.close();
+  };
 }

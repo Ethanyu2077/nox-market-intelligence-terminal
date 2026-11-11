@@ -27,6 +27,46 @@ export function performance(candles: WatchCandle[], end: number, minutes: number
   const points = windowPoints(candles,end,minutes);
   return points ? (points.at(-1)!.close/points[0].close-1)*100 : null;
 }
+
+export type WatchIndicator = 'price' | 'cvd' | 'flow' | 'oi';
+
+export function historicalStrengthPoints(
+  row: WatchRow, reference: WatchRow | undefined, end: number, minutes: number,
+  indicator: WatchIndicator, benchmark: string,
+): { t: number; value: number }[] {
+  const candles = windowPoints(row.candles, end, minutes);
+  if (!candles) return [];
+  if (indicator === 'price') {
+    const ref = benchmark !== 'absolute' && reference ? windowPoints(reference.candles, end, minutes) : null;
+    if (benchmark !== 'absolute' && !ref) return [];
+    return candles.map((candle, index) => ({
+      t: candle.time,
+      value: (candle.close / candles[0].close - 1) * 100 - (ref ? (ref[index].close / ref[0].close - 1) * 100 : 0),
+    }));
+  }
+
+  const observations = indicator === 'oi'
+    ? new Map(row.oiSeries?.map(point => [point.time, point.oiUsd]))
+    : new Map(row.flow?.buckets.map(bucket => [bucket.time, indicator === 'flow' ? bucket.delta : bucket.cvd]));
+  let first: number | undefined;
+  let running = 0;
+  const result: { t: number; value: number }[] = [];
+  for (const candle of candles) {
+    const observation = observations.get(candle.time);
+    if (observation == null || !Number.isFinite(observation)) continue;
+    first ??= observation;
+    if (indicator === 'oi' && first === 0) return [];
+    let value = observation - first;
+    if (indicator === 'oi') value = (observation / first - 1) * 100;
+    if (indicator === 'flow') {
+      running += observation;
+      value = running;
+    }
+    result.push({ t: candle.time, value });
+  }
+  return result;
+}
+
 export function volumeRatio(candles: WatchCandle[], index: number): number | null {
   if(index < 12) return null;
   const sample=candles.slice(index-12,index);

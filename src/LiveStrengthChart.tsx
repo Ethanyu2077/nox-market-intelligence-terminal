@@ -1,98 +1,196 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { observedStrengthGap, spreadLabels, strengthDomain, strengthPath } from '../shared/strength-geometry';
+import { liveStrengthReturns, STRENGTH_GAP_MS, STRENGTH_WINDOW_MS, strengthValueAt, type StrengthPoint } from '../shared/strength-history';
+import './live-strength.css';
 
 type Project = { id: string; name: string; color: string };
-type Point = { t: number; p: number };
+type Language = 'zh' | 'en';
+type Unit = '%' | 'pp' | 'USDT';
+export type StrengthLine = Project & {
+  points: readonly { t: number; value: number }[];
+  stale?: boolean;
+};
+type PlotProps = {
+  lines: readonly StrengthLine[];
+  start: number;
+  end: number;
+  gapMs: number;
+  unit: Unit;
+  language: Language;
+  emptyText: string;
+  ariaLabel?: string;
+  hoverTime?: number | null;
+  onHoverTime?: (time: number | null) => void;
+  preview?: boolean;
+};
 
-/** Isolated S-level relative-strength preview: real /ws/live quotes, time-based x, rAF interpolation. */
-export function LiveStrengthChart({ projects, language }: { projects: Project[]; language: 'zh' | 'en' }) {
-  const canvas = useRef<HTMLCanvasElement | null>(null);
-  const data = useRef(new Map<string, Point[]>());
-  const shown = useRef(new Map<string, number>());
-  const target = useRef(new Map<string, number>());
+const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+const compactNumber = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 });
+
+function formatValue(value: number, unit: Unit, digits: number) {
+  if (unit === 'USDT') return `${value > 0 ? '+' : ''}${compactNumber.format(value)} USDT`;
+  const rounded = Number(value.toFixed(digits));
+  return `${rounded > 0 ? '+' : ''}${rounded.toFixed(digits)}${unit === 'pp' ? ' pp' : '%'}`;
+}
+
+function liveTimeTicks(start: number, end: number, width: number) {
+  const maxLabels = Math.max(2, Math.floor(width / 80));
+  const seconds = [5, 10, 15, 30, 60].find(step => (end - start) / 1000 <= step * maxLabels) ?? 60;
+  const interval = seconds * 1000;
+  const ticks: number[] = [];
+  for (let t = Math.ceil(start / interval) * interval; t <= end; t += interval) ticks.push(t);
+  return ticks;
+}
+
+function cursorGapLabel(lines: readonly StrengthLine[], time: number, tolerance: number, language: Language) {
+  const gaps = lines.flatMap(line => {
+    const interval = observedStrengthGap(line.points, time, tolerance);
+    return interval ? [{ name: line.name, ...interval }] : [];
+  });
+  if (!gaps.length) return '';
+  // Every interval contains the cursor. Their intersection is the observed shared gap.
+  const from = Math.max(...gaps.map(gap => gap.from));
+  const to = Math.min(...gaps.map(gap => gap.to));
+  const seconds = Number(((to - from) / 1000).toFixed(1));
+  if (gaps.length === 1) return language === 'zh'
+    ? `${gaps[0].name} 报价间隔 ${seconds} 秒` : `${gaps[0].name} · ${seconds}s between quotes`;
+  return language === 'zh'
+    ? `${gaps.length} 个项目同时缺报 ${seconds} 秒` : `${gaps.length} projects · ${seconds}s quote gap`;
+}
+
+export function StrengthPlot({ lines, start, end, gapMs, unit, language, ariaLabel, emptyText, hoverTime = null, onHoverTime, preview = false }: PlotProps) {
+  const viewport = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setSize({ width: Math.floor(width), height: Math.floor(height) });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const ranked = lines.flatMap(line => {
+    const last = line.points.at(-1);
+    return last ? [{ ...line, last }] : [];
+  }).sort((a, b) => b.last.value - a.last.value || a.id.localeCompare(b.id));
+  let low = 0, high = 0;
+  for (const line of ranked) for (const { value } of line.points) {
+    low = Math.min(low, value);
+    high = Math.max(high, value);
+  }
+  const { width, height } = size;
+  const duration = end - start;
+  const live = duration === STRENGTH_WINDOW_MS;
+  const timeLabel = (time: number) => live ? clock.format(time) : clock.format(time).slice(0, 5);
+  const drawingWidth = preview ? width : Math.min(width, height * 820 / 370);
+  const inset = (width - drawingWidth) / 2;
+  const compact = drawingWidth < 540;
+  const fontSize = compact ? 10 : 12;
+  const gap = fontSize + 7;
+  const top = 22, bottom = Math.max(top + 1, height - 28);
+  const domain = strengthDomain(low, high, Math.max(3, Math.min(7, Math.floor((bottom - top) / 55))));
+  const digits = Math.max(2, Math.min(8, Math.ceil(-Math.log10(domain.ticks[1] - domain.ticks[0])) + 1));
+  const axisText = domain.ticks.map(v => formatValue(v, unit, digits));
+  const axisWidth = Math.max(...axisText.map(text => text.length)) * 6.2 + 10;
+  const left = inset + (preview ? 8 : axisWidth + 3);
+  const labels = ranked.map(line => {
+    const maxChars = compact ? 7 : 13;
+    const name = line.name.length > maxChars ? line.name.slice(0, maxChars - 1) + '…' : line.name;
+    return `${name} ${formatValue(line.last.value, unit, digits)}`;
+  });
+  const labelWidth = Math.max(compact ? 76 : 100, ...labels.map(label => label.length * fontSize * .64 + 11));
+  const labelX = inset + drawingWidth - labelWidth - 4;
+  const right = Math.max(left + 1, labelX - (preview && !compact ? axisWidth + 12 : 18));
+  const x = (t: number) => left + (t - start) / duration * (right - left);
+  const y = (v: number) => bottom - (v - domain.min) / (domain.max - domain.min) * (bottom - top);
+  const fresh = ranked.filter(line => !line.stale);
+  const perSide = fresh.length >= 8 ? 3 : fresh.length >= 4 ? 2 : 1;
+  const highlighted = new Set([
+    ...fresh.filter(line => line.last.value > 0).slice(0, perSide),
+    ...fresh.filter(line => line.last.value < 0).slice(-perSide),
+  ].map(line => line.id));
+  const labelYs = spreadLabels(ranked.map(line => y(line.last.value)), top, bottom, gap);
+  const traces = ranked.map((line, index) => ({
+    line, label: labels[index], labelY: labelYs[index], strong: highlighted.has(line.id),
+    path: strengthPath(line.points.map(point => ({ t: point.t, x: x(point.t), y: y(point.value) })), gapMs),
+  }));
+  const divisions = Math.max(1, Math.min(4, Math.floor((right - left) / 65)));
+  const ticks = live ? liveTimeTicks(start, end, right - left)
+    : Array.from({ length: divisions + 1 }, (_, i) => start + duration * i / divisions);
+  const cursor = hoverTime !== null && hoverTime >= start && hoverTime <= end ? hoverTime : null;
+
+  const gapNote = live && cursor !== null ? cursorGapLabel(ranked, cursor, gapMs, language) : '';
+
+  return <div className={preview ? 'strength-live-scroll' : 'strength-live-inline'}>
+    <div ref={viewport} className="strength-live-plot" style={preview ? { minHeight: Math.max(160, (ranked.length - 1) * gap + 52) } : undefined}>
+      {width > 0 && height > 0 && duration > 0 && <svg className="strength-svg" viewBox={`0 0 ${width} ${height}`} role="img"
+        aria-label={ariaLabel ?? (language === 'zh' ? '关注项目相对强弱曲线' : 'Watchlist relative strength')}
+        onPointerMove={onHoverTime && (event => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const px = (event.clientX - rect.left) * width / rect.width;
+          if (px < left || px > right) { onHoverTime(null); return; }
+          const time = start + (px - left) / (right - left) * duration;
+          onHoverTime(live ? Math.round(time) : start + Math.round((time - start) / gapMs) * gapMs);
+        })}
+        onPointerLeave={onHoverTime && (() => onHoverTime(null))}>
+        {domain.ticks.map((value, i) => <g key={value} className={value === 0 ? 'strength-grid strength-zero' : 'strength-grid'}>
+          <line x1={left} x2={right} y1={y(value)} y2={y(value)}/>
+          <text x={preview ? (compact ? left + 2 : right + 6) : left - 7} y={y(value) + (preview && compact ? -4 : 3)}
+            textAnchor={preview ? 'start' : 'end'}>{axisText[i]}</text>
+        </g>)}
+        {ticks.map(t => <g key={t} className="strength-time">
+          <line x1={x(t)} x2={x(t)} y1={preview ? bottom : top} y2={bottom + 4}/>
+          <text x={Math.max(left + 18, Math.min(right - 18, x(t)))} y={height - 7} textAnchor="middle">{timeLabel(t)}</text>
+        </g>)}
+        {[...traces].sort((a, b) => Number(a.strong) - Number(b.strong)).map(({ line, path, strong }) =>
+          <g key={line.id} color={line.color} opacity={line.stale ? .38 : strong ? 1 : .85}>
+            <path className={strong ? 'strength-curve strength-highlight' : 'strength-curve'} d={path} fill="none" stroke="currentColor"
+              strokeWidth={strong ? 2.7 : 1.8} strokeLinecap="round" strokeLinejoin="round"/>
+            <circle cx={x(line.last.t)} cy={y(line.last.value)} r={strong ? 4 : 2.8} fill="currentColor"/>
+          </g>)}
+        {traces.map(({ line, label, labelY, strong }) => <g key={line.id} color={line.color} opacity={line.stale ? .55 : 1}>
+          <title>{line.name} {formatValue(line.last.value, unit, digits)} · {timeLabel(line.last.t)}{line.stale ? (language === 'zh' ? ' · 已延迟' : ' · Delayed') : ''}</title>
+          <line x1={x(line.last.t) + 3} y1={y(line.last.value)} x2={labelX - 3} y2={labelY} stroke="currentColor" opacity={.46}/>
+          {(!preview || strong) && <rect x={labelX} y={labelY - gap / 2 + 1} width={labelWidth} height={gap - 2} rx={preview ? 0 : 2} fill="currentColor" opacity={preview ? 1 : .12}/>}
+          <text className="strength-value" x={labelX + 5} y={labelY} dominantBaseline="central"
+            style={{ fontSize, fill: preview && strong ? '#070b0a' : 'currentColor' }}>{label}</text>
+        </g>)}
+        {cursor !== null && <g className="strength-cursor">
+          <line className="wo-cursor" x1={x(cursor)} x2={x(cursor)} y1={top} y2={bottom}/>
+          <text x={left} y={top - 7}>{timeLabel(cursor)}{gapNote && ` · ${gapNote}`}</text>
+          {ranked.map(line => {
+            const value = strengthValueAt(line.points, cursor, live ? gapMs : 0);
+            return value == null ? null : <circle key={line.id} cx={x(cursor)} cy={y(value)} r="3" fill={line.color}/>;
+          })}
+        </g>}
+      </svg>}
+      {!ranked.length && <span className="strength-live-empty" role="status">{emptyText}</span>}
+    </div>
+  </div>;
+}
+
+type PreviewProps = {
+  projects: readonly Project[];
+  language: Language;
+  series: ReadonlyMap<string, readonly StrengthPoint[]>;
+  now: number;
+  staleIds: ReadonlySet<string>;
+  connected: boolean;
+};
+
+export function LiveStrengthChart({ projects, language, series, now, staleIds, connected }: PreviewProps) {
+  const lines = useMemo(() => {
+    const returns = liveStrengthReturns(series, now, staleIds, connected);
+    return projects.map(project => {
+      const observed = returns.get(project.id);
+      return { ...project, points: observed?.points ?? [], stale: observed?.stale };
+    });
+  }, [projects, series, now, staleIds, connected]);
   const zh = language === 'zh';
-
-  useEffect(() => {
-    let socket: WebSocket | null = null;
-    let retry = 1_000;
-    let closed = false;
-    const connect = () => {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      socket = new WebSocket(`${proto}://${location.host}/ws/live`);
-      socket.onopen = () => { retry = 1_000; socket?.send(JSON.stringify({ op: 'subscribe', projects: projects.map((p) => p.id), channels: ['quotes'] })); };
-      socket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(String(event.data));
-          if (!Array.isArray(message.ticks)) return;
-          const now = Date.now();
-          for (const tick of message.ticks) {
-            if (typeof tick.projectId !== 'string' || !Number.isFinite(tick.price)) continue;
-            const list = data.current.get(tick.projectId) ?? [];
-            list.push({ t: now, p: tick.price });
-            while (list.length && list[0].t < now - 60_000) list.shift();
-            data.current.set(tick.projectId, list);
-          }
-        } catch { /* ignore */ }
-      };
-      socket.onclose = () => { if (!closed) { setTimeout(connect, retry); retry = Math.min(15_000, retry * 1.7); } };
-      socket.onerror = () => socket?.close();
-    };
-    connect();
-    return () => { closed = true; socket?.close(); };
-  }, [projects]);
-
-  useEffect(() => {
-    let frame = 0;
-    let last = performance.now();
-    const draw = (now: number) => {
-      frame = requestAnimationFrame(draw);
-      const dt = Math.min(0.2, (now - last) / 1000); last = now;
-      const el = canvas.current; if (!el) return;
-      const ratio = window.devicePixelRatio || 1;
-      const width = el.clientWidth, height = el.clientHeight;
-      if (el.width !== width * ratio || el.height !== height * ratio) { el.width = width * ratio; el.height = height * ratio; }
-      const ctx = el.getContext('2d'); if (!ctx) return;
-      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      ctx.clearRect(0, 0, width, height);
-      ctx.fillStyle = '#070b0a'; ctx.fillRect(0, 0, width, height);
-      const end = Date.now(), start = end - 60_000;
-      const left = 44, right = 12, top = 16, bottom = 24;
-      const values: number[] = [];
-      for (const project of projects) {
-        const list = data.current.get(project.id) ?? [];
-        if (!list.length) continue;
-        const anchor = list[0].p;
-        const value = list.at(-1)!.p / anchor - 1;
-        values.push(value * 100);
-        target.current.set(project.id, value);
-      }
-      const bound = Math.max(0.2, ...values.map(Math.abs));
-      const x = (t: number) => left + (t - start) / 60_000 * (width - left - right);
-      const y = (v: number) => top + (1 - (v + bound) / (bound * 2)) * (height - top - bottom);
-      ctx.strokeStyle = '#1b2724'; ctx.lineWidth = 1;
-      for (const factor of [-1, -0.5, 0, 0.5, 1]) { ctx.beginPath(); ctx.moveTo(left, y(bound * factor)); ctx.lineTo(width - right, y(bound * factor)); ctx.stroke(); }
-      ctx.font = '10px ui-monospace, monospace'; ctx.fillStyle = '#64756f';
-      ctx.fillText(`${(bound * 100).toFixed(2)}%`, 4, y(bound) + 3);
-      ctx.fillText('0%', 4, y(0) + 3);
-      ctx.fillText(`-${(bound * 100).toFixed(2)}%`, 4, y(-bound) + 3);
-      for (const project of projects) {
-        const list = data.current.get(project.id) ?? [];
-        if (!list.length) continue;
-        const targetValue = target.current.get(project.id) ?? 0;
-        const current = shown.current.get(project.id) ?? targetValue;
-        const next = current + (targetValue - current) * Math.min(1, dt * 4);
-        shown.current.set(project.id, next);
-        ctx.strokeStyle = project.color; ctx.lineWidth = 1.8; ctx.beginPath();
-        list.forEach((point, index) => { const px = x(point.t), py = y(index === list.length - 1 ? next : point.p / list[0].p - 1); if (index) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
-        ctx.stroke();
-        const lastPoint = list.at(-1)!;
-        ctx.fillStyle = project.color; ctx.beginPath(); ctx.arc(x(lastPoint.t), y(next), 3, 0, Math.PI * 2); ctx.fill();
-        ctx.fillText(`${project.name} ${(next * 100).toFixed(2)}%`, Math.min(width - 120, x(lastPoint.t) + 8), y(next) - 6);
-      }
-      if (!data.current.size) { ctx.fillStyle = '#8a9b95'; ctx.fillText(zh ? '等待实时报价…' : 'Waiting for live quotes…', left, height / 2); }
-    };
-    frame = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(frame);
-  }, [projects, zh]);
-
-  return <canvas ref={canvas} style={{ width: '100%', height: '100%', display: 'block' }} aria-label={zh ? 'S 级相对强弱测试图' : 'S-level relative strength preview'} />;
+  const empty = projects.length ? (zh ? '等待实时报价…' : 'Waiting for live quotes…') : (zh ? '暂无关注项目' : 'No watchlist projects');
+  return <StrengthPlot preview lines={lines} start={now - STRENGTH_WINDOW_MS} end={now} gapMs={STRENGTH_GAP_MS} unit="%"
+    language={language} emptyText={empty} ariaLabel={zh ? '关注项目最近 60 秒相对涨跌幅' : 'Watchlist returns over the last 60 seconds'} />;
 }

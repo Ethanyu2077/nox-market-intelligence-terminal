@@ -108,7 +108,8 @@ export class L2Collector {
 
   constructor(private projects: () => MarketProject[], history: HistoryStore, deps: L2CollectorDeps = {}) {
     this.intervalMs = deps.intervalMs ?? 1_000;
-    this.bucketSizes = deps.buckets ?? [1_000, 5_000, 60_000];
+    // Only 5m buckets are persisted; 1s/5s depth stays in memory for live views.
+    this.bucketSizes = deps.buckets ?? [300_000];
     this.acquire = deps.acquire ?? ((venue, symbol) => {
       const handle = acquireL2(venue, symbol);
       return { release: handle.release, snapshot: () => handle.feed.snapshot() };

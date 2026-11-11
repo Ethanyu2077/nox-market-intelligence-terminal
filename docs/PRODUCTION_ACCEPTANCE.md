@@ -195,3 +195,10 @@ DATABASE_URL=... MIGRATION_ALLOW_WRITES=1 \
 
 The tool never deletes the journal; inserts use `ON CONFLICT (event_time,id) DO NOTHING`
 and the checkpoint is bound to each file's SHA256. Production apply is NOT executed.
+
+
+## L2 persistence policy
+
+Only 5m L2 buckets are written to TimescaleDB. 1s/5s depth summaries stay in memory for
+live views, and full books are never persisted. Higher timeframes are aggregated from 5m;
+1s/5s records written before this policy remain readable via the metrics endpoint.

@@ -317,7 +317,7 @@ app.get('/api/projects/:id/provider-crosscheck', safe(async (req, res) => {
 app.get('/api/projects/:id/l2/metrics', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
-  const bucketMs = z.coerce.number().int().refine((value) => [1_000, 5_000, 60_000].includes(value), 'bucket must be 1000, 5000 or 60000').parse(req.query.bucket ?? 5_000);
+  const bucketMs = z.coerce.number().int().refine((value) => [1_000, 5_000, 60_000, 300_000].includes(value), 'bucket must be 1000, 5000, 60000 or 300000').parse(req.query.bucket ?? 300_000);
   const limit = z.coerce.number().int().min(1).max(1_000).parse(req.query.limit ?? 200);
   const page = await history.page(project.id, { kind: 'l2', limit: 1_000 });
   const includeUnusable = req.query.includeUnusable === '1';

@@ -6,7 +6,7 @@
 export type BinanceFamily = 'aggTrades' | 'kline' | 'depth' | 'premiumIndex' | 'openInterest' | 'exchangeInfo' | 'ticker' | 'other';
 
 const MIN_INTERVAL: Record<BinanceFamily, number> = {
-  aggTrades: 1_000, kline: 500, depth: 1_500, premiumIndex: 500,
+  aggTrades: 1_000, kline: 500, depth: 3_000, premiumIndex: 500,
   openInterest: 60_000, exchangeInfo: 3_600_000, ticker: 1_000, other: 500,
 };
 

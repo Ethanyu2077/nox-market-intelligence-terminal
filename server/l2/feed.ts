@@ -159,7 +159,7 @@ export class L2Feed {
         this.retryTimer = setTimeout(() => { if (!this.stopped) void this.resync(0); }, Math.min(error.retryAfterMs, 300_000));
         return;
       }
-      if (attempt < 2) { await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1))); void this.doResync(attempt + 1); }
+      if (attempt < 2) { await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1) + Math.floor(Math.random() * 750))); void this.doResync(attempt + 1); }
       else this.scheduleReconnect();
     }
   }

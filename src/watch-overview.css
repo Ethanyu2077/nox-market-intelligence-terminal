@@ -127,3 +127,9 @@
 @media (max-width: 1439px) { .wo-strength { grid-template-columns: minmax(0, 1fr) minmax(230px, 32%) !important; } }
 @media (max-width: 1023px) { .wo-dock { grid-template-columns: 1fr !important; } .wo-dock > .cf-panel, .wo-dock > .lfe-panel, .wo-dock > .fc-panel { grid-column: auto; } }
 @media (max-width: 850px) { .wo-strength { grid-template-columns: 1fr !important; } .wo-chart svg { min-height: 260px !important; max-height: 320px !important; aspect-ratio: auto !important; } }
+
+.live-test-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.72); display: grid; place-items: center; padding: 24px; }
+.live-test-modal { width: min(1100px, 94vw); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+.live-test-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; font: 12px var(--mono); }
+.live-test-body { height: min(60vh, 520px); border: 1px solid var(--line-soft); background: #070b0a; }
+.live-test-note { margin: 8px 0 0; font: 10px var(--mono); color: var(--faint); }

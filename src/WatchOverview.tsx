@@ -33,12 +33,12 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const projectKey=projects.map(p=>p.id).join(',');
   useEffect(()=>{
     if(!projectKey||typeof window==='undefined')return;
-    let socket:WebSocket|null=null,retry=1_000,closed=false,timer:number|undefined;
+    let socket:WebSocket|null=null,retry=1_000,closed=false,timer:number|undefined;const seq:Record<string,number>={};
     const connect=()=>{
       const proto=window.location.protocol==='https:'?'wss':'ws';
       socket=new WebSocket(`${proto}://${window.location.host}/ws/live`);
-      socket.onopen=()=>{retry=1_000;socket?.send(JSON.stringify({op:'subscribe',projects:projectKey.split(',')}));};
-      socket.onmessage=(event)=>{try{const msg=JSON.parse(String(event.data));const ticks=Array.isArray(msg.ticks)?msg.ticks:[];if(!ticks.length)return;setLive(current=>{const next={...current};for(const tick of ticks){if(typeof tick.projectId!=='string')continue;next[tick.projectId]={price:Number.isFinite(tick.price)?tick.price:null,change:Number.isFinite(tick.change24hPct)?tick.change24hPct:null,stale:tick.stale===true,at:Number(tick.at)||Date.now()};}return next;});}catch{/* ignore malformed */}};
+      socket.onopen=()=>{retry=1_000;socket?.send(JSON.stringify({op:'subscribe',projects:projectKey.split(','),channels:['quotes','edge']}));};
+      socket.onmessage=(event)=>{try{const msg=JSON.parse(String(event.data));const channel=typeof msg.channel==='string'?msg.channel:null;if(msg.type==='tick'&&channel&&typeof msg.seq==='number'){if(seq[channel]&&msg.seq>seq[channel]+1)socket?.send(JSON.stringify({op:'resync',channel}));seq[channel]=msg.seq;}if(msg.type==='snapshot'&&channel&&typeof msg.seq==='number')seq[channel]=msg.seq;const ticks=Array.isArray(msg.ticks)?msg.ticks:[];if(!ticks.length)return;setLive(current=>{const next={...current};for(const tick of ticks){if(typeof tick.projectId!=='string')continue;next[tick.projectId]={price:Number.isFinite(tick.price)?tick.price:null,change:Number.isFinite(tick.change24hPct)?tick.change24hPct:null,stale:tick.stale===true,at:Number(tick.at)||Date.now()};}return next;});}catch{/* ignore malformed */}};
       socket.onclose=()=>{if(closed)return;timer=window.setTimeout(connect,retry);retry=Math.min(15_000,retry*1.7);};
       socket.onerror=()=>{socket?.close();};
     };

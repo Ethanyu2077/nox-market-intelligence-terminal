@@ -14,8 +14,8 @@ import { venueBreakers } from './venue-health.ts';
  * hard-coding their own capability lists.
  */
 
-/** Venues with a normalised aggressor tape (spot + perpetual) in this version. */
-const FLOW_VENUES = new Set<ExchangeId>(['binance', 'bybit', 'okx', 'bitget', 'gate', 'kucoin']);
+/** Venues with a normalised aggressor tape. Aster supports USDⓈ-M perpetuals. */
+const FLOW_VENUES = new Set<ExchangeId>(['binance', 'bybit', 'okx', 'bitget', 'gate', 'kucoin', 'aster']);
 /** Venues with a public liquidation stream (Gate requires credentials, so excluded). */
 export const LIQUIDATION_VENUES = new Set<ExchangeId>(['binance', 'bybit', 'okx']);
 
@@ -66,6 +66,7 @@ export function capabilityRegistry(now = Date.now(), env: NodeJS.ProcessEnv = pr
         transport: support[family] ? (isCcxt ? 'ccxt' : 'native') : 'none',
         coverage: support[family] ? coverageFor(venue, family) : { state: 'unavailable', cooldownUntil: null, lastSuccessAt: null, lastFailureAt: null, lastError: 'Not implemented for this venue' },
         notes: [
+          ...(venue === 'aster' && family === 'flow' ? ['Aster USDⓈ-M perpetual trades.'] : []),
           ...(isCcxt ? ['Served through the CCXT adapter (quote/OI/funding only).'] : []),
           ...FAMILY_NOTES[family],
           ...capability.notes.filter((note) => family === 'snapshot' && /openInterest|no historical|WebSocket/i.test(note)),

@@ -61,8 +61,11 @@ import { buildProviderChecks } from './provider-crosscheck.ts';
 import { PriceHistory, withStoredPrices } from './price-history.ts';
 import { strengthMarketKey } from '../shared/strength-history.ts';
 import { createLiveHub } from './live-hub.ts';
+import { createMarketChannel } from './market-live.ts';
+import { createCandleChannel } from './native-candle-stream.ts';
 import { marketCache } from './market-cache.ts';
 import { LiveSnapshots } from './live-snapshots.ts';
+import type { LiveSource } from '../shared/live-channel.ts';
 import { validateContractIdentity } from './web3-contract.ts';
 import { assessResearchQuality } from './research-quality.ts';
 import { binanceGovernor } from './binance-governor.ts';
@@ -387,6 +390,14 @@ function flowSource(project: MarketProject, interval: FlowQuery['interval'], res
     }),
   };
 }
+const flowStream: LiveSource = (params, emit, unavailable) => {
+  const project = store.getProjects().find(item => item.id === params.projectId);
+  const query = flowQuery.safeParse(params);
+  if (!project?.monitoring.streamingEnabled || project.monitoring.collectionMode === 'paused' ||
+      !query.success || query.data.at !== undefined) { unavailable(); return () => {}; }
+  const source = flowSource(project, query.data.interval, query.data.reset);
+  return flowFrames.listen(source.key, source.create, emit, unavailable);
+};
 app.get('/api/projects/:id/orderflow', safe(async (req, res) => {
   const project = store.getProjects(true).find(p => p.id === String(req.params.id) && !p.archived);
   if (!project) { res.status(404).json({ error: { message: 'Project not found' } }); return; }
@@ -624,6 +635,23 @@ function bookSource(venue: z.infer<typeof l2VenueSchema>, symbol: string) {
 const bookFrames = new LiveSnapshots<{ snapshot: L2Snapshot; metrics: L2Metrics[] }>(
   'book', 250, ({ snapshot, metrics }) => ({ snapshot, metrics: metrics.at(-1) ?? null }),
 );
+const bookStream: LiveSource = (params, emit, unavailable) => {
+  const venue = l2VenueSchema.safeParse(params.venue);
+  const allowed = () => {
+    const project = store.getProjects().find(item => item.id === params.projectId);
+    return project?.monitoring.streamingEnabled && project.monitoring.collectionMode !== 'paused' &&
+      project.markets.some(m => m.exchange === params.venue && m.marketType === 'perpetual' && m.symbol === params.symbol);
+  };
+  if (!venue.success || !allowed()) { unavailable(); return () => {}; }
+  let checked = Date.now();
+  return bookFrames.listen(`${venue.data}:${params.symbol}`, () => bookSource(venue.data, params.symbol), value => {
+    if (Date.now() - checked >= 5_000) {
+      checked = Date.now();
+      if (!allowed()) { unavailable(); return; }
+    }
+    emit(value);
+  }, unavailable);
+};
 app.get('/api/market/:exchange/:symbol/book', safe((req, res) => {
   const venue = l2VenueSchema.safeParse(req.params.exchange);
   if (!venue.success) { res.status(501).json({ error: { code: 'L2_UNAVAILABLE', message: 'Continuous L2 is implemented for binance, bybit and okx', timestamp: Date.now() } }); return; }
@@ -705,7 +733,9 @@ if (process.env.NODE_ENV === 'production') {
 }
 const host = process.env.HOST ?? '127.0.0.1';
 const server = app.listen(port, host, () => console.log(`NOX API listening on http://${host}:${port}`));
-const closeLiveHub = createLiveHub(server, () => store.getProjects(true), {
+const liveProjects = () => store.getProjects(true);
+const closeLiveHub = createLiveHub(server, liveProjects, {
+  streams: { market: createMarketChannel(liveProjects), candles: createCandleChannel(liveProjects), book: bookStream, orderflow: flowStream },
   priceHistory: {
     read: (market, from, to, step) => quoteHistory.read(market, from, to, step),
     record: (market, price, at) => { if (watchedPriceMarkets.has(market)) quoteHistory.record(market, price, at); },

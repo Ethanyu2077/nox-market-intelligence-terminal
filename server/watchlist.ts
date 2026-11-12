@@ -40,7 +40,7 @@ async function quoteFor(project: MarketProject, asOf: number): Promise<Watchlist
   if (venues.status === 'rejected') {
     return {
       projectId: project.id, price: null, change24hPct: null, volume24hUsd: null, oiUsd: null, fundingRate: null, spreadBps: null,
-      eventTime: null, quality: 'error', exchange: primary.exchange, symbol: primary.symbol, sparkline: null,
+      eventTime: null, quality: 'error', exchange: primary.exchange, marketType: primary.marketType, symbol: primary.symbol, sparkline: null,
       error: venues.reason instanceof Error ? venues.reason.message : 'Snapshot unavailable',
     };
   }
@@ -50,7 +50,7 @@ async function quoteFor(project: MarketProject, asOf: number): Promise<Watchlist
     const failure = venues.value.failures[0];
     return {
       projectId: project.id, price: null, change24hPct: null, volume24hUsd: null, oiUsd: null, fundingRate: null, spreadBps: null,
-      eventTime: null, quality: 'error', exchange: primary.exchange, symbol: primary.symbol, sparkline: null,
+      eventTime: null, quality: 'error', exchange: primary.exchange, marketType: primary.marketType, symbol: primary.symbol, sparkline: null,
       error: failure?.message ?? 'No snapshot returned',
     };
   }
@@ -68,6 +68,7 @@ async function quoteFor(project: MarketProject, asOf: number): Promise<Watchlist
     eventTime: snapshot.eventTime,
     quality,
     exchange: snapshot.exchange,
+    marketType: snapshot.marketType,
     symbol: snapshot.symbol,
     sparkline: sparkline.status === 'fulfilled' && sparkline.value.length > 1 ? sparkline.value : null,
     error: null,

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { subscribeLiveChannel } from './live-channel';
 import { Mosaic, MosaicWindow, type MosaicNode } from 'react-mosaic-component';
 import 'react-mosaic-component/react-mosaic-component.css';
 import './orderflow.css';
+import { useNativeCandles } from './useNativeCandles';
+import { completedBy } from '../shared/native-candle-view';
 import { EXCHANGE_IDS, type CandlePoint, type ExchangeSelection, type MarketProject, type MarketSeries, type ProjectVenueResponse } from '../shared/types';
 import { FLOW_INTERVALS, type FlowBucket, type FlowInterval, type FlowReset, type OrderFlowResponse } from '../shared/orderflow';
 import { DEFAULT_FLOW_LAYOUT, FLOW_PANELS, isFlowLayout, type FlowPanel } from '../shared/flow-layout';
@@ -47,15 +50,26 @@ export function OrderFlowPage({ project, series, venues, interval, onInterval, l
   const [clustered, setClustered] = useState(false);
   const [replay, setReplay] = useState<number | null>(null), replayRef = useRef<number | null>(null);
   const replayRequest = useRef(0);
+  const { candles } = useNativeCandles(series?.candles, replay === null, replay);
+  const visibleCandles = useMemo(() => replay === null ? candles : completedBy(candles, replay, FLOW_INTERVALS[interval]), [candles, replay, interval]);
   const storage = `nox:orderflow-layout:v1:${project.id}`;
   const [layout, setLayout] = useState<MosaicNode<FlowPanel> | null>(() => { try { const value: unknown = JSON.parse(localStorage.getItem(storage) ?? 'null'); return isFlowLayout(value) ? value : DEFAULT_FLOW_LAYOUT; } catch { return DEFAULT_FLOW_LAYOUT; } });
   useEffect(() => {
-    if (project.monitoring.collectionMode === 'paused' || !project.monitoring.streamingEnabled) { void fetch(`/api/projects/${project.id}/orderflow?interval=${interval}&reset=${reset}`).then(r => r.json()).then(setData).catch(() => {}); return; }
-    const events = new EventSource(`/api/projects/${project.id}/orderflow/stream?interval=${interval}&reset=${reset}`);
-    const onData = (event: MessageEvent) => { if (replayRef.current != null) return; const value = JSON.parse(event.data) as OrderFlowResponse; setData(value); setError(''); };
-    events.addEventListener('orderflow', onData as EventListener); events.onerror = () => setError(zh ? '订单流连接中断，重连中；保留旧值并显示时间。' : 'Order-flow connection interrupted; reconnecting. Existing values retain timestamps.');
-    return () => events.close();
-  }, [project.id, project.monitoring.collectionMode, project.monitoring.streamingEnabled, interval, reset, zh]);
+    if (replay !== null) return;
+    if (project.monitoring.collectionMode === 'paused' || !project.monitoring.streamingEnabled) {
+      const abort = new AbortController();
+      void fetch(`/api/projects/${project.id}/orderflow?interval=${interval}&reset=${reset}`, {signal: abort.signal})
+        .then(async response => { if (response.ok) { const value = await response.json(); if (!abort.signal.aborted) setData(value); } }).catch(() => {});
+      return () => abort.abort();
+    }
+    return subscribeLiveChannel<OrderFlowResponse>('orderflow', { projectId: project.id, interval, reset }, value => {
+      if (replayRef.current !== null) return;
+      setData(value); setError('');
+    }, state => {
+      if (state === 'reconnecting' || state === 'offline' || state === 'unavailable')
+        setError(zh ? '订单流连接中断，显示最近一次数据。' : 'Order-flow connection interrupted. Showing the last observation.');
+    });
+  }, [project.id, project.monitoring.collectionMode, project.monitoring.streamingEnabled, interval, reset, replay, zh]);
   const titles: Record<FlowPanel, string> = { price: zh ? '价格 / 现货–永续基差' : 'Price / spot–perpetual basis', delta: zh ? '各交易所 Delta · 现货 / 永续' : 'Venue delta · spot / perpetual', cvd: zh ? '各交易所 CVD · 现货 / 永续' : 'Venue CVD · spot / perpetual', oi: zh ? 'OI Delta / 成交量' : 'OI delta / volume', tape: zh ? '大额成交' : 'Large trades', liquidations: zh ? '清算时间线' : 'Liquidation timeline', signals: zh ? '结构假设与数据覆盖' : 'Structure hypotheses & coverage' };
   const times = data?.venues[0]?.buckets.map(b => b.time) ?? [];
   const visible = data?.venues.filter(v => !hidden.includes(v.key) && (selection === 'aggregated' || selection === v.market.exchange)) ?? [];
@@ -78,7 +92,7 @@ export function OrderFlowPage({ project, series, venues, interval, onInterval, l
   const basis = venues?.snapshots.filter(s => s.marketType === 'spot').flatMap(spot => { const perp = venues.snapshots.find(p => p.exchange === spot.exchange && p.marketType === 'perpetual'); return spot.price && perp?.price && Math.abs(spot.eventTime - perp.eventTime) < 30_000 && Date.now() - Math.min(spot.eventTime, perp.eventTime) < 60_000 ? [`${spot.exchange} ${((perp.price / spot.price - 1) * 10_000).toFixed(2)} bps`] : []; }) ?? [];
   const panel = (id: FlowPanel) => {
     if (id === 'tape' && clustered) return <><button onClick={() => setClustered(false)}>{zh ? '返回逐笔 · 2秒聚合' : 'Return to prints · 2s clusters'}</button><p className="of-meta">≥ {minimum} USDT · {zh ? '按交易所、市场、方向独立聚合；保留原始ID。' : 'Grouped by venue/market/side; native IDs preserved.'}</p>{data?.tradeClusters.filter(c => c.notional >= minimum && (selection === 'aggregated' || c.exchange === selection) && (tapeType === 'all' || c.marketType === tapeType) && (tapeVenue === 'all' || c.exchange === tapeVenue)).slice(0, 80).map(c => <article className="of-trade" key={c.id}><strong>{c.exchange} · {c.marketType} · {c.symbol}</strong><p className={c.side === 'buy' ? 'up' : 'down'}>{c.side} · {compact(c.notional)} USDT · {c.tradeIds.length} prints</p><details><summary>{new Date(c.from).toLocaleTimeString()} — {new Date(c.to).toLocaleTimeString()}</summary>{c.tradeIds.map(id => { const t = data.trades.find(t => t.id === id && t.exchange === c.exchange && t.marketType === c.marketType && t.symbol === c.symbol); return <p key={id}><code>{id} · {t?.price} × {t?.quantity} · {t?.notional} USDT</code></p>; })}</details></article>)}</>;
-    if (id === 'price') return <><div className="of-meta">{series?.symbol ?? '—'} · {series?.source ?? 'Native candles unavailable'} · {zh ? '非跨所合成价格' : 'not a cross-venue synthetic price'}</div><FlowPlot {...shared} candles={series?.candles.filter(c => replay == null || c.time < Math.floor(replay / FLOW_INTERVALS[interval]) * FLOW_INTERVALS[interval]) ?? []} height={200}/><div className="of-meta">Basis: {replay != null ? (zh ? '回放时无历史基差快照' : 'historical basis unavailable during replay') : basis.join(' · ') || (zh ? '不可用，需要同交易所新鲜现货与永续快照' : 'unavailable; requires fresh spot and perpetual snapshots from the same venue')}</div></>;
+    if (id === 'price') return <><div className="of-meta">{series?.symbol ?? '—'} · {series?.source ?? 'Native candles unavailable'} · {zh ? '非跨所合成价格' : 'not a cross-venue synthetic price'}</div><FlowPlot {...shared} candles={visibleCandles} height={200}/><div className="of-meta">Basis: {replay != null ? (zh ? '回放时无历史基差快照' : 'historical basis unavailable during replay') : basis.join(' · ') || (zh ? '不可用，需要同交易所新鲜现货与永续快照' : 'unavailable; requires fresh spot and perpetual snapshots from the same venue')}</div></>;
     if (id === 'delta') return <div className="of-paired">{(['spot', 'perpetual'] as const).map(type => <div key={type}><h3>{type === 'spot' ? zh ? '现货 Delta' : 'Spot delta' : zh ? '永续 Delta' : 'Perpetual delta'} · {interval.toUpperCase()}</h3>{EXCHANGE_IDS.map(exchange => {
       const row = visible.find(v => v.market.exchange === exchange && v.market.marketType === type);
       const filtered = data?.venues.some(v => v.market.exchange === exchange && v.market.marketType === type);
@@ -93,7 +107,7 @@ export function OrderFlowPage({ project, series, venues, interval, onInterval, l
     })}</div>;
     if (id === 'oi') {
       const oi = series?.positionFlow.oiDelta.filter(p => (replay == null || p.time <= replay)) ?? [];
-      const bucket = (metric: 'oi' | 'volume'): FlowBucket[] => times.map(time => { const point = metric === 'oi' ? oi.find(p => p.time === time) : series?.candles.find(p => p.time === time && (replay == null || p.time < Math.floor(replay / FLOW_INTERVALS[interval]) * FLOW_INTERVALS[interval])); const value = point ? 'deltaBase' in point ? point.deltaBase : point.volumeUsd : null; return { time, buy: null, sell: null, delta: value, cvd: null, base: null, buyBase: null, sellBase: null, vwap: null, high: null, low: null, maxTradeNotional: null, count: 0, complete: Boolean(point), zScore: null, reset: false }; });
+      const bucket = (metric: 'oi' | 'volume'): FlowBucket[] => times.map(time => { const point = metric === 'oi' ? oi.find(p => p.time === time) : visibleCandles.find(p => p.time === time); const value = point ? 'deltaBase' in point ? point.deltaBase : point.volumeUsd : null; return { time, buy: null, sell: null, delta: value, cvd: null, base: null, buyBase: null, sellBase: null, vwap: null, high: null, low: null, maxTradeNotional: null, count: 0, complete: Boolean(point), zScore: null, reset: false }; });
       return <><div className="of-meta">{zh ? '原生 Binance 数据 · OI Delta 为代币数量，不是成交量差' : 'Native Binance · OI delta in base quantity, not trade volume delta'} · OI {series?.positionFlow.oiInterval ?? '—'}</div><div className="of-paired"><div><h3>OI Δ · base</h3><FlowPlot {...shared} hist={bucket('oi')} height={80} compact/></div><div><h3>Volume · USDT</h3><FlowPlot {...shared} hist={bucket('volume')} height={80} compact/></div></div></>;
     }
     if (id === 'tape') return <><div className="of-tape-controls"><label>{zh ? '最低 USDT' : 'Min USDT'}<input type="number" min={0} value={minimum} onChange={e => setMinimum(Math.max(0, Number(e.target.value)))}/></label><select aria-label="Trade market filter" value={tapeType} onChange={e => setTapeType(e.target.value)}><option value="all">Spot + Perp</option><option value="spot">Spot</option><option value="perpetual">Perp</option></select><select aria-label="Trade venue filter" value={tapeVenue} onChange={e => setTapeVenue(e.target.value)}><option value="all">All venues</option>{EXCHANGE_IDS.map(e => <option key={e}>{e}</option>)}</select></div>{tape.length ? tape.map(t => <article className="of-trade" key={`${t.exchange}:${t.marketType}:${t.symbol}:${t.id}`}><div><strong>{t.exchange}</strong><span>{t.marketType} · {t.symbol}</span><time>{new Date(t.time).toLocaleTimeString()}</time></div><div><b className={t.side === 'buy' ? 'up' : 'down'}>{t.side.toUpperCase()} {compact(t.notional)}</b><span>@ {t.price}</span><small>{t.ratio == null ? 'baseline —' : `${t.ratio.toFixed(1)}× median`}</small></div><details><summary>{zh ? '原始成交' : 'Underlying trade'}</summary><code>{t.id} · {t.quantity} base · {t.source}</code></details></article>) : <p className="of-meta">{zh ? '暂无符合阈值的已观测成交。历史基线少于20笔时不计算倍数。' : 'No observed trades meet filters. Baseline ratio requires 20 earlier trades.'}</p>}</>;

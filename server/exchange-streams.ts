@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import type { ExchangeId } from '../shared/types.ts';
 import { openMarketStream } from './binance.ts';
+import { openAsterMarketStream } from './aster.ts';
 import { getExchangeInstruments } from './exchanges.ts';
 
 type EventHandler = (payload: unknown) => void;
@@ -65,6 +66,7 @@ export function normalizeExchangeMessage(exchange: Exclude<ExchangeId, 'binance'
 function openExchangeStreamRaw(exchange: ExchangeId, symbol: string, onEvent: EventHandler, onState: StateHandler) {
   if(exchange==='upbit'||exchange==='bithumb'){onState('degraded','KRW spot REST only; derivatives WebSocket is unavailable');return ()=>{};}
   if (exchange === 'binance') return openMarketStream(symbol, onEvent, onState);
+  if (exchange === 'aster') return openAsterMarketStream(symbol, onEvent, onState);
   let socket: WebSocket | undefined; let stopped = false; let retry = 1_000; let reconnectTimer: NodeJS.Timeout | undefined; let pingTimer: NodeJS.Timeout | undefined;
   const seen = new Set<string>(); const order: string[] = [];
   const connect = async () => {
@@ -94,7 +96,7 @@ function openExchangeStreamRaw(exchange: ExchangeId, symbol: string, onEvent: Ev
 }
 
 const sharedStreams = new Map<string, { listeners: Set<{ event: EventHandler; state: StateHandler }>; stop: () => void; status: [string, string?] }>();
-const STREAM_VENUES = new Set<ExchangeId>(['binance', 'bybit', 'okx', 'bitget', 'gate', 'kucoin', 'mexc']);
+const STREAM_VENUES = new Set<ExchangeId>(['binance', 'aster', 'bybit', 'okx', 'bitget', 'gate', 'kucoin', 'mexc']);
 
 export function openExchangeStream(exchange: ExchangeId, symbol: string, onEvent: EventHandler, onState: StateHandler) {
   // Never route a venue without a verified adapter through another venue's socket.

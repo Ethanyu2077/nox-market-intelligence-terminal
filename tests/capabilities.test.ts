@@ -27,12 +27,14 @@ test('liquidation is only claimed for binance, bybit and okx', () => {
   assert.deepEqual(liquidation, ['binance', 'bybit', 'okx']);
 });
 
-test('aggressor flow is withheld for mexc and aster', () => {
+test('aggressor flow covers Aster perpetuals and remains unavailable for MEXC', () => {
   const flow = registry.rows.filter((row) => row.family === 'flow');
-  for (const venue of ['mexc', 'aster'] as const) {
-    assert.equal(flow.find((row) => row.venue === venue)?.supported, false, `${venue} must not claim flow`);
-    assert.equal(flow.find((row) => row.venue === venue)?.coverage.state, 'unavailable');
-  }
+  const aster = flow.find(row => row.venue === 'aster');
+  assert.equal(aster?.supported, true);
+  assert.match(aster?.notes.join(' ') ?? '', /perpetual/);
+  const mexc = flow.find(row => row.venue === 'mexc');
+  assert.equal(mexc?.supported, false);
+  assert.equal(mexc?.coverage.state, 'unavailable');
 });
 
 test('unsupported families report an explicit reason, not a zero', () => {

@@ -1,3 +1,5 @@
+import type { LiveSource } from '../shared/live-channel.ts';
+import { liveSubscriptions } from './live-subscriptions.ts';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import type { MarketProject } from '../shared/types.ts';
@@ -34,10 +36,10 @@ export function parseLiveEvent(payload: unknown, receivedAt: number): Omit<LiveT
   return { price, change24hPct: change, fundingRate: funding, at, stale: false };
 }
 
-interface Client { socket: WebSocket; projects: Set<string>; channels: Set<LiveChannel>; seq: Record<string, number>; alive: boolean }
-interface Feed { stop: () => void; tick: LiveTick; replay: QuoteReplay; saveQuotes: boolean; release?: NodeJS.Timeout }
+interface Client { socket: WebSocket; transient?: boolean; requested: Set<string>; projects: Set<string>; channels: Set<LiveChannel>; seq: Record<string, number>; alive: boolean; closeStreams?: () => void }
+interface Feed { stop: () => void; tick: LiveTick; replay: QuoteReplay; saveQuotes: boolean; hasRecorder: boolean; release?: NodeJS.Timeout }
 
-export function createLiveHub(server: Server, projects: () => MarketProject[], options: { priceHistory?: Pick<PriceHistory, 'read' | 'record'>; intervalMs?: number; flowTick?: (project: MarketProject, at: number) => LiveFlow; openPerpetualStream?: typeof openExchangeStream } = {}) {
+export function createLiveHub(server: Server, projects: () => MarketProject[], options: { streams?: Record<string, LiveSource>; priceHistory?: Pick<PriceHistory, 'read' | 'record'>; intervalMs?: number; flowTick?: (project: MarketProject, at: number) => LiveFlow; openPerpetualStream?: typeof openExchangeStream } = {}) {
   const wss = new WebSocketServer({ server, path: '/ws/live', maxPayload: 4_096 });
   const clients = new Set<Client>();
   const feeds = new Map<string, Feed>();
@@ -88,11 +90,10 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
   const timers = [setInterval(() => publish('quotes'), quotesEvery), setInterval(() => publish('edge'), edgeEvery), setInterval(publishFlow, quotesEvery)];
   timers.forEach((timer) => timer.unref?.());
 
-  const ensureFeed = (project: MarketProject) => {
+  const ensureFeed = (project: MarketProject, saveQuotes: boolean, hasRecorder = true) => {
     const market = project.markets.find((item) => item.id === project.primaryMarketId) ?? project.markets[0];
     const key = market && `${market.exchange}:${market.marketType}:${market.symbol}`;
     const existing = feeds.get(project.id);
-    const saveQuotes = !project.archived && project.monitoring.streamingEnabled && project.monitoring.collectionMode !== 'paused';
     if (existing && existing.tick.marketKey === key) { existing.saveQuotes = saveQuotes; return; }
     clearTimeout(existing?.release);
     existing?.stop();
@@ -103,11 +104,11 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
     const now = Date.now();
     for (const point of options.priceHistory?.read(key, now - STRENGTH_WINDOW_MS, now, 1000) ?? [])
       replay.record(point.p, point.t, now);
-    const feed: Feed = {stop: () => {}, tick, replay, saveQuotes};
+    const feed: Feed = {stop: () => {}, tick, replay, saveQuotes, hasRecorder};
     const updatePrice = (price: number, at: number) => {
       // A delayed trade can fill an earlier bucket without moving the current quote backwards.
       replay.record(price, at, Date.now());
-      if (feed.saveQuotes) options.priceHistory?.record(key, price, at);
+      if (feed.saveQuotes && feed.hasRecorder) options.priceHistory?.record(key, price, at);
       if (tick.priceAt != null && at < tick.priceAt) return;
       tick.price = price;
       tick.priceAt = at;
@@ -137,9 +138,17 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
   // Keep collecting through a short browser disconnect, then dispose unused upstream sockets.
   const reconcileFeeds = () => {
     const needed = new Set<string>();
-    for (const client of clients) if (client.channels.size) for (const id of client.projects) needed.add(id);
+    const recording = new Set<string>();
+    for (const client of clients) {
+      if (!client.channels.size) continue;
+      for (const id of client.projects) {
+        needed.add(id);
+        if (!client.transient) recording.add(id);
+      }
+    }
     for (const [id, feed] of feeds) {
       if (needed.has(id)) {
+        feed.hasRecorder = recording.has(id);
         clearTimeout(feed.release);
         feed.release = undefined;
       } else if (!feed.release) {
@@ -154,10 +163,14 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
   };
 
   const syncClientFeeds = (client: Client, byId: Map<string, MarketProject>) => {
-    for (const id of client.projects) {
+    client.projects = new Set();
+    for (const id of client.requested) {
       const project = byId.get(id);
-      if (!project) client.projects.delete(id);
-      else if (client.channels.size) ensureFeed(project);
+      if (!project) continue;
+      const monitored = !project.archived && project.monitoring.streamingEnabled && project.monitoring.collectionMode !== 'paused';
+      if (client.transient && !monitored) continue;
+      client.projects.add(id);
+      if (client.channels.size) ensureFeed(project, monitored, !client.transient);
     }
     reconcileFeeds();
   };
@@ -165,18 +178,26 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
   wss.on('connection', (socket, request) => {
     const origin = request.headers.origin;
     if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) && !/^https:\/\/ans\.y2k\.ventures$/.test(origin)) { socket.close(1008, 'origin'); return; }
-    const client: Client = { socket, projects: new Set(), channels: new Set(), seq: {}, alive: true };
+    const client: Client = { socket, requested: new Set(), projects: new Set(), channels: new Set(), seq: {}, alive: true };
     clients.add(client);
     send(client, { type: 'hello', asOf: Date.now(), channels: LIVE_CHANNELS });
+    const streams = liveSubscriptions(options.streams ?? {}, payload => {
+      // Reconnect a backpressured reader instead of silently skipping deltas.
+      if (socket.bufferedAmount > 1_000_000) { socket.terminate(); return; }
+      send(client, payload);
+    });
+    client.closeStreams = streams.close;
     socket.on('pong', () => { client.alive = true; });
     socket.on('message', (raw) => {
       const text = raw.toString();
       if (text.length > 4_096) return;
-      let message: { op?: string; projects?: unknown; channels?: unknown; channel?: unknown };
+      let message: { op?: string; projects?: unknown; channels?: unknown; channel?: unknown; transient?: unknown };
       try { message = JSON.parse(text); } catch { return; }
+      if (!message || typeof message !== 'object' || streams.accept(message)) return;
       if (message.op === 'subscribe') {
+        client.transient = message.transient === true;
         const byId = new Map(projects().map((project) => [project.id, project]));
-        if (Array.isArray(message.projects)) client.projects = new Set(message.projects.filter((id): id is string => typeof id === 'string' && byId.has(id)).slice(0, 12));
+        if (Array.isArray(message.projects)) client.requested = new Set(message.projects.filter((id): id is string => typeof id === 'string' && byId.has(id)).slice(0, 12));
         if (Array.isArray(message.channels)) client.channels = new Set(message.channels.filter((channel): channel is LiveChannel => LIVE_CHANNELS.includes(channel as LiveChannel)));
         syncClientFeeds(client, byId);
         for (const channel of client.channels) {
@@ -189,6 +210,7 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
       }
     });
     socket.on('close', () => {
+      streams.close();
       clients.delete(client);
       reconcileFeeds();
     });
@@ -197,8 +219,9 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
 
   const heartbeat = setInterval(() => {
     for (const client of clients) {
-      if (!client.alive) { client.socket.terminate(); clients.delete(client); continue; }
+      if (!client.alive) { client.closeStreams?.(); client.socket.terminate(); clients.delete(client); continue; }
       client.alive = false;
+      if (!client.channels.size) send(client, { type: 'pulse' });
       try { client.socket.ping(); } catch { /* ignore */ }
     }
   }, 30_000);
@@ -208,7 +231,7 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
     clearInterval(heartbeat);
     for (const feed of feeds.values()) { clearTimeout(feed.release); feed.stop(); }
     feeds.clear();
-    for (const client of clients) client.socket.terminate();
+    for (const client of clients) { client.closeStreams?.(); client.socket.terminate(); }
     clients.clear();
     wss.close();
   };

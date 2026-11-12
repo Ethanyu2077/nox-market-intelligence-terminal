@@ -163,3 +163,37 @@ test('a restarted hub replays persisted chart quotes and honors pause/resume on 
   assert.deepEqual(history.read(market,now-5000,now,1000).map(p=>p.p),[11,12,14]);
   await disconnect(client);
 });
+
+test('transient quote-board subscribers share an upstream and preserve only another subscriber’s archive writes', { timeout: 10_000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const project: MarketProject = {
+    id: 'p', name: 'A', tokenSymbol: 'A', contractAddress: null, identitySource: 'symbol', identityNetwork: null,
+    markets: [{ id: 'm', exchange: 'binance', marketType: 'perpetual', symbol: 'AUSDT', base: 'A', quote: 'USDT', status: 'TRADING' }],
+    primaryMarketId: 'm', monitoring: { defaultInterval: '5m', streamingEnabled: true, collectionMode: 'active' },
+    archived: false, order: 0, createdAt: 0, updatedAt: 0,
+  };
+  const server = createServer();
+  const received: number[] = [];
+  const sources: Array<(payload: unknown) => void> = [];
+  const stop = createLiveHub(server, () => [project], { priceHistory: { read: () => [], record: (_key, price) => { received.push(price); } },
+    openPerpetualStream: (_venue, _symbol, emit) => { sources.push(emit); return () => {}; } });
+  t.after(stop);
+  const subscribe = async (client: WebSocket, transient: boolean) => {
+    const replied = frame(client, 'snapshot', 'quotes');
+    client.send(JSON.stringify({ op: 'subscribe', projects: ['p'], channels: ['quotes'], transient }));
+    await replied;
+  };
+  const quote = (price: number) => sources[0]({data: { e: 'aggTrade', p: String(price), T: Date.now() }});
+  const board = await connect(server);
+  await subscribe(board, true);
+  quote(1); assert.deepEqual(received, []);
+  const chart = await connect(server);
+  await subscribe(chart, false);
+  await subscribe(board, true);
+  quote(2); assert.deepEqual(received, [2]);
+  await disconnect(chart);
+  await subscribe(board, true);
+  quote(3); assert.deepEqual(received, [2]);
+  assert.equal(sources.length, 1);
+  await disconnect(board);
+});

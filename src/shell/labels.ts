@@ -1,10 +1,11 @@
-export type ConnectionState = 'connecting' | 'live' | 'polling' | 'stale' | 'degraded';
+import type { ConnectionState } from '../../shared/watchlist';
+export type { ConnectionState } from '../../shared/watchlist';
 
 /** One vocabulary for transport health across the top bar, sidebar and status bar. */
 export function connectionLabel(state: ConnectionState, zh: boolean): string {
   switch (state) {
     case 'live': return zh ? '实时' : 'LIVE';
-    case 'polling': return zh ? '轮询' : '60S POLL';
+    case 'polling': return zh ? '轮询' : 'POLLING';
     case 'connecting': return zh ? '连接中' : 'CONNECTING';
     case 'stale': return zh ? '延迟' : 'STALE';
     case 'degraded': return zh ? '降级' : 'DEGRADED';

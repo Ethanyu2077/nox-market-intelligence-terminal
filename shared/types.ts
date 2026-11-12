@@ -406,6 +406,8 @@ export interface PositionFlowAnalytics {
 }
 
 export interface MarketSeries {
+  /** Last Binance aggregate trade included in CVD, for overlap with live frames. */
+  lastTradeId?: number;
   symbol: string;
   interval: string;
   candles: CandlePoint[];

@@ -27,7 +27,10 @@ test('minute seeds and incremental closes use the same actual close time and exc
     [480_000, 0, 0, 0, '3', 0, 539_999, '10'], [540_000, 0, 0, 0, '4', 0, 599_999, '20'],
     [600_000, 0, 0, 0, '5', 0, 659_999, '15'],
   ]);
-  const socket = new Socket(), stream = new BinanceKlineStream(() => socket);
+  const socket = new Socket(), stream = new BinanceKlineStream(url => {
+    assert.match(url, /\/market\/ws\/pair@kline_1m$/);
+    return socket;
+  });
   const seed = await stream.get('PAIR', '1m', 61, end);
   assert.deepEqual(seed.map(c => [c.time, c.close]), [[540_000, 3], [600_000, 4]]);
   // Re-selecting a short interval on a newly listed market does not re-bootstrap.

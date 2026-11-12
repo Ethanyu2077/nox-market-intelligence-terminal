@@ -1,12 +1,13 @@
 import WebSocket from 'ws';
 import { binanceGovernor } from './binance-governor.ts';
+import { binanceMarketWsBase } from './binance-ws-url.ts';
 
 /**
  * Incremental closed klines over WebSocket. REST is used only to bootstrap a symbol/interval
  * (through the governor); afterwards closed candles arrive as `kline` events.
  */
 export type StreamCandle = { time: number; close: number; volume: number };
-const WS = process.env.BINANCE_WS_BASE ?? 'wss://fstream.binance.com';
+const WS = binanceMarketWsBase();
 const REST = process.env.BINANCE_REST_BASE ?? 'https://fapi.binance.com';
 const MAX = 600;
 const MAX_STREAMS = 128;
@@ -79,7 +80,7 @@ export class BinanceKlineStream {
 
   private connect(key: string, entry: Entry, symbol: string, interval: string, intervalMs: number) {
     if (this.entries.get(key) !== entry || entry.socket || entry.reconnect) return;
-    const socket = this.openSocket(`${WS}/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    const socket = this.openSocket(`${WS}/ws/${encodeURIComponent(symbol.toLowerCase())}@kline_${interval}`);
     entry.socket = socket;
     socket.on('open', () => { entry.retry = 1_000; entry.ready = true; });
     socket.on('message', (raw) => {

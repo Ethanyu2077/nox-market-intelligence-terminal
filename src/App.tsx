@@ -1,4 +1,6 @@
 import { SettingsHub } from './SettingsHub';
+import { NativeCandleSource, useNativeCandles, type CandleScope } from './useNativeCandles';
+import { supportsNativeCandles } from '../shared/native-candle-view';
 import { WatchOverview } from './WatchOverview';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Archive, ArrowDown, ArrowUp, BarChart3, Bell, CheckCircle2, Copy, Database, Edit3, FolderKanban, Gauge, Plus, RefreshCw, Search, Trash2, Users, Waves, X } from 'lucide-react';
@@ -17,7 +19,9 @@ import {UserManagement} from './UserManagement';
 import {CoinGlassPanel} from './CoinGlassPanel';
 import {KoreanSpotPanel} from './KoreanSpotPanel';
 import {BinanceExchangePanel} from './BinanceExchangePanel';
-import { api, API_BASE } from './api';
+import { api } from './api';
+import { subscribeLiveChannel } from './live-channel';
+import { appendMarketTrades, applyMarketQuote, hasMarketStream, type MarketFrame, type MarketQuote, type TapePrint } from '../shared/market-live';
 import { timeAgo } from './format';
 import { ResearchTerminal } from './ResearchTerminal';
 import type { BacktestResult } from '../shared/types';
@@ -172,29 +176,17 @@ function countdown(timestamp: number | null | undefined) {
   const h = Math.floor(ms / 3_600_000); const m = Math.floor((ms % 3_600_000) / 60_000); const s = Math.floor((ms % 60_000) / 1000);
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
-function venueOverview(data: ProjectVenueResponse, selection: ExchangeSelection, project: MarketProject): Overview | null {
+function venueOverview(data: ProjectVenueResponse, selection: ExchangeSelection, project: MarketProject, market?: ProjectMarket | null): Overview | null {
   if (selection === 'aggregated') {
     const row = data.aggregate; if (row.price == null) return null;
     // Every aggregate field is nullable in the response; keep it nullable here so the UI can
     // render "unavailable" instead of crashing on a partial venue snapshot.
     return { symbol: `${project.tokenSymbol} · AGG`, price: row.price, markPrice: row.markPrice, change24hPct: row.change24hPct, volume24hBase: null, volume24hUsd: row.volume24hUsd, oiBase: row.oiBase, oiUsd: row.oiUsd, fundingRate: row.fundingRate, nextFundingTime: null, cvdWindowDelta: null, cvdWindowFrom: null, eventTime: row.eventTime ?? Date.now(), source: `Aggregated · ${row.coverage.successful}/${row.coverage.requested} venues`, quality: row.coverage.successful === row.coverage.requested ? 'live' : 'partial' };
   }
-  const row = data.snapshots.find((item) => item.exchange === selection); if (!row) return null;
+  const row = data.snapshots.find((item) => item.exchange === selection && (!market || (item.symbol === market.symbol && item.marketType === market.marketType))); if (!row) return null;
   return { symbol: row.symbol, price: row.price, markPrice: row.markPrice, change24hPct: row.change24hPct, volume24hBase: row.volume24hBase, volume24hUsd: row.volume24hUsd, oiBase: row.oiBase, oiUsd: row.oiUsd, fundingRate: row.fundingRate, nextFundingTime: row.nextFundingTime, cvdWindowDelta: row.cvd, cvdWindowFrom: null, eventTime: row.eventTime, source: row.source, quality: row.quality };
 }
 function intervalMs(interval: Interval) { const value = Number(interval.slice(0, -1)); return value * (interval.endsWith('m') ? 60_000 : 3_600_000); }
-function appendAggregateTrade(current: MarketSeries, trade: { p: string; q: string; m: boolean; T: number }, interval: Interval): MarketSeries {
-  const price = Number(trade.p), quantity = Number(trade.q), notional = price * quantity; const delta = trade.m ? -notional : notional; const time = Math.floor(trade.T / intervalMs(interval)) * intervalMs(interval);
-  const candles = [...current.candles]; const candleIndex = candles.findIndex((point) => point.time === time);
-  if (candleIndex >= 0) { const point = candles[candleIndex]; candles[candleIndex] = { ...point, high: Math.max(point.high, price), low: Math.min(point.low, price), close: price, volumeBase: point.volumeBase + quantity, volumeUsd: point.volumeUsd + notional }; }
-  else if (!candles.length || time > candles.at(-1)!.time) { candles.push({ time, open: price, high: price, low: price, close: price, volumeBase: quantity, volumeUsd: notional }); if (candles.length > 120) candles.shift(); }
-  const cvd = [...current.cvd]; const last = cvd.at(-1);
-  if (!last || time > last.time) cvd.push({ time, value: (last?.value ?? 0) + delta, delta, buyNotional: delta >= 0 ? notional : 0, sellNotional: delta < 0 ? notional : 0, complete: false });
-  else if (time === last.time) cvd[cvd.length - 1] = { ...last, value: last.value + delta, delta: last.delta + delta, buyNotional: last.buyNotional + (delta >= 0 ? notional : 0), sellNotional: last.sellNotional + (delta < 0 ? notional : 0) };
-  const latest = cvd.at(-1); const volumeFlow = latest ? [...current.positionFlow.volumeFlow.filter((point) => point.time !== latest.time), { time: latest.time, value: latest.delta, buyNotional: latest.buyNotional, sellNotional: latest.sellNotional, deltaNotional: latest.delta, imbalancePct: latest.buyNotional + latest.sellNotional ? latest.delta / (latest.buyNotional + latest.sellNotional) * 100 : 0, deltaChangePct: null, complete: false }] : current.positionFlow.volumeFlow;
-  return { ...current, candles, cvd, positionFlow: { ...current.positionFlow, volumeFlow }, coverage: { ...current.coverage, tradeCount: current.coverage.tradeCount + 1 }, eventTime: trade.T };
-}
-
 export default function App() {
   const [language, setLanguage] = useState<Language>(() => localStorage.getItem('nox-language') === 'zh' ? 'zh' : 'en');
   const [theme, setTheme] = useState<Theme>(() => localStorage.getItem('nox-theme') === 'light' ? 'light' : 'dark');
@@ -202,18 +194,19 @@ export default function App() {
   const [interval, setIntervalValue] = useState<Interval>('5m');
   const [projects, setProjects] = useState<MarketProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [series, setSeries] = useState<MarketSeries | null>(null);
+  const [loadedOverview, setOverview] = useState<{ key: string; value: Overview } | null>(null);
+  const [loadedSeries, setSeries] = useState<{ key: string; value: MarketSeries } | null>(null);
   const [venueData, setVenueData] = useState<ProjectVenueResponse | null>(null);
   const [exchange, setExchange] = useState<ExchangeSelection>('aggregated');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
+  const [projectBoardConnection, setProjectBoardConnection] = useState<ConnectionState>('connecting');
   const [lastStreamEvent, setLastStreamEvent] = useState(0);
   const [mobileNav, setMobileNav] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const lastTradeId = useRef<number | null>(null);
+  const marketTail = useRef<{ key: string; trades: TapePrint[]; quote: MarketQuote; restAt: number } | null>(null);
   const loadGeneration = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const auth = useAuth();
@@ -222,20 +215,28 @@ export default function App() {
   const venues = useVenues();
   const selectedProject = useMemo(() => projects.find((project) => project.id === selectedProjectId && !project.archived) ?? null, [projects, selectedProjectId]);
   const t = useCallback((value: string) => translate(value, language), [language]);
-  const localizedSeries = useMemo(() => language === 'zh' && series ? { ...series, positionFlow: { ...series.positionFlow, signals: series.positionFlow.signals.map((signal) => ({ ...signal, label: translate(signal.label, language) })) } } : series, [language, series]);
-  const primaryMarket = selectedProject?.markets.find((market) => market.id === selectedProject.primaryMarketId) ?? selectedProject?.markets.find((market) => market.marketType === 'perpetual') ?? null;
-  const activeMarket = exchange === 'aggregated' ? primaryMarket : selectedProject?.markets.find((market) => market.exchange === exchange && market.marketType === 'perpetual') ?? null;
+  const primaryMarket = selectedProject?.markets.find((market) => market.id === selectedProject.primaryMarketId) ?? selectedProject?.markets.find((market) => market.marketType === 'perpetual') ?? selectedProject?.markets[0] ?? null;
+  const activeMarket = exchange === 'aggregated' ? primaryMarket : selectedProject?.markets.find((market) => market.exchange === exchange && market.marketType === 'perpetual') ?? selectedProject?.markets.find(market => market.exchange === exchange && market.marketType === 'spot') ?? null;
   // Venues with a native historical-series adapter. Aster shares the Binance-compatible
   // candle/aggTrade shape; other venues keep REST snapshots only.
-  const seriesMarket = activeMarket && (activeMarket.exchange === 'binance' || activeMarket.exchange === 'aster')
-    ? activeMarket
-    : selectedProject?.markets.find((market) => (market.exchange === 'binance' || market.exchange === 'aster') && market.marketType === 'perpetual') ?? null;
-  const analyticsMarket = seriesMarket;
-  const symbol = analyticsMarket?.symbol ?? '';
-  const analyticsVenue = analyticsMarket?.exchange ?? '';
+  // Only the aggregate selection can use a secondary native market. A named venue or a
+  // selected spot market must never receive another instrument's perpetual candles.
+  const seriesMarket = supportsNativeCandles(activeMarket) ? activeMarket
+    : exchange === 'aggregated' && activeMarket?.marketType !== 'spot'
+      ? selectedProject?.markets.find(supportsNativeCandles) ?? null : null;
+  const symbol = seriesMarket?.symbol.toUpperCase() ?? '';
+  const analyticsVenue = seriesMarket?.exchange ?? '';
+  const seriesKey = JSON.stringify([selectedProjectId, analyticsVenue, 'perpetual', symbol, interval]);
+  const series = loadedSeries?.key === seriesKey ? loadedSeries.value : null;
+  const overviewKey = JSON.stringify([selectedProjectId, exchange, activeMarket?.exchange, activeMarket?.marketType, activeMarket?.symbol]);
+  const overview = loadedOverview?.key === overviewKey ? loadedOverview.value : null;
+  const marketKey = JSON.stringify([overviewKey, interval]);
+  const localizedSeries = useMemo(() => language === 'zh' && series ? { ...series, positionFlow: { ...series.positionFlow, signals: series.positionFlow.signals.map((signal) => ({ ...signal, label: translate(signal.label, language) })) } } : series, [language, series]);
+  const streamingCandles = !!selectedProject?.monitoring.streamingEnabled && selectedProject.monitoring.collectionMode !== 'paused';
+  const candleSource = useMemo<CandleScope | null>(() => symbol && (analyticsVenue === 'binance' || analyticsVenue === 'aster')
+    ? {key: seriesKey, exchange: analyticsVenue, symbol, interval, streaming: streamingCandles} : null, [streamingCandles, symbol, analyticsVenue, seriesKey, interval]);
   const coverage = venueData ? { successful: venueData.aggregate.coverage.successful, requested: venueData.aggregate.coverage.requested } : null;
-  // On the watchlist the transport is REST polling by definition; never show a socket state there.
-  const displayConnection: ConnectionState = (page === 'projects' || page === 'watchOverview' || page === 'settings') ? 'polling' : connection;
+  const displayConnection: ConnectionState = page === 'projects' ? projectBoardConnection : page === 'watchOverview' || page === 'settings' ? 'polling' : connection;
   const pageLabel = page === 'users' ? t('Account management') : t(NAV_GROUPS.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? 'Project Watchlist');
 
   const refreshProjects = useCallback(async (preferredId?: string) => {
@@ -265,64 +266,78 @@ export default function App() {
     if (venues.status === 'fulfilled') {
       const data = venues.value as ProjectVenueResponse;
       setVenueData(data);
-      setOverview(venueOverview(data, exchange, selectedProject));
+      const snapshot = venueOverview(data, exchange, selectedProject, activeMarket);
+      const tail = marketTail.current;
+      if (snapshot && tail?.key === marketKey && exchange !== 'aggregated') {
+        tail.restAt = snapshot.eventTime;
+        setOverview({ key: overviewKey, value: applyMarketQuote(snapshot, tail.quote) });
+      } else setOverview(snapshot && { key: overviewKey, value: snapshot });
       // REST data arrived. Without a live socket this is polling, not a live feed; label it
       // honestly instead of showing DEGRADED for a healthy 60s refresh.
       setConnection((current) => current === 'live' ? current : 'polling');
     }
-    if (nativeSeries?.status === 'fulfilled') setSeries(nativeSeries.value as MarketSeries); else if (!symbol) setSeries(null);
+    if (nativeSeries?.status === 'fulfilled') {
+      const value = nativeSeries.value as MarketSeries;
+      if (value.symbol === symbol && value.interval === interval) {
+        const tail = marketTail.current;
+        const sameTape = tail?.key === marketKey && analyticsVenue === activeMarket?.exchange && (analyticsVenue === 'binance' || analyticsVenue === 'aster') &&
+          activeMarket.marketType === 'perpetual' && activeMarket.symbol === symbol;
+        setSeries({ key: seriesKey, value: sameTape ? appendMarketTrades(value, tail.trades, intervalMs(interval)) : value });
+      }
+    } else if (!symbol) setSeries(null);
     const failures = [venues, nativeSeries].filter((result) => result?.status === 'rejected') as PromiseRejectedResult[];
     if (failures.length) setError(`${requests.length - failures.length} of ${requests.length} selected-project datasets loaded; ${failures[0].reason instanceof Error ? failures[0].reason.message : 'an upstream request failed'}`);
     setLoading(false);
-  }, [symbol, analyticsVenue, interval, selectedProject, exchange, page]);
+  }, [symbol, analyticsVenue, interval, selectedProject, exchange, page, seriesKey, marketKey, overviewKey, activeMarket]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { loadGeneration.current += 1; loadAbort.current?.abort(); }, []);
   useEffect(() => {
-    if (!symbol) return;
+    // An unsupported candle source can still have valid venue snapshots and funding data.
+    if (!selectedProjectId || page === 'projects' || page === 'watchOverview' || page === 'settings') return;
     const socket = Boolean(venues.find((venue) => venue.id === activeMarket?.exchange)?.ws);
     const timer = setInterval(() => { void load(true); }, socket ? 60_000 : 15_000);
     return () => clearInterval(timer);
-  }, [symbol, load, venues, activeMarket?.exchange]);
+  }, [selectedProjectId, page, load, venues, activeMarket?.exchange]);
   useEffect(() => {
-    // The watchlist page has no instrument view; opening a venue socket there only burns
-    // connections and produces misleading "degraded" transport labels.
-    if (page === 'projects' || page === 'watchOverview' || page === 'settings') { setConnection('polling'); return; }
-    // A project with streaming switched off is polled on a 60s timer, which is healthy —
-    // only an enabled stream that stops delivering is stale.
-    if (!selectedProject?.monitoring.streamingEnabled) { setConnection('polling'); return; }
-    if (!activeMarket) { setConnection('stale'); return; }
-    // Venues without a verified public WebSocket (Aster, Upbit/Bithumb) are REST-polled;
-    // opening an SSE that the server will immediately close only produces false 'stale'.
-    if (!venues.find((venue) => venue.id === activeMarket.exchange)?.ws) { setConnection('polling'); return; }
-    const streamVenue = activeMarket.exchange;
-    // The SSE payload is one venue's feed. It may feed a single-venue view and the native
-    // Binance series, but it must never be written into the cross-venue aggregate overview:
-    // that aggregate is a separately weighted REST snapshot (see venueOverview).
-    const patchesOverview = exchange !== 'aggregated';
-    const events = new EventSource(`${API_BASE}/market/${streamVenue}/${activeMarket.symbol}/stream`);
-    const connectionListener = (event: MessageEvent) => { const update = JSON.parse(event.data); setConnection(update.state); };
-    const marketListener = (event: MessageEvent) => {
-      const wrapper = JSON.parse(event.data); const data = wrapper.data ?? wrapper;
-      setLastStreamEvent(Date.now());
-      setConnection(wrapper.transport === 'rest-fallback' ? 'degraded' : 'live');
-      if (wrapper.exchange != null && wrapper.exchange !== streamVenue) return;
-      if (streamVenue === 'binance') {
-        if (data.e === 'aggTrade' && Number.isFinite(Number(data.a)) && (lastTradeId.current == null || Number(data.a) > lastTradeId.current)) { lastTradeId.current = Number(data.a); setSeries((old) => old ? appendAggregateTrade(old, data, interval) : old); }
-        if (!patchesOverview) return;
-        if (data.e === '24hrTicker') setOverview((old) => old ? { ...old, price: Number(data.c), change24hPct: Number(data.P), volume24hBase: Number(data.v), volume24hUsd: Number(data.q), eventTime: data.E } : old);
-        if (data.e === 'markPriceUpdate') setOverview((old) => old ? { ...old, markPrice: Number(data.p), fundingRate: Number(data.r), nextFundingTime: data.T, eventTime: data.E } : old);
-      } else if (patchesOverview) {
-        if (data.kind === 'ticker') setOverview((old) => old ? { ...old, price: data.price ?? old.price, markPrice: data.markPrice ?? old.markPrice, change24hPct: data.change24hPct ?? old.change24hPct, volume24hBase: data.volumeBase ?? old.volume24hBase, volume24hUsd: data.volumeUsd ?? old.volume24hUsd, fundingRate: data.fundingRate ?? old.fundingRate, nextFundingTime: data.nextFundingTime ?? old.nextFundingTime, eventTime: data.eventTime ?? Date.now() } : old);
-        if (data.kind === 'funding') setOverview((old) => old ? { ...old, fundingRate: data.fundingRate ?? old.fundingRate, nextFundingTime: data.nextFundingTime ?? old.nextFundingTime, eventTime: data.eventTime ?? Date.now() } : old);
-        if (data.kind === 'openInterest') setOverview((old) => old ? { ...old, oiBase: data.oiBase ?? old.oiBase, oiUsd: data.oiUsd ?? old.oiUsd, eventTime: data.eventTime ?? Date.now() } : old);
+    if (page === 'projects' || page === 'watchOverview' || page === 'settings' || !selectedProjectId ||
+        !selectedProject?.monitoring.streamingEnabled || selectedProject.monitoring.collectionMode === 'paused') {
+      setConnection('polling'); return;
+    }
+    if (!activeMarket || !hasMarketStream(activeMarket.exchange, activeMarket.marketType)) {
+      setConnection('polling'); return;
+    }
+    const { exchange: venue, symbol: instrument, marketType } = activeMarket;
+    const tail = { key: marketKey, trades: [] as TapePrint[], quote: {} as MarketQuote, restAt: 0 };
+    marketTail.current = tail;
+    const stop = subscribeLiveChannel<MarketFrame>('market', {
+      projectId: selectedProjectId, exchange: venue, marketType, symbol: instrument,
+    }, frame => {
+      if (frame.exchange !== venue || frame.symbol !== instrument || frame.marketType !== marketType) return;
+      setConnection(frame.state);
+      if (Object.keys(frame.quote).length || frame.trades.length) setLastStreamEvent(Date.now());
+      for (const field of Object.keys(frame.quote) as (keyof MarketQuote)[]) {
+        const sample = frame.quote[field];
+        if (sample && sample.at >= (tail.quote[field]?.at ?? 0)) tail.quote[field] = sample;
       }
-    };
-    const heartbeatListener = () => setLastStreamEvent(Date.now());
-    events.addEventListener('connection', connectionListener as EventListener); events.addEventListener('market', marketListener as EventListener); events.addEventListener('heartbeat', heartbeatListener as EventListener);
-    events.onerror = () => setConnection('stale');
-    return () => { lastTradeId.current = null; events.close(); };
-  }, [activeMarket, exchange, interval, page, selectedProject?.monitoring.streamingEnabled, venues]);
+      if (exchange !== 'aggregated' && Object.keys(frame.quote).length) {
+        // REST owns aggregate prices. Only patch a matching single-venue snapshot.
+        setOverview(old => old?.key === overviewKey && old.value.symbol === instrument ? { key: overviewKey,
+          value: applyMarketQuote(old.value, tail.quote, tail.restAt || old.value.eventTime) } : old);
+      }
+      if (marketType === 'perpetual' && frame.trades.length && (venue === 'binance' || venue === 'aster') && analyticsVenue === venue && instrument === symbol) {
+        tail.trades.push(...frame.trades);
+        if (tail.trades.length > 32_768) tail.trades.splice(0, tail.trades.length - 16_384);
+        setSeries(old => old?.key === seriesKey ? {key: seriesKey,
+          value: appendMarketTrades(old.value, frame.trades, intervalMs(interval))} : old);
+      }
+    }, state => {
+      // An open NOX socket is not evidence that its upstream exchange is live.
+      if (state !== 'open') setConnection(state === 'connecting' ? 'connecting' : state === 'unavailable' ? 'polling' : 'stale');
+    });
+    return () => { stop(); if (marketTail.current === tail) marketTail.current = null; };
+  }, [activeMarket, analyticsVenue, exchange, interval, marketKey, overviewKey, page, selectedProjectId, selectedProject?.monitoring.collectionMode,
+    selectedProject?.monitoring.streamingEnabled, seriesKey, symbol]);
   useEffect(() => { const timer = setInterval(() => setConnection((s) => lastStreamEvent && Date.now() - lastStreamEvent > 20_000 ? 'stale' : s), 5_000); return () => clearInterval(timer); }, [lastStreamEvent]);
   useEffect(() => { localStorage.setItem('nox-language', language); document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'; }, [language]);
   useEffect(() => { localStorage.setItem('nox-theme', theme); document.documentElement.style.colorScheme = theme; }, [theme]);
@@ -420,10 +435,11 @@ export default function App() {
           )}
           {error && page !== 'watchOverview' && page !== 'settings' && <div className="error-banner"><AlertTriangle size={16}/><div><strong>{t('Live data unavailable')}</strong><span>{error}. {language === 'zh' ? '系统不会使用模拟值替代真实数据。' : 'Values are not replaced with mock data.'}</span></div><button onClick={() => load()}>{t('Retry')}</button></div>}
           <main className="page-content">
+            <NativeCandleSource.Provider value={candleSource}>
             <ErrorBoundary level="page" language={language} resetKey={`${page}:${selectedProjectId ?? ''}`}>
             {page === 'terminal' && selectedProject && <ResearchTerminal key={`${selectedProject.id}:${interval}`} project={selectedProject} series={localizedSeries} venues={venueData} language={language} interval={interval} kpis={<KpiStrip overview={overview}/>} exchange={exchange} onExchange={setExchange} onDetail={() => setPage('positionFlow')}/>}
             {page === 'watchOverview' && <WatchOverview projects={projects} language={language} onManage={() => setPage('projects')} onOpen={(id) => { void selectProject(id); setPage('terminal'); }}/>}
-            {page === 'projects' && <ProjectsPage projects={projects} selectedProjectId={selectedProjectId} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>}
+            {page === 'projects' && <ProjectsPage projects={projects} onConnectionChange={setProjectBoardConnection} selectedProjectId={selectedProjectId} onRefresh={refreshProjects} onSelect={(id) => { void selectProject(id); setPage('overview'); }}/>}
             {page === 'overview' && selectedProject && <><OverviewPage overview={overview} project={selectedProject} venueData={venueData} exchange={exchange} onExchange={setExchange} onAnalyze={() => setPage('structure')}/><KoreanSpotPanel project={selectedProject} language={language}/></>}
             {page === 'structure' && selectedProject && <StructurePage overview={overview} series={localizedSeries} interval={interval} onInterval={setIntervalValue} project={selectedProject} theme={theme} language={language} exchange={exchange}/>}
             {page === 'contribution' && selectedProject && <ExchangeContributionPage project={selectedProject} data={venueData} selection={exchange} onSelect={setExchange}/>}
@@ -448,6 +464,7 @@ export default function App() {
             {page === 'signals' && selectedProject && <div className="signals-page intelligence-page"><header className="intelligence-page-head"><h1>{language==='zh'?'信号与提醒':'Signals & alerts'}</h1></header><AlertsPanel language={language} projects={projects} venues={venues}/><RegimeV2Panel key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval} onInterval={setIntervalValue}/></div>}
             {page === 'history' && selectedProject && <EventStudyPage key={selectedProject.id} project={selectedProject} language={language} selection={exchange} interval={interval}/>}
             </ErrorBoundary>
+            </NativeCandleSource.Provider>
           </main>
           <footer className="statusbar">
             <span className={auth.user ? 'sb-ok' : ''}><i className="sb-dot" />{auth.user ? `${auth.user.name} · ${auth.user.role}` : (language === 'zh' ? '只读访客' : 'READ-ONLY GUEST')}</span>
@@ -494,7 +511,7 @@ function compareWatchlist(sort: WatchlistSort, aName: string, bName: string, a: 
   return desc ? bv - av : av - bv;
 }
 
-function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { projects: MarketProject[]; selectedProjectId: string | null; onRefresh: (preferredId?: string) => Promise<MarketProject[]>; onSelect: (id: string) => void }) {
+function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect, onConnectionChange }: { onConnectionChange: (state: ConnectionState) => void; projects: MarketProject[]; selectedProjectId: string | null; onRefresh: (preferredId?: string) => Promise<MarketProject[]>; onSelect: (id: string) => void }) {
   const { language, t } = useUi();
   const zh = language === 'zh';
   const [editor, setEditor] = useState<MarketProject | 'new' | null>(null);
@@ -503,7 +520,15 @@ function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { pr
   const [query, setQuery] = useState('');
   const [prefs, setPrefs] = useState(readWatchlistPrefs);
   const [alertRules, setAlertRules] = useState<Record<string, number>>({});
-  const quotes = useWatchlistQuotes();
+  const needle = query.trim().toLowerCase();
+  const filtered = [...projects].sort((a, b) => a.order - b.order)
+    .filter((project) => filter === 'all' || !project.archived)
+    .filter((project) => {
+      if (!needle) return true;
+      const primary = project.markets.find((market) => market.id === project.primaryMarketId);
+      return `${project.name} ${project.tokenSymbol} ${primary?.symbol ?? ''} ${project.markets.map((market) => market.exchange).join(' ')}`.toLowerCase().includes(needle);
+    });
+  const quotes = useWatchlistQuotes(filtered, onConnectionChange);
   const quoteFor = (id: string) => quotes.items.find((item) => item.projectId === id) ?? null;
   const { sort, desc } = prefs;
 
@@ -522,14 +547,6 @@ function ProjectsPage({ projects, selectedProjectId, onRefresh, onSelect }: { pr
     return () => { active = false; };
   }, []);
 
-  const needle = query.trim().toLowerCase();
-  const filtered = [...projects].sort((a, b) => a.order - b.order)
-    .filter((project) => filter === 'all' || !project.archived)
-    .filter((project) => {
-      if (!needle) return true;
-      const primary = project.markets.find((market) => market.id === project.primaryMarketId);
-      return `${project.name} ${project.tokenSymbol} ${primary?.symbol ?? ''} ${project.markets.map((market) => market.exchange).join(' ')}`.toLowerCase().includes(needle);
-    });
   const ordered = useMemo(() => sort === 'manual'
     ? filtered
     : [...filtered].sort((a, b) => compareWatchlist(sort, a.name, b.name, quoteFor(a.id), quoteFor(b.id), desc)),
@@ -858,11 +875,11 @@ function StructurePage({ overview, series, interval, onInterval, project, theme,
 function NOXMarketStructureChart({ overview, series, interval }: { overview: Overview | null; series: MarketSeries | null; interval: Interval }) { const timeAgo = useTimeAgo();
   const { language } = useUi(); const zh = language === 'zh';
   const [cursor, setCursor] = useState<number | null>(null);
-  const points = series?.candles ?? [];
+  const { candles: points, source: candleSource } = useNativeCandles(series?.candles);
   // Window over the returned candles: zoom changes the bar count, pan shifts it back in
   // time. Every panel is sliced by the same time range so the crosshair stays aligned.
   const [view, setView] = useState({ count: 120, offset: 0 });
-  useEffect(() => { setView({ count: 120, offset: 0 }); }, [series?.symbol, interval]);
+  useEffect(() => { setView({ count: 120, offset: 0 }); }, [candleSource?.key, series?.symbol, interval]);
   const total = points.length;
   const count = Math.min(Math.max(view.count, Math.min(24, total)), Math.max(total, 1));
   const offset = Math.min(view.offset, Math.max(0, total - count));
@@ -889,7 +906,7 @@ function NOXMarketStructureChart({ overview, series, interval }: { overview: Ove
       <div className="coverage"><span>{zh ? 'CVD 覆盖' : 'CVD coverage'}</span><strong>{series?.coverage.tradeCount ?? 0} {zh ? '笔聚合成交' : 'aggregate trades'}</strong><em>{series?.coverage.cvdFrom ? new Date(series.coverage.cvdFrom).toLocaleTimeString() : (zh ? '不可用' : 'unavailable')}</em></div>
     </div>
     <section className="chart-stack panel">
-      <PanelHead title={zh ? '价格与成交量' : 'Price & volume'} meta={`${interval.toUpperCase()} ${zh ? 'K 线' : 'candles'} · USDT ${zh ? '每基础币' : 'per base'} · ${series?.source?.replace(/ REST.*$/, '') ?? (zh ? '等待序列' : 'awaiting series')}`} action={overview ? `${zh ? '标记价' : 'Mark'} ${formatPrice(overview.markPrice)}` : undefined}/>
+      <PanelHead title={zh ? '价格与成交量' : 'Price & volume'} meta={`${interval.toUpperCase()} ${zh ? 'K 线' : 'candles'} · USDT ${zh ? '每基础币' : 'per base'} · ${series?.source?.replace(/ REST.*$/, '') ?? candleSource?.exchange.toUpperCase() ?? (zh ? '等待序列' : 'awaiting series')}`} action={overview ? `${zh ? '标记价' : 'Mark'} ${formatPrice(overview.markPrice)}` : undefined}/>
       <CandleChart points={cut(points)} cursor={cursor} onCursor={setCursor}/>
       <div className="chart-divider"/>
       <ChartLabel title={zh ? '持仓量' : 'Open interest'} meta={series && !series.oiBase.length ? series.coverage.oiSource : (zh ? '基础币数量 — 不是 USD 名义值' : 'Base quantity — not USD notional')} current={formatCompact(series?.oiBase.at(-1)?.value)}/>
@@ -918,6 +935,7 @@ function PositionFlowPage({ overview, series, interval }: { overview: Overview |
   const [oiUnit, setOiUnit] = useState<'base' | 'usd'>('base');
   const [visible, setVisible] = useState<Record<FlowIndicator, boolean>>({ price: true, oi: true, oiDelta: true, taker: true, volumeDelta: true, cvd: true, signals: true });
   const [replay, setReplay] = useState<string | null>(null);
+  const { candles: priceCandles, source: candleSource } = useNativeCandles(series?.candles, visible.price);
   const signals = flow?.signals ?? [];
   const selectedSignal = signals.find((signal) => signal.id === replay) ?? signals[0] ?? null;
   const oiPoints = oiUnit === 'base' ? series?.oiBase ?? [] : series?.oiUsd ?? [];
@@ -941,7 +959,7 @@ function PositionFlowPage({ overview, series, interval }: { overview: Overview |
       <div className="unit-toggle"><span>OI unit</span><button className={oiUnit === 'base' ? 'active' : ''} onClick={() => setOiUnit('base')}>BASE</button><button className={oiUnit === 'usd' ? 'active' : ''} onClick={() => setOiUnit('usd')}>USD</button></div>
     </div>
     <section className="chart-stack panel flow-charts">
-      {visible.price && <><PanelHead title="Price & candlesticks" meta={`${interval.toUpperCase()} · Binance USDT-M · shared UTC axis`} action={overview ? `Mark ${formatPrice(overview.markPrice)}` : undefined}/><CandleChart points={series?.candles ?? []} cursor={cursor} onCursor={setCursor}/></>}
+      {visible.price && <><PanelHead title="Price & candlesticks" meta={`${interval.toUpperCase()} · ${series?.source.replace(/ REST.*$/, '') ?? candleSource?.exchange.toUpperCase() ?? '—'} · shared UTC axis`} action={overview ? `Mark ${formatPrice(overview.markPrice)}` : undefined}/><CandleChart points={priceCandles} cursor={cursor} onCursor={setCursor}/></>}
       {visible.oi && <FlowPanel title="Open interest" meta={`${oiUnit === 'base' ? 'Venue sumOpenInterest base quantity' : 'Venue sumOpenInterestValue notional'} · raw value`} current={formatCompact(oiPoints.at(-1)?.value, oiUnit === 'usd')}><LineChart points={oiPoints} cursor={cursor} onCursor={setCursor} color="#b9c3ca" height={140}/></FlowPanel>}
       {visible.oiDelta && <FlowPanel title="Open interest delta" meta="Change in outstanding contracts — distinct from traded volume" current={latestOiDelta ? signed(oiUnit === 'base' ? latestOiDelta.pctBase : latestOiDelta.pctUsd) : '—'}><OiDeltaChart points={flow?.oiDelta ?? []} unit={oiUnit} cursor={cursor} onCursor={setCursor}/></FlowPanel>}
       {visible.taker && <FlowPanel title="Taker buy / sell volume" meta="Aggressor-side notional from Binance aggregate trades" current={latestVolume ? `B ${formatCompact(latestVolume.buyNotional, true)} / S ${formatCompact(latestVolume.sellNotional, true)}` : '—'}><TakerFlowChart points={flow?.volumeFlow ?? []} cursor={cursor} onCursor={setCursor}/></FlowPanel>}

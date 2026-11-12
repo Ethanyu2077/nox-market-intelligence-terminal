@@ -12,16 +12,23 @@ interface Source<T> {
   release: () => void;
 }
 
+interface Subscriber {
+  emit: (value: unknown) => void;
+  unavailable: () => void;
+}
+
 interface Channel<T> {
   value: T;
-  frame: string;
+  payload: unknown;
+  frame?: string;
   timer: NodeJS.Timeout;
   viewers: Set<Stream>;
+  subscribers: Set<Subscriber>;
   lastRead: number | null;
   source: Source<T>;
 }
 
-/** One sampling clock and one serialized SSE frame for each active data key. */
+/** HTTP reads and streaming clients share one upstream source and sampling clock. */
 export class LiveSnapshots<T> {
   private channels = new Map<string, Channel<T>>();
 
@@ -29,44 +36,46 @@ export class LiveSnapshots<T> {
     private event: string,
     private intervalMs: number,
     private streamValue: (value: T) => unknown = (value) => value,
+    private maxSources = Infinity,
   ) {}
 
-  private frame(value: T) {
-    return `event: ${this.event}\ndata: ${JSON.stringify(this.streamValue(value))}\n\n`;
-  }
-
-  private send(stream: Stream, frame: string) {
-    if (!stream.destroyed && !stream.writableEnded && !stream.writableNeedDrain) stream.write(frame);
+  private send(stream: Stream, channel: Channel<T>) {
+    if (stream.destroyed || stream.writableEnded || stream.writableNeedDrain) return;
+    channel.frame ??= `event: ${this.event}\ndata: ${JSON.stringify(channel.payload)}\n\n`;
+    stream.write(channel.frame);
   }
 
   private closeChannel(key: string, channel: Channel<T>) {
     this.channels.delete(key);
     clearInterval(channel.timer);
+    for (const viewer of channel.subscribers) viewer.unavailable();
     for (const viewer of channel.viewers) viewer.end();
     channel.source.release();
   }
 
   private hasReaders(channel: Channel<T>) {
-    return channel.lastRead !== null && Date.now() - channel.lastRead < 10_000;
+    return channel.viewers.size || channel.subscribers.size ||
+      (channel.lastRead !== null && Date.now() - channel.lastRead < 10_000);
   }
 
   private open(key: string, create: () => Source<T>) {
     const existing = this.channels.get(key);
     if (existing) return existing;
+    if (this.channels.size >= this.maxSources) return null;
     const source = create();
     let value: T;
-    let frame: string;
+    let payload: unknown;
     try {
       const sample = source.sample();
       if (sample === null) { source.release(); return null; }
       value = sample;
-      frame = this.frame(value);
+      payload = this.streamValue(value);
     } catch (error) {
       source.release();
       throw error;
     }
     const timer = setInterval(() => {
-      if (!channel.viewers.size && !this.hasReaders(channel)) {
+      if (!this.hasReaders(channel)) {
         this.closeChannel(key, channel);
         return;
       }
@@ -74,14 +83,16 @@ export class LiveSnapshots<T> {
         const next = source.sample();
         if (next === null) { this.closeChannel(key, channel); return; }
         channel.value = next;
-        channel.frame = this.frame(next);
-        for (const viewer of channel.viewers) this.send(viewer, channel.frame);
+        channel.payload = this.streamValue(next);
+        channel.frame = undefined;
+        for (const viewer of channel.subscribers) viewer.emit(channel.payload);
+        for (const viewer of channel.viewers) this.send(viewer, channel);
       } catch {
         this.closeChannel(key, channel);
       }
     }, this.intervalMs);
     timer.unref();
-    const channel: Channel<T> = { value, frame, timer, source, viewers: new Set(), lastRead: null };
+    const channel: Channel<T> = { value, payload, timer, source, viewers: new Set(), subscribers: new Set(), lastRead: null };
     this.channels.set(key, channel);
     return channel;
   }
@@ -99,11 +110,23 @@ export class LiveSnapshots<T> {
     channel.viewers.add(stream);
     stream.once('close', () => {
       channel.viewers.delete(stream);
-      if (this.channels.get(key) === channel && !channel.viewers.size && !this.hasReaders(channel)) {
+      if (this.channels.get(key) === channel && !this.hasReaders(channel)) {
         this.closeChannel(key, channel);
       }
     });
-    this.send(stream, channel.frame);
+    this.send(stream, channel);
+  }
+
+  listen(key: string, create: () => Source<T>, emit: Subscriber['emit'], unavailable: Subscriber['unavailable']) {
+    const channel = this.open(key, create);
+    if (!channel) { unavailable(); return () => {}; }
+    const subscriber = { emit, unavailable };
+    channel.subscribers.add(subscriber);
+    emit(channel.payload);
+    return () => {
+      channel.subscribers.delete(subscriber);
+      if (this.channels.get(key) === channel && !this.hasReaders(channel)) this.closeChannel(key, channel);
+    };
   }
 
   close() {

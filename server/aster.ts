@@ -1,21 +1,30 @@
 import { aggregateCvd, backtestPositionSignals, computeOiDeltas, computeVolumeFlow, detectPositionFlowSignals, isSeriesStale, openInterestUsd, type RawAggTrade } from './calculations.ts';
 import type { Instrument, MarketSeries, Overview } from '../shared/types.ts';
+import { openMarketStream } from './binance.ts';
 
 /**
  * Aster (asterdex) USDⓈ-M perpetual adapter.
  *
  * Aster exposes a Binance-compatible public REST surface (fapi.asterdex.com), so the
- * request/response shapes match the Binance adapter. Two differences are explicit rather
- * than papered over:
- *   - there is no `/futures/data/openInterestHist` endpoint, so historical OI is empty
- *     (position-flow labels that require an OI window are therefore withheld);
- *   - no WebSocket adapter is wired here, so the venue is REST-polled and marked as such.
+ * request/response shapes match the Binance adapter. Its own public streams supply ticker,
+ * mark, trades and native candles. Historical OI is empty because Aster has no
+ * `/futures/data/openInterestHist` endpoint.
  */
 
 const REST = process.env.ASTER_REST_BASE ?? 'https://fapi.asterdex.com';
 const TIMEOUT = 9_000;
 
 export type AsterTransport = (url: string, init?: RequestInit) => Promise<Response>;
+
+export function asterWsBase() {
+  return (process.env.ASTER_WS_BASE ?? 'wss://fstream.asterdex.com').replace(/\/+$/, '');
+}
+
+export function openAsterMarketStream(symbol: string, onEvent: (payload: unknown) => void, onState: (state: string, detail?: string) => void) {
+  return openMarketStream(symbol, payload => {
+    if (payload && typeof payload === 'object') onEvent({ ...payload, exchange: 'aster' });
+  }, onState, { wsBase: asterWsBase(), json: getJson, venueLabel: 'Aster' });
+}
 
 async function getJson<T>(path: string, transport: AsterTransport = fetch): Promise<T> {
   const response = await transport(`${REST}${path}`, { signal: AbortSignal.timeout(TIMEOUT) });
@@ -118,6 +127,7 @@ export async function marketSeries(symbol: string, interval = '5m', limit = 120,
     symbol: encoded,
     interval,
     candles,
+    lastTradeId: trades.at(-1)?.a,
     oiBase: [],
     oiUsd: [],
     cvd,

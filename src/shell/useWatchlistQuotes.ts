@@ -1,16 +1,41 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { WatchlistQuote, WatchlistQuotesResponse } from '../../shared/watchlist';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MarketProject } from '../../shared/types';
+import { connectWatchLive } from '../watch-live-connection';
+import { boardMarkets, mergeBoardPrices, updateBoardPrices, type BoardPrices } from '../../shared/watchlist-live-prices';
+import type { ConnectionState, WatchlistQuote, WatchlistQuotesResponse } from '../../shared/watchlist';
 
 /**
- * Poll hydrated watchlist quotes. Pauses while the tab is hidden and keeps the previous
- * values on a failed refresh (with `stale` set) instead of blanking the board.
+ * Combine the visible projects’ live prices with their periodically hydrated market metrics.
  */
-export function useWatchlistQuotes() {
-  const [items, setItems] = useState<WatchlistQuote[]>([]);
+export function useWatchlistQuotes(projects: readonly MarketProject[], onConnectionChange?: (state: ConnectionState) => void) {
+  const [snapshots, setSnapshots] = useState<WatchlistQuote[]>([]);
   const [asOf, setAsOf] = useState<number | null>(null);
   const [error, setError] = useState('');
   const controller = useRef<AbortController | null>(null);
 
+  const [prices, setPrices] = useState<BoardPrices>(() => new Map());
+  const signature = JSON.stringify(boardMarkets(projects));
+  const markets = useMemo<ReturnType<typeof boardMarkets>>(() => JSON.parse(signature), [signature]);
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    const marketKeys = new Map(markets.map(m => [m.projectId, m.marketKey]));
+    const reset = () => setPrices(current => updateBoardPrices(current, markets, [], Date.now(), false));
+    function syncVisibility() {
+      if (document.hidden || !markets.length) { stop?.(); stop = undefined; reset(); onConnectionChange?.('polling'); return; }
+      if (stop) return;
+      stop = connectWatchLive(markets.map(m => m.projectId), frame => {
+        if (frame.channel === 'quotes' && Array.isArray(frame.ticks)) {
+          const ticks = frame.ticks;
+          setPrices(current => updateBoardPrices(current, markets, ticks, Date.now()));
+        }
+      }, state => { if (state !== 'live') reset(); }, { mode: 'board', marketKeys, onConnectionChange });
+    }
+    syncVisibility();
+    document.addEventListener('visibilitychange', syncVisibility);
+    return () => { document.removeEventListener('visibilitychange', syncVisibility); stop?.(); };
+  }, [markets, onConnectionChange]);
+
+  const items = useMemo(() => mergeBoardPrices(snapshots, markets, prices), [snapshots, markets, prices]);
   const load = useCallback(async () => {
     controller.current?.abort();
     const next = new AbortController();
@@ -19,7 +44,8 @@ export function useWatchlistQuotes() {
       const response = await fetch('/api/watchlist/quotes', { signal: next.signal, headers: { Accept: 'application/json' } });
       if (!response.ok) throw new Error(`Quote board unavailable (HTTP ${response.status})`);
       const body = (await response.json()) as WatchlistQuotesResponse;
-      setItems(body.items);
+      if (next.signal.aborted) return;
+      setSnapshots(body.items);
       setAsOf(body.asOf);
       setError('');
     } catch (cause) {

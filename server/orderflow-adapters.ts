@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { binanceMarketWsBase } from './binance-ws-url.ts';
 import { CCXT_EXCHANGE_IDS, type Instrument, type ProjectMarket } from '../shared/types.ts';
 import type { FlowTrade, LiquidationEvent } from '../shared/orderflow.ts';
 import { getExchangeInstruments } from './exchanges.ts';
@@ -38,6 +39,7 @@ export function orderFlowCapability(market: ProjectMarket) {
   if ((CCXT_EXCHANGE_IDS as readonly string[]).includes(market.exchange)) return { available: false, reason: 'CCXT venue: snapshot quotes only, no verified aggressor trade tape.' };
   if(market.exchange==='upbit'||market.exchange==='bithumb')return {available:false,reason:'KRW spot REST only; excluded from USDT aggressor flow.'};
   if (market.quote !== 'USDT') return { available: false, reason: 'Only USDT pairs are comparable; no unverified FX conversion.' };
+  if (market.exchange === 'aster' && market.marketType !== 'perpetual') return { available: false, reason: 'Aster aggressor trades are available for USDⓈ-M perpetuals.' };
   if (market.exchange === 'mexc' && market.marketType === 'perpetual') return { available: false, reason: 'MEXC public deal feed has no documented stable event ID; reliable deduplication not verified. Flow excluded.' };
   // Live MEXC spot /api/v3/trades returns id:null on every row (verified 2026-10-28); without a
   // stable native id REST/WebSocket overlap cannot be deduplicated, so flow is explicitly excluded.
@@ -171,11 +173,10 @@ export function normalizeGateLiquidation(message: Row, symbol: string, multiplie
 
 // Dedicated spot subscription; perpetuals reuse the existing multiplexed exchange stream.
 export function openFlowStream(market: ProjectMarket, instrument: Instrument, onTrade: (trade: FlowTrade) => void, onState: (state: string, detail?: string) => void, onLiquidation: (event: LiquidationEvent) => void, onLiquidationState: (state: string) => void = () => {}) {
-  if (market.exchange === 'aster') { onState('partial', 'REST-only: Aster has no verified public WebSocket adapter; trades are polled'); return () => {}; }
   if (market.marketType === 'perpetual') {
     const stop = openExchangeStream(market.exchange, market.symbol, raw => {
       const wrapper = raw as Row, data = (wrapper.data ?? wrapper) as Row;
-      if (market.exchange === 'binance' && data.e === 'aggTrade') { const trade = normalizeFlowTrade(market, data, 1, 'websocket'); if (trade) onTrade(trade); }
+      if ((market.exchange === 'binance' || market.exchange === 'aster') && data.e === 'aggTrade') { const trade = normalizeFlowTrade(market, data, 1, 'websocket'); if (trade) onTrade(trade); }
       else if (data.kind === 'trade') {
         const p = num(data.price), q = num(data.quantity), t = num(data.time), side = String(data.side).toLowerCase();
         if (data.id != null && p && p > 0 && q && q > 0 && t && ['buy', 'sell'].includes(side)) onTrade({ id: String(data.id), exchange: market.exchange, marketType: 'perpetual', symbol: market.symbol, price: p, quantity: q, notional: p * q, side: side as 'buy' | 'sell', time: Math.floor(t), source: 'websocket' });
@@ -186,7 +187,7 @@ export function openFlowStream(market: ProjectMarket, instrument: Instrument, on
     const stopLiquidation = (() => {
       switch (market.exchange) {
         case 'binance':
-          return jsonSocket(`wss://fstream.binance.com/ws/${market.symbol.toLowerCase()}@forceOrder`, [], undefined, message => emit(normalizeLiquidation(message, market.symbol)), onLiquidationState);
+          return jsonSocket(`${binanceMarketWsBase()}/ws/${encodeURIComponent(market.symbol.toLowerCase())}@forceOrder`, [], undefined, message => emit(normalizeLiquidation(message, market.symbol)), onLiquidationState);
         case 'bybit':
           return jsonSocket('wss://stream.bybit.com/v5/public/linear', [{ op: 'subscribe', args: [`allLiquidation.${market.symbol}`] }], { op: 'ping' }, message => emit(normalizeBybitLiquidation(message, market.symbol)), onLiquidationState);
         case 'okx':

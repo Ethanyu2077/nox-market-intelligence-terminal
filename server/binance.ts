@@ -1,3 +1,4 @@
+import { binanceMarketWsBase } from './binance-ws-url.ts';
 import WebSocket from 'ws';
 import { aggregateCvd, backtestPositionSignals, computeOiDeltas, computeVolumeFlow, detectPositionFlowSignals, isSeriesStale, openInterestUsd, type RawAggTrade } from './calculations.ts';
 import type { Instrument, MarketSeries, Overview, ProjectDiscoveryResult, ProjectMarket, ScannerRow } from '../shared/types.ts';
@@ -5,7 +6,7 @@ import { BinanceCooldownError, binanceGovernor } from './binance-governor.ts';
 
 const REST = process.env.BINANCE_REST_BASE ?? 'https://fapi.binance.com';
 const SPOT_REST = process.env.BINANCE_SPOT_REST_BASE ?? 'https://api.binance.com';
-const WS = process.env.BINANCE_WS_BASE ?? 'wss://fstream.binance.com';
+
 const requestTimeout = 9_000;
 
 async function getJson<T>(path: string): Promise<T> {
@@ -167,7 +168,7 @@ export async function marketSeries(symbol: string, interval = '5m', limit = 120)
   const stale = isSeriesStale(candles.at(-1)?.time, interval);
   const signals = stale ? [] : detectPositionFlowSignals(candles, oiDelta, volumeFlow);
   return {
-    symbol: encoded, interval, candles,
+    symbol: encoded, interval, candles, lastTradeId: trades.at(-1)?.a,
     oiBase,
     oiUsd,
     cvd,
@@ -220,8 +221,9 @@ const SOCKET_SILENCE_MS = 15_000;
 const FALLBACK_INTERVAL_MS = 3_000;
 
 export function openMarketStream(symbol: string, onEvent: (payload: unknown) => void, onState: (state: string, detail?: string) => void,
-  deps: { socket?: (url: string) => MarketSocket; json?: typeof getJson } = {}) {
-  const lower = symbol.toLowerCase();
+  deps: { socket?: (url: string) => MarketSocket; json?: typeof getJson; wsBase?: string; venueLabel?: 'Aster' | 'Binance' } = {}) {
+  const lower = encodeURIComponent(symbol.toLowerCase());
+  const venue = deps.venueLabel ?? 'Binance';
   const encoded = encodeURIComponent(symbol.toUpperCase());
   const json = deps.json ?? getJson;
   let socket: MarketSocket | undefined;
@@ -248,7 +250,7 @@ export function openMarketStream(symbol: string, onEvent: (payload: unknown) => 
         const ticker = await json<Ticker>(`/fapi/v1/ticker/24hr?symbol=${encoded}`);
         if (!active()) return;
         const price = Number(ticker.lastPrice), at = Number(ticker.closeTime);
-        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(at) || at <= 0) throw new Error('Invalid Binance REST ticker');
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(at) || at <= 0) throw new Error(`Invalid ${venue} REST ticker`);
         onEvent({ stream: `${lower}@ticker`, transport: 'rest-fallback', data: {
           e: '24hrTicker', E: at, c: ticker.lastPrice, P: ticker.priceChangePercent, v: ticker.volume, q: ticker.quoteVolume,
         } });
@@ -272,7 +274,7 @@ export function openMarketStream(symbol: string, onEvent: (payload: unknown) => 
     if (!fallback) {
       fallback = true;
       live = false;
-      onState('degraded', 'Waiting for WebSocket prices; using Binance REST quotes');
+      onState('degraded', `Waiting for WebSocket prices; using ${venue} REST quotes`);
     }
     void poll('ticker');
     void poll('premium');
@@ -281,7 +283,7 @@ export function openMarketStream(symbol: string, onEvent: (payload: unknown) => 
     if (stopped) return;
     lastFrame = Date.now();
     if (!fallback) onState('connecting');
-    const url = `${WS}/stream?streams=${lower}@aggTrade/${lower}@markPrice@1s/${lower}@ticker`;
+    const url = `${deps.wsBase ?? binanceMarketWsBase()}/stream?streams=${lower}@aggTrade/${lower}@markPrice@1s/${lower}@ticker`;
     const current = deps.socket ? deps.socket(url) : new WebSocket(url, { handshakeTimeout: SOCKET_SILENCE_MS });
     socket = current;
     current.on('message', raw => {
@@ -289,7 +291,7 @@ export function openMarketStream(symbol: string, onEvent: (payload: unknown) => 
       try {
         const payload = JSON.parse(raw.toString());
         const data = payload?.data ?? payload;
-        if (!data || typeof data !== 'object') return;
+        if (!data || typeof data !== 'object' || (data.s !== undefined && data.s !== symbol.toUpperCase())) return;
         lastFrame = Date.now();
         const trade = data.e === 'aggTrade' || data.e === 'trade';
         const price = Number(trade ? data.p : data.c);

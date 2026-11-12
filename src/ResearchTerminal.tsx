@@ -4,6 +4,7 @@ import { Activity, ArrowRight, Clock3, ShieldCheck } from 'lucide-react';
 import type { CandlePoint, ExchangeSelection, MarketProject, MarketSeries, PositionFlowSignal, ProjectVenueResponse } from '../shared/types';
 import { coveredSegments, pointAtOrBefore, timelineX } from '../shared/terminal-view';
 import './research-terminal.css';
+import { useNativeCandles } from './useNativeCandles';
 
 const number = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '—' : new Intl.NumberFormat('en', { maximumSignificantDigits: 9 }).format(n);
 const stamp = (n: number) => new Date(n).toISOString().slice(5, 16).replace('T', ' ') + ' UTC';
@@ -21,7 +22,7 @@ export function ResearchTerminal({ project, series, venues, language, interval, 
   const [panels, setPanels] = useState({ oi: true, oiDelta: true, delta: true, cvd: true });
   const signals = series?.positionFlow.signals ?? [];
   const signal = signals.find(s => s.id === selected) ?? signals[0] ?? null;
-  const candles = series?.candles ?? [];
+  const { candles, updatedAt, source } = useNativeCandles(series?.candles);
   const start = candles[0]?.time ?? 0, end = candles.at(-1)?.time ?? 1;
   const step = candles.length > 1 ? candles[1].time - start : 300_000;
   const domain = { start, end, step };
@@ -32,15 +33,13 @@ export function ResearchTerminal({ project, series, venues, language, interval, 
   const cvd = series?.cvd.map(p => ({ time: p.time, value: p.complete ? p.value : null })) ?? [];
   const choose = (s: PositionFlowSignal) => { setSelected(s.id); setCursor(s.time); workbench.current?.scrollIntoView({ block: 'start', behavior: 'auto' }); };
   const valid = signals.filter(s => s.status === 'hypothesis').length;
-  // Aster exposes the same candle/aggTrade shapes as Binance, so both can drive the native charts.
-  const nativeMarket = project.markets.find(market => (market.exchange === 'binance' || market.exchange === 'aster') && market.marketType === 'perpetual');
-  const hasNativeMarket = Boolean(nativeMarket);
+  const hasNativeMarket = Boolean(source || series);
   return <div className="research-terminal">
     <div className="terminal-heading"><div><span><Activity size={14}/>{text('项目研究总览', 'Project research terminal')}</span><h1>{project.name}<small>{project.tokenSymbol}</small></h1></div><button onClick={onDetail}>{text('详细仓位资金流', 'Detailed position flow')}<ArrowRight size={14}/></button></div>
     {kpis}
     <div className="terminal-workbench" ref={workbench}>
       <section className="terminal-analysis panel" aria-label={text('同步分析图', 'Synchronized analytical charts')}>
-        <header className="terminal-section-head"><div><strong>{text('同步市场结构', 'Synchronized market structure')}</strong><small>{series?.symbol ?? '—'} · {series?.source?.replace(/ REST.*$/, '') ?? nativeMarket?.exchange.toUpperCase() ?? '—'} · {interval.toUpperCase()} · UTC</small></div><span>{cursor == null ? text('移动查看 / 点击事件定位', 'Hover to inspect / select an event') : stamp(cursor)}</span></header>
+        <header className="terminal-section-head"><div><strong>{text('同步市场结构', 'Synchronized market structure')}</strong><small>{series?.symbol ?? source?.symbol ?? '—'} · {series?.source?.replace(/ REST.*$/, '') ?? source?.exchange.toUpperCase() ?? '—'} · {interval.toUpperCase()} · UTC</small></div><span>{cursor == null ? text('移动查看 / 点击事件定位', 'Hover to inspect / select an event') : stamp(cursor)}</span></header>
         <div className="terminal-indicators">{(Object.keys(panels) as Array<keyof typeof panels>).map(key => <button key={key} aria-pressed={panels[key]} onClick={() => setPanels(old => ({ ...old, [key]: !old[key] }))}>{({ oi: 'OI', oiDelta: 'OI Δ', delta: 'Volume Δ', cvd: 'CVD' })[key]}</button>)}</div>
         <div className="terminal-chart-body">
           {!hasNativeMarket ? <div className="terminal-empty">{text('此项目未选择 Binance / Aster 永续市场，原生同步图不可用。下方仍展示已选场所数据。', 'No Binance or Aster perpetual is selected for this project. Native synchronized charts are unavailable; selected-venue snapshots remain below.')}</div> : <>
@@ -60,7 +59,7 @@ export function ResearchTerminal({ project, series, venues, language, interval, 
           <div><dt>{text('新鲜场所', 'Fresh venues')}</dt><dd>{venues?.aggregate.coverage.fresh ?? '—'}</dd></div>
           <div><dt>{text('成交带样本', 'Trade tape samples')}</dt><dd>{series?.coverage.tradeCount ?? '—'}</dd></div>
           <div><dt>{text('假设 / 证据不足', 'Hypotheses / withheld')}</dt><dd>{valid} / {signals.length - valid}</dd></div>
-        </dl><small>{series ? `${text('图表更新', 'Chart update')}: ${stamp(series.eventTime)}` : text('等待主数据源', 'Awaiting primary source')}</small></section>
+        </dl><small>{series || updatedAt ? `${text('图表更新', 'Chart update')}: ${stamp(Math.max(series?.eventTime ?? 0, updatedAt ?? 0))}` : text('等待主数据源', 'Awaiting primary source')}</small></section>
         <section className="panel terminal-evidence"><header className="terminal-section-head"><strong>{text('结构证据', 'Structure evidence')}</strong><span>{signal ? signal.status === 'withheld' ? text('证据不足', 'Withheld') : text('待验证假设', 'Hypothesis') : '—'}</span></header>
           {signal ? <div className="terminal-evidence-body"><h2>{signal.label}</h2><small>{stamp(signal.time)} · {text('规则分数', 'Rule score')} {signal.confidence} · {text('非概率', 'not probability')}</small>
             <EvidenceBlock title={text('直接观测', 'Observed facts')} items={signal.observed}/>

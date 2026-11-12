@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
+import type { ConnectionState } from '../shared/watchlist.ts';
 import { connectWatchLive, type WatchLiveFrame, type WatchLiveState } from '../src/watch-live-connection.ts';
 
-type Command = { op: string; channel?: string; projects?: string[]; channels?: string[] };
+type Command = { op: string; channel?: string; projects?: string[]; channels?: string[]; transient?: boolean };
 
-function setup(t: TestContext) {
+function setup(t: TestContext, mode?: 'board') {
   t.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100_000 });
   const sockets: Socket[] = [];
   class Socket {
@@ -49,8 +50,9 @@ function setup(t: TestContext) {
       else Reflect.deleteProperty(globalThis, name);
     });
   }
-  const frames: WatchLiveFrame[] = [], states: WatchLiveState[] = [];
-  const stop = connectWatchLive(['arb', 'wif'], frame => frames.push(frame), state => states.push(state));
+  const frames: WatchLiveFrame[] = [], states: WatchLiveState[] = [], health: ConnectionState[] = [];
+  const stop = connectWatchLive(['arb', 'wif'], frame => frames.push(frame), state => states.push(state), {mode,
+    marketKeys: new Map([['arb','binance:perpetual:ARBUSDT'],['wif','binance:perpetual:WIFUSDT']]), onConnectionChange: state => health.push(state)});
   t.after(() => {
     try { stop(); } finally { for (const restore of restoreGlobals) restore(); }
   });
@@ -60,7 +62,7 @@ function setup(t: TestContext) {
   const first = sockets[0];
   assert.equal(first.url, 'wss://ans.y2k.ventures/ws/live');
   first.open();
-  return { first, sockets, frames, states, stop, elapse, document, window, network };
+  return { first, sockets, frames, states, health, stop, elapse, document, window, network };
 }
 
 test('subscribes to watchlist channels and requests a replay on a sequence gap in that channel', t => {
@@ -190,4 +192,36 @@ test('repeated early closes back off and the next healthy quote restores the ini
   sockets[2].close();
   elapse(1);
   assert.equal(sockets.length, 4);
+});
+
+test('the project board requests only transient quotes and ignores other channels', t => {
+  const { first, frames } = setup(t, 'board');
+  assert.deepEqual(first.sent, [{op: 'subscribe', projects: ['arb','wif'], channels: ['quotes'], transient: true}]);
+  first.frame('flow', 1, 'snapshot', {flows: []});
+  assert.equal(frames.length, 0);
+  first.frame('quotes', 1, 'snapshot', {ticks: []});
+  assert.equal(frames.length, 1);
+});
+
+test('socket heartbeats, cached replay, another market and expired observations cannot make the price board LIVE', t => {
+  const {first, health, elapse, states, window, network} = setup(t, 'board');
+  const at = Date.now();
+  const arb = {projectId:'arb', marketKey:'binance:perpetual:ARBUSDT', price:1, priceAt:at, stale:false};
+  const wif = {projectId:'wif', marketKey:'binance:perpetual:WIFUSDT', price:2, priceAt:at, stale:false};
+  first.frame('quotes', 1, 'snapshot', {ticks: [], replay: [{projectId:'arb', points:[{t:at,p:1}]}]});
+  assert.equal(states.at(-1),'live');
+  assert.equal(health.at(-1),'stale');
+  first.frame('quotes', 2, 'tick', {ticks:[{...arb,marketKey:'bybit:perpetual:ARBUSDT'}]});
+  assert.equal(health.at(-1),'stale');
+  first.frame('quotes', 3, 'tick', {ticks:[arb,{...wif,stale:true}]});
+  assert.equal(health.at(-1),'degraded');
+  first.frame('quotes', 4, 'tick', {ticks:[arb,wif]});
+  assert.equal(health.at(-1),'live');
+  elapse(4);
+  first.frame('quotes', 5, 'tick', {ticks:[arb,wif]});
+  elapse(2);
+  assert.equal(health.at(-1),'stale');
+  network.onLine=false;
+  window.dispatchEvent(new Event('offline'));
+  assert.equal(health.at(-1),'stale');
 });

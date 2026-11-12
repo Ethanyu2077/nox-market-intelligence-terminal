@@ -37,22 +37,32 @@ test('paused mode reports cadence-free coverage instead of pretending freshness'
   assert.ok(report.summary.notes.some((note) => note.includes('paused')));
 });
 
-test('history-backed coverage samples newest records and respects asOf', async () => {
+test('history-backed coverage samples active archives and respects asOf', async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'nox-coverage-'));
   const history = new HistoryStore(directory);
   try {
     await history.init();
     const base = { projectId: 'p', marketKey: 'm', source: 'fixture', quality: 'live' };
-    const push = (id: string, kind: 'snapshot' | 'volume' | 'alignment', secondsAgo: number) => history.append({ ...base, id, kind, eventTime: NOW - secondsAgo * 1000, ingestTime: NOW - secondsAgo * 1000, payload: {} });
+    const push = (id: string, kind: 'snapshot' | 'volume' | 'alignment' | 'trade', secondsAgo: number) => history.append({ ...base, id, kind, eventTime: NOW - secondsAgo * 1000, ingestTime: NOW - secondsAgo * 1000, payload: {} });
     await push('s1', 'snapshot', 120);
     await push('s2', 'snapshot', 60);
     await push('v1', 'volume', 60);
     await push('a1', 'alignment', 60);
+    await push('t1', 'trade', 600);
     const project = { id: 'p', archived: false, monitoring: { defaultInterval: '5m', streamingEnabled: true, collectionMode: 'active' } } as MarketProject;
-    const coverage = await projectDataCoverage(history, project, NOW + 1_000);
+    const reader = t.mock.method(history, 'read');
+    const coverage = await projectDataCoverage(history, project, NOW + 1_000, 5000, false);
     assert.equal(coverage.mode, 'active');
     assert.equal(coverage.kinds.find((kind) => kind.kind === 'snapshot')!.sampledEvents, 2);
     assert.equal(coverage.kinds.find((kind) => kind.kind === 'trade')!.sampledEvents, 0);
+    assert.equal(coverage.kinds.find((kind) => kind.kind === 'trade')!.state, 'disabled');
+    assert.deepEqual(coverage.summary.notes, []);
+    assert.ok(!reader.mock.calls.some(call => call.arguments[1] === 'trade'));
+    const enabled = await projectDataCoverage(history, project, NOW + 1_000, 5000, true);
+    const trade = enabled.kinds.find(kind => kind.kind === 'trade')!;
+    assert.equal(trade.state, 'stale');
+    assert.equal(trade.sampledEvents, 1);
+    assert.ok(enabled.summary.notes.some(note => note.includes('stale')));
     const cutoff = await projectDataCoverage(history, project, NOW - 90_000);
     assert.equal(cutoff.kinds.find((kind) => kind.kind === 'snapshot')!.sampledEvents, 1);
   } finally {

@@ -4,8 +4,15 @@ import { storageLimit } from './storage-limits.ts';
 const DAY = 86_400_000;
 const RECHECK_MS = 60_000;
 type Client = Pick<PoolClient, 'query'>;
-type Chunk = { end: Date; bytes: string };
+type Chunk = { end: Date; bytes: string | number };
 export class TimescaleWritesPaused extends Error {}
+export class HistoryBatchTooLarge extends Error {}
+
+function sizeBytes(value: unknown) {
+  const size = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) throw new Error('Invalid history size');
+  return size;
+}
 
 // The JSON lookup also works on databases initialized before the retention column existed.
 // The hypertable size includes indexes and TOAST; unrelated operator databases and WAL
@@ -24,9 +31,10 @@ export function reclamationCutoff(chunks: Chunk[], total: number, maximum: numbe
   const underPressure = total >= maximum * 0.9;
   let cutoff: number | null = null;
   for (const chunk of chunks) {
-    const end = chunk.end.getTime();
+    if (!(chunk.end instanceof Date) || !Number.isFinite(chunk.end.getTime())) throw new Error('Invalid history chunk boundary');
+    const end = chunk.end.getTime(), bytes = sizeBytes(chunk.bytes);
     if (end > ageFloor && (!underPressure || total <= maximum * 0.8)) break;
-    total -= Number(chunk.bytes);
+    total -= bytes;
     cutoff = end;
   }
   return cutoff;
@@ -51,9 +59,9 @@ export class TimescaleRetention {
   }
   expired(eventTime: number) { return eventTime < this.floor; }
 
-  async check(client: Client, identity: string, allowChunkRemoval = true) {
+  async check(client: Client, identity: string, allowChunkRemoval = true, reserve = 0) {
     const started = Date.now();
-    if (identity === this.identity && this.checkedAt && started - this.checkedAt < RECHECK_MS && this.unmeasured < this.checkBytes) {
+    if (!reserve && identity === this.identity && this.checkedAt && started - this.checkedAt < RECHECK_MS && this.unmeasured < this.checkBytes) {
       if (this.paused) throw new TimescaleWritesPaused(this.paused);
       return;
     }
@@ -63,14 +71,18 @@ export class TimescaleRetention {
     }
     try {
       const { rows: [row] } = await client.query(inspect, [this.days]);
-      if (row?.bytes == null || !Number.isSafeInteger(Number(row.bytes)) || !(row.clock instanceof Date))
+      if (!(row?.clock instanceof Date) || !Number.isFinite(row.clock.getTime()) ||
+          (row.floor != null && (!(row.floor instanceof Date) || !Number.isFinite(row.floor.getTime()))))
         throw new Error('Could not measure history hypertable');
-      this.measured = Number(row.bytes);
+      this.measured = sizeBytes(row.bytes);
       const ageFloor = row.clock.getTime() - this.days * DAY;
       this.floor = Math.max(ageFloor, row.floor?.getTime() ?? -Infinity);
-      if (allowChunkRemoval && (row.expired || this.measured >= this.maxBytes * 0.9)) {
+      // Account for a large incoming batch only after a fresh physical measurement
+      // confirms it will not fit. Replays of duplicates often use less space than estimated.
+      const pressureBytes = this.measured + reserve > this.maxBytes ? this.measured + reserve : this.measured;
+      if (allowChunkRemoval && (row.expired || pressureBytes >= this.maxBytes * 0.9)) {
         const result = await client.query<Chunk>(closedChunks, [row.clock]);
-        const cutoff = reclamationCutoff(result.rows, this.measured, this.maxBytes, ageFloor);
+        const cutoff = reclamationCutoff(result.rows, pressureBytes, this.maxBytes, ageFloor);
         if (cutoff !== null) {
           // Keep the floor and chunk deletion in the same transaction so a crash or
           // an old pending journal cannot bring pressure-evicted data back on restart.
@@ -89,8 +101,7 @@ export class TimescaleRetention {
           }
           this.floor = Math.max(this.floor, cutoff);
           const size = (await client.query("SELECT hypertable_size('nox_history_events') AS bytes")).rows[0]?.bytes;
-          if (size == null || !Number.isSafeInteger(Number(size))) throw new Error('Could not verify trimmed history size');
-          this.measured = Number(size);
+          this.measured = sizeBytes(size);
         }
       }
       this.paused = this.measured >= this.maxBytes * 0.9 ? 'History chunk budget reached; waiting for a closed chunk' : null;
@@ -101,11 +112,18 @@ export class TimescaleRetention {
     this.unmeasured = 0;
     if (this.paused) throw new TimescaleWritesPaused(this.paused);
   }
-  checkBatchSize(bytes: number) {
-    if (bytes > this.maxBytes - this.measured) {
-      this.paused = 'Journal batch exceeds remaining history budget; replication paused';
-      throw new TimescaleWritesPaused(this.paused);
-    }
+  /** Returns true when the caller must filter the batch again against an advanced floor. */
+  async admitBatch(client: Client, identity: string, bytes: number, rows: number, allowChunkRemoval = true) {
+    const estimate = sizeBytes(bytes) + sizeBytes(rows) * 512;
+    if (this.measured + this.unmeasured + estimate <= this.maxBytes) return false;
+    if (estimate > this.maxBytes) throw new HistoryBatchTooLarge('History row and index estimate exceeds the entire database history budget');
+    const floor = this.floor;
+    await this.check(client, identity, allowChunkRemoval, estimate);
+    // If this batch contains the reclaimed history, the caller must first omit
+    // those records. Otherwise a reinsert could recreate a freshly dropped chunk.
+    if (this.measured + estimate <= this.maxBytes) return floor < this.floor;
+    this.paused = 'Journal batch exceeds remaining history budget; replication paused';
+    throw new TimescaleWritesPaused(this.paused);
   }
   recordBatch(bytes: number, rows: number) { this.unmeasured += bytes + rows * 512; }
 }

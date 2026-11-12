@@ -167,6 +167,29 @@ test('blocked writes keep sampling without unbounded queues or extra writers', {
   collector.stop();
 });
 
+test('open buckets retain only aggregate inputs and produce identical five-minute history', async () => {
+  const expected: L2Snapshot[] = [];
+  const events: HistoryEvent[] = [];
+  const collector = new L2Collector(() => [project('active')], {} as never, {
+    acquire: () => ({ release() {}, snapshot() {
+      const index = expected.length;
+      const row = snapshot({ sequence: {first: 1, last: index + 1, previous: index}, spreadBps: index, lastMessageAt: index * 1000 });
+      expected.push(row);
+      return row;
+    } }),
+    append: async event => { events.push(event); },
+  });
+  try {
+    for (let n = 0; n < 300; n++) await collector.tick(n * 1000);
+    const samples = [...collector['buckets'].values()][0].samples;
+    assert.equal(samples.length, 300);
+    assert.ok(samples.every(row => !('bids' in row) && !('asks' in row)));
+    const reference = aggregateBucket('p1', 'binance', 'BTCUSDT', expected, 300_000, 0, 1000, 300_000);
+    await collector.tick(300_000);
+    assert.deepEqual(events[0].payload, reference);
+  } finally { collector.stop(); }
+});
+
 test('pausing a project releases its feed and resuming acquires a new one', async () => {
   let mode: 'active' | 'paused' = 'active';
   let acquired = 0, released = 0;

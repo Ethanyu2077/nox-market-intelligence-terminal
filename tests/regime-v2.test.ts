@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { evaluateRegimeV2, evaluateVenue } from "../server/regime-v2.ts";
 import { RegimeRecorder } from "../server/regime-recorder.ts";
+import { ProjectCollector } from "../server/collector.ts";
+import { OrderFlowService } from "../server/orderflow-service.ts";
 import { HistoryStore, type HistoryEvent } from "../server/history-store.ts";
 import { REGIME_WINDOWS, type RegimeWindow } from "../shared/regime-v2.ts";
 import type {
@@ -202,6 +204,38 @@ test("recorder freezes first input set and deduplicates across restarts", async 
     assert.notEqual((saved[0].payload as { label: string }).label, "changed");
   } finally {
     await history.close();
+  }
+});
+
+test("collector removes deleted-project window hints on restart and preserves archived projects and reports", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-regime-index-"));
+  const file = path.join(dir, "regime-v2-windows.json");
+  const history = new HistoryStore(dir);
+  await history.init();
+  const flow = new OrderFlowService(dir);
+  const retained = { ...project(), id: "retained", archived: true };
+  const worker = new ProjectCollector(() => [retained], flow, history, undefined, new RegimeRecorder(dir, history));
+  try {
+    const f = fixture();
+    const report = evaluateRegimeV2(project(), f.history, f.flow, "5m", f.now);
+    await new RegimeRecorder(dir, history).record(report);
+    const hints = JSON.parse(await readFile(file, "utf8"));
+    hints["retained:5m"] = report.windowEnd;
+    for (let i = 0; i < 3000; i++) hints[`obsolete-${i}:1h`] = report.windowEnd;
+    await writeFile(file, JSON.stringify(hints));
+    const before = await stat(file);
+    await worker.tick();
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { "retained:5m": report.windowEnd });
+    assert.equal((await history.read("p", "regime")).length, 1);
+    const compact = await stat(file);
+    assert.ok(compact.size < before.size / 100);
+    await worker.tick();
+    assert.equal((await stat(file)).ino, compact.ino);
+  } finally {
+    await worker.close();
+    await flow.close();
+    await history.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

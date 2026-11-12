@@ -18,6 +18,8 @@ The history backend stores market observations for the live terminal and researc
 
 `GET /api/projects/:id/history?kind=trade&from=...&to=...&asOf=...&marketKey=binance:perpetual:SYMBOLUSDT&limit=200`
 
+Trade pages include previously archived observations. Long-term capture of new individual trades is opt-in with `NOX_ARCHIVE_RAW_TRADES=true`. The live order-flow feed and its bounded replay tape operate independently.
+
 `kind` is trade, liquidation, snapshot or regime. Times are epoch milliseconds. `limit` is 1–1000. `marketKey` is optional. No symbol is automatically added by this endpoint.
 
 Response: `items` (newest first), `backend`, `fallback`, `asOf`, `nextCursor`, `localScan`. For the next page pass the returned cursor with the same filters; the cursor retains its original cutoff. Changing an explicit cutoff mid-pagination is rejected. A new query is needed to include subsequently ingested events.

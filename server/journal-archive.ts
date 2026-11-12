@@ -35,6 +35,8 @@ export async function sealJournalForAppend(file: string, minBytes: number) {
 
 export type JournalSegment = {
   file: string; name: string; key: string; identity: string; size: number; storedBytes: number;
+  /** Filesystem allocation of the listed data files, including interrupted archive copies. */
+  allocatedBytes?: number;
   compressed: boolean; mtimeMs: number; birth?: number; minTime?: number; maxTime?: number;
   /** Additional physical copies left by an interruption between publication and unlink. */
   copies?: string[];
@@ -60,7 +62,8 @@ export async function journalSegments(dir: string, accepts: (name: string) => bo
     const item = {
       birth: m ? (birth ? Number(birth[1]) : undefined) : Math.round(info.birthtimeMs * 1000),
       file: path.join(dir, file), name, key, identity: m ? m[2] + ':' + m[3] : info.dev + ':' + info.ino,
-      size: compressed ? Number(m![5]) : info.size, storedBytes: physical, compressed, mtimeMs: info.mtimeMs,
+      size: compressed ? Number(m![5]) : info.size, storedBytes: physical, allocatedBytes: info.blocks * 512,
+      compressed, mtimeMs: info.mtimeMs,
       minTime: compressed && m![6] !== 'x' ? Number(m![6]) : undefined,
       maxTime: compressed && m![7] !== 'x' ? Number(m![7]) : undefined,
     };
@@ -70,7 +73,8 @@ export async function journalSegments(dir: string, accepts: (name: string) => bo
     else {
       const preferred = !prior.compressed || compressed && prior.size >= item.size ? prior : item;
       const extra = preferred === prior ? item.file : prior.file;
-      entries.set(key, {...preferred, copies: [...(prior.copies ?? []), extra], storedBytes: prior.storedBytes + physical});
+      entries.set(key, {...preferred, copies: [...(prior.copies ?? []), extra], storedBytes: prior.storedBytes + physical,
+        allocatedBytes: (prior.allocatedBytes ?? 0) + info.blocks * 512});
     }
   }
   // The raw path can be sealed AND recreated for a late append between readdir

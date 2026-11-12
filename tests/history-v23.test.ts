@@ -82,16 +82,19 @@ function database() {
     failCommit: false,
     failRead: false,
     reads: 0,
+    beforeQuery: undefined as ((sql: string) => void) | undefined,
+    discarded: 0,
     queries: [] as string[],
   };
-  const query = async (sql: string) => {
+  const query = async (sql: string, params: unknown[] = []) => {
+    state.beforeQuery?.(sql);
     state.queries.push(sql);
     if (sql.startsWith("SELECT hypertable_size")) return { rows: [{ bytes: 0, clock: new Date(2000), floor: null, expired: false }] };
     if (sql.startsWith("SELECT 1 FROM pg_extension"))
       return { rowCount: 1, rows: [{}] };
     if (sql.startsWith("SELECT store_id"))
       return { rows: [{ store_id: state.id }] };
-    if (sql.startsWith("INSERT INTO nox_history_events")) state.inserts++;
+    if (sql.startsWith("INSERT INTO nox_history_events")) state.inserts += params.length / 9;
     if (sql === "COMMIT" && state.failCommit) throw new Error("Commit failed");
     if (sql.includes("FROM nox_history_events e WHERE")) {
       state.reads++;
@@ -104,12 +107,26 @@ function database() {
     state,
     pool: {
       on: () => {},
-      connect: async () => ({ query, release: () => {} }),
+      connect: async () => ({ query, release: (discard?: boolean) => { if (discard) state.discarded++; } }),
       query,
       end: async () => {},
     } as unknown as Pool,
   };
 }
+test("aborting a pooled read during setup releases its slot without starting the query or disabling sync", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-page-abort-"));
+  const db = database();
+  const history = new HistoryStore(dir, undefined, db.pool);
+  await history.init();
+  t.after(() => history.close());
+  const controller = new AbortController();
+  db.state.beforeQuery = sql => { if (sql.startsWith("BEGIN READ ONLY")) controller.abort(); };
+  await assert.rejects(history.page("p", { kind: "trade", asOf: 2000, signal: controller.signal }), { name: 'AbortError' });
+  assert.equal(db.state.reads, 0);
+  assert.equal(db.state.discarded, 1);
+  assert.equal(history.status().connected, true);
+  assert.equal((await history.page("p", { kind: "trade", asOf: 2000 })).backend, "timescaledb");
+});
 test("daily partitions preserve legacy history, deduplicate and paginate equal timestamps", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "nox-pages-")),
     store = new HistoryStore(dir);
@@ -342,9 +359,10 @@ test("closed journal gzip preserves read offsets, replication and late arrivals 
     const acknowledgements = rows.map(row => store.append(row));
     assert.equal(new Set(acknowledgements).size, 1);
     await Promise.all(acknowledgements);
+    // On APFS moving mtime before birth also changes birth. Date the fixture before capturing its identity.
+    await utimes(path.join(daily, '1970-01-01-trade.ndjson'), new Date(0), new Date(0));
     await store.sync();
     assert.equal(db.state.inserts, rows.length);
-    await utimes(path.join(daily, '1970-01-01-trade.ndjson'), new Date(0), new Date(0));
     const [original] = await journalSegments(daily, kind);
     const plain = await readFile(original.file);
     await archiveClosedJournals(daily, kind, {indexTime:true});
@@ -360,6 +378,7 @@ test("closed journal gzip preserves read offsets, replication and late arrivals 
     await store.sync();
     assert.equal(db.state.inserts, rows.length + 1);
     const measured = await store.measure();
+    assert.deepEqual(measured.byKind.trade, { journalBytes: measured.journalBytes, pendingBytes: 0 });
     assert.equal(measured.pendingBytes, 0);
     assert.ok(measured.journalBytes < plain.length / 3);
     db.state.failRead = true;

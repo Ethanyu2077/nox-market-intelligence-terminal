@@ -73,6 +73,7 @@ function openExchangeStreamRaw(exchange: ExchangeId, symbol: string, onEvent: Ev
       const config = await subscription(exchange, symbol); if (stopped) return;
       const needsMultiplier = exchange === 'okx' || exchange === 'gate' || exchange === 'kucoin' || exchange === 'mexc';
       const multiplier = needsMultiplier ? (await getExchangeInstruments(exchange)).find((item) => item.nativeSymbol === symbol && item.marketType === 'perpetual')?.contractMultiplier : 1;
+      if (stopped) return;
       if (multiplier == null || multiplier <= 0) throw new Error('Contract multiplier unavailable; stream excluded');
       socket = new WebSocket(config.url);
       socket.on('open', () => {
@@ -109,5 +110,10 @@ export function openExchangeStream(exchange: ExchangeId, symbol: string, onEvent
   }
   const listener = { event: onEvent, state: onState }; entry.listeners.add(listener); onState(...entry.status);
   const current = entry;
-  return () => { current.listeners.delete(listener); if (!current.listeners.size) { current.stop(); sharedStreams.delete(key); } };
+  return () => {
+    if (current.listeners.delete(listener) && !current.listeners.size) {
+      sharedStreams.delete(key);
+      current.stop();
+    }
+  };
 }

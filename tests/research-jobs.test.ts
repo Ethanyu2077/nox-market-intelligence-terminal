@@ -137,6 +137,13 @@ test('completed jobs and reports survive a manager restart', async () => {
   assert.equal(restored?.status, 'COMPLETED');
   assert.equal((restored?.report as { researchComplete: boolean }).researchComplete, true);
   reopened.close();
+  const capped = await ResearchJobManager.open(store(pages(0, 0)) as never, { ...baseLimits, maxReportBytes: 50 }, { dataDirectory: dir });
+  const oldReport = capped.get(job.id);
+  assert.equal(oldReport?.status, 'PARTIAL');
+  assert.equal(oldReport?.truncationReason, 'report-too-large');
+  assert.equal(oldReport?.report, null);
+  assert.deepEqual(oldReport?.progress, done?.progress);
+  capped.close();
 });
 
 test('unfinished persisted jobs become INTERRUPTED on restart', async () => {
@@ -165,6 +172,30 @@ test('an oversized report becomes PARTIAL with report-too-large', async () => {
   const done = await manager.wait(job.id);
   assert.equal(done?.status, 'PARTIAL');
   assert.equal(done?.truncationReason, 'report-too-large');
+  assert.equal(done?.report, null);
+});
+
+test('busy job submissions share a pending disk write and respect the retained job limit', async (t) => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'nox-job-burst-'));
+  const manager = new ResearchJobManager({ page: () => new Promise<never>(() => {}) }, {
+    ...baseLimits, maxConcurrent: 1, maxRetained: 3,
+  }, { dataDirectory: dir });
+  t.after(async () => { manager.close(); await rm(dir, { recursive: true, force: true }); });
+  const first = manager.create('p1', { factor: 'oi_delta', timeframe: '5m' });
+  const writer = manager.flush();
+  for (let asOf = 1; asOf <= 100; asOf++) {
+    manager.create('p1', { factor: 'oi_level', timeframe: '5m', asOf });
+    assert.equal(manager.flush(), writer);
+    assert.equal(manager.size() <= 4, true, 'one active job plus at most three terminal jobs');
+  }
+  await writer;
+  const saved = JSON.parse(await readFile(path.join(dir, 'research-jobs.json'), 'utf8'));
+  assert.deepEqual(saved.jobs, manager.list('p1'));
+  manager.cancel(first.job.id);
+  await manager.wait(first.job.id);
 });
 
 test('cancellation propagates the abort signal to the page query', async () => {

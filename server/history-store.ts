@@ -6,13 +6,16 @@ import {
   statfs,
   writeFile,
 } from "node:fs/promises";
-import { historyLimits, JournalReaders, journalsToRetire } from "./history-retention.ts";
-import { appendJournalBatch } from "./journal-append.ts";
+import { historyLimits, JournalReaders, journalsToRetire, type StoredJournal } from "./history-retention.ts";
+import { cleanupJournalPrefixTemp, reclaimJournalPrefix } from "./journal-prefix-reclaim.ts";
+import { appendJournalBatch, IncompleteAppendTail } from "./journal-append.ts";
 import { ArchiveSpaceError, archiveClosedJournals, cleanupAbandonedArchiveTemps, journalBytes, journalSegments, sealJournalForAppend, type JournalSegment } from "./journal-archive.ts";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { Pool } from "pg";
-import { TimescaleRetention, TimescaleWritesPaused } from "./timescale-retention.ts";
+import { Pool, type PoolClient } from "pg";
+import { HistoryBatchTooLarge, TimescaleRetention, TimescaleWritesPaused } from "./timescale-retention.ts";
+import { storageLimit } from "./storage-limits.ts";
+import { JOURNAL_APPEND_MAX_BYTES, JournalRecordError, parseJournalRecords } from "./journal-records.ts";
 import type { MarketProject } from "../shared/types.ts";
 export type { HistoryEvent } from "../shared/history.ts";
 import type { HistoryEvent } from "../shared/history.ts";
@@ -30,7 +33,25 @@ type Link = {
   from: number;
   to: number | null;
 };
-type Checkpoint = { offset: number; identity: string; rows: number };
+type Checkpoint = { offset: number; identity: string; birth?: number; rows: number };
+type JournalRow = { event: HistoryEvent; offset: number; identity: string };
+const REPLAY_BATCHES = 16;
+const REPLAY_TURN_MS = 1_000;
+class PartitionError extends Error {}
+class JournalSourceError extends PartitionError {}
+function safeCode(error: unknown) {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]{2,24}$/.test(code) ? code : "";
+}
+function checkpointFor(file: StoredJournal, saved: Record<string, Checkpoint>) {
+  const checkpoint = saved[file.dbKey];
+  if (checkpoint?.identity === file.identity &&
+      // A mutable pathname can reuse an inode after restore. A legacy offset with
+      // no birth time must be replayed before this generation can be retired.
+      (checkpoint.birth === file.birth || file.key !== file.name && file.birth === undefined) &&
+      Number.isSafeInteger(checkpoint.offset) && checkpoint.offset >= 0 && checkpoint.offset <= file.size)
+    return checkpoint;
+}
 function resolveRotatedCheckpoints(
   files: (JournalSegment & { dbKey: string })[],
   saved: Record<string, Checkpoint>,
@@ -65,7 +86,7 @@ export interface HistoryQuery {
   marketKey?: string;
   limit?: number;
   cursor?: string;
-  /** Cooperative cancellation for long queries; DB-side via pg_cancel_backend. */
+  /** Cancel journal scans and active database reads on deadline or caller abort. */
   signal?: AbortSignal;
 }
 interface Position {
@@ -100,12 +121,13 @@ export class HistoryStore {
   private queue = Promise.resolve();
   private batches = new Map<string, { lines: string[]; bytes: number; done: Promise<void> }>();
   private archiveWork?: Promise<void>;
+  private measurementWork?: Promise<void>;
   private archiveTimer?: NodeJS.Timeout;
   private readonly limits = historyLimits();
   private readonly readers = new JournalReaders();
   private journalBytes = 0;
   private rawSizes = new Map<string,number>();
-  private readonly segmentBytes = Math.max(1, Math.min(64 * 1024 ** 2, Math.floor(this.limits.maxBytes / 8)));
+  private readonly segmentBytes: number;
   private freeBytes = 0;
   private stagingBytes = 0;
   private compressing?: JournalSegment;
@@ -129,9 +151,15 @@ export class HistoryStore {
   private links: Link[] = [];
   private namespace: string;
   private databaseId: string | null = null;
+  private verifiedDatabase = false;
+  private nextPartition?: string;
+  private catchupTimer?: NodeJS.Timeout;
+  private closing = false;
   private capacity: {
     journalBytes: number;
     pendingBytes: number;
+    acknowledgedFileBytes: number | null;
+    byKind: Partial<Record<HistoryEvent["kind"], { journalBytes: number; pendingBytes: number }>>;
     freeBytes: number;
     warning: string | null;
     checkedAt: number;
@@ -141,6 +169,7 @@ export class HistoryStore {
     databaseUrl?: string,
     pool?: Pool,
   ) {
+    const statementTimeout = Math.min(2_147_480_000, storageLimit("NOX_DB_STATEMENT_TIMEOUT_MS", 10_000));
     this.pool =
       pool ??
       (databaseUrl
@@ -148,14 +177,19 @@ export class HistoryStore {
             connectionString: databaseUrl,
             max: 2,
             connectionTimeoutMillis: 3000,
+            statement_timeout: statementTimeout,
+            query_timeout: statementTimeout + 1_000,
           })
         : undefined);
+    const workingSetBytes = this.pool ? this.limits.ackCacheBytes : this.limits.maxBytes;
+    this.segmentBytes = Math.max(1, Math.min(64 * 1024 ** 2, Math.floor(workingSetBytes / 8)));
     this.namespace = createHash("sha256")
       .update(databaseUrl ?? (pool ? "injected" : "local"))
       .digest("hex")
       .slice(0, 16);
     this.pool?.on("error", () => {
       this.connected = false;
+      this.verifiedDatabase = false;
       this.error = "Database connection lost";
     });
   }
@@ -183,6 +217,7 @@ export class HistoryStore {
   async init() {
     const journalDir = path.join(this.directory, "history");
     await mkdir(journalDir, { recursive: true });
+    await Promise.all([cleanupJournalPrefixTemp(journalDir), cleanupJournalPrefixTemp(this.directory)]);
     await cleanupAbandonedArchiveTemps(journalDir, name => isDailyJournal(name) && KINDS.some(kind => name.endsWith(`-${kind}.ndjson`)));
     const saved = await this.load<{
       databaseId: string | null;
@@ -196,19 +231,21 @@ export class HistoryStore {
     await this.runRetentionMaintenance();
     this.timer = setInterval(() => {
       void this.sync();
-      void this.measure().catch(() => {});
+      if (!this.measurementWork) {
+        this.measurementWork = this.measure().then(() => {}, () => {})
+          .finally(() => { this.measurementWork = undefined; });
+      }
     }, 15_000);
     this.timer.unref();
-    const archive = () => {
+    const archive = (maintain = false) => {
       if (this.archiveWork) return;
-      this.archiveWork = this.archive().then(() => { this.archiveError = null; })
+      this.archiveWork = (maintain ? this.runRetentionMaintenance().then(() => this.archive()) : this.archive())
+        .then(() => { this.archiveError = null; })
         .catch(e => { this.archiveError = e instanceof ArchiveSpaceError ? e.message : "Cold journal maintenance failed; inspect storage"; })
         .finally(() => { this.archiveWork = undefined; });
     };
     archive();
-    this.archiveTimer = setInterval(() => {
-      void this.runRetentionMaintenance().then(archive);
-    }, 3_600_000);
+    this.archiveTimer = setInterval(() => archive(true), 3_600_000);
     this.archiveTimer.unref();
   }
   async reconcileProjects(projects: MarketProject[], at = Date.now()) {
@@ -274,26 +311,17 @@ export class HistoryStore {
   private async enforceRetention(incoming: number) {
     await this.readers.exclusive(async () => {
       const files = await this.files();
-      const fs = await statfs(this.directory);
-      this.rawSizes = new Map(files.filter(f => f.key === f.name).map(f => [f.file, f.size]));
-      this.journalBytes = files.reduce((sum, file) => sum + file.storedBytes, 0);
-      this.freeBytes = fs.bavail * fs.bsize;
+      await this.measureNow(files);
       const resolved = resolveRotatedCheckpoints(files, this.checkpoints);
-      const eligible = (file: typeof files[number]) => {
-        // Its compressor may be publishing a new physical path; unrelated partitions remain reclaimable.
-        const working = this.compressing;
-        if (working?.name === file.name && working.identity === file.identity &&
-            (working.birth === undefined || file.birth === undefined || working.birth === file.birth)) return false;
-        if (!this.pool) return true;
-        const ack = resolved[file.dbKey];
-        return this.connected && !!this.databaseId && ack?.identity === file.identity && ack.offset === file.size;
-      };
-      const retire = journalsToRetire(files, eligible, this.limits, this.freeBytes, incoming + this.stagingBytes, Date.now());
-      if (!retire.length) {
-        if (!this.canFit(0)) this.writeWarning = "History journal limit or disk reserve reached; persistence paused";
-        return;
-      }
-      if (this.pool) {
+      const identity = this.databaseId;
+      const verified = () => this.verifiedDatabase && this.connected && this.databaseId === identity;
+      // The compressor can be publishing either physical path of the same logical generation.
+      const working = this.compressing;
+      const available = (file: StoredJournal) => !(working?.name === file.name && working.identity === file.identity &&
+        (working.birth === undefined || file.birth === undefined || working.birth === file.birth));
+      const eligible = (file: StoredJournal) => available(file) && (!this.pool || verified() && checkpointFor(file,resolved)?.offset === file.size);
+      const retire = journalsToRetire(files, eligible, this.limits, this.freeBytes, incoming + this.stagingBytes, Date.now(), verified());
+      if (retire.length && this.pool) {
         // Forget offsets before unlink. A crash between these steps replays surviving rows idempotently.
         const retainedKeys = new Set(files.map(file => file.dbKey));
         for (const file of retire) retainedKeys.delete(file.dbKey);
@@ -302,17 +330,43 @@ export class HistoryStore {
         this.checkpoints = remaining;
       }
       for (const file of retire) {
+        if (this.pool && !verified()) break;
         // Remove secondary copies first: a crash leaves the authoritative sealed source.
         for (const name of [...(file.copies ?? []), file.file]) await rm(name, {force: true});
         this.journalBytes -= file.storedBytes;
         this.rawSizes.delete(file.file);
         this.removedBytes += file.storedBytes;
       }
-      const after = await statfs(this.directory);
-      this.freeBytes = after.bavail * after.bsize;
+      if (retire.length) {
+        await this.measureNow();
+        this.lastPressureCheck = -Infinity;
+      }
+      if (verified() && !this.canFit(incoming)) {
+        // A legacy raw file can contain a large committed prefix and a small pending tail.
+        // Recheck identity under the lock; rewriting a bounded suffix creates a fresh inode.
+        const candidates = files.flatMap(file => {
+          const saved = checkpointFor(file,resolved);
+          return available(file) && file.key === file.name && saved && saved.offset > 0 && saved.offset < file.size
+            ? [{file, saved}] : [];
+        }).sort((a,b) => b.saved.offset - a.saved.offset);
+        const scratch = Math.min(this.limits.maxBytes, this.freeBytes - this.limits.reserveBytes - this.stagingBytes - incoming);
+        for (const {file,saved} of candidates) {
+          const reclaimed = await reclaimJournalPrefix(file,saved,scratch,verified);
+          if (!reclaimed) continue;
+          this.removedBytes += reclaimed;
+          await this.measureNow();
+          this.lastPressureCheck = -Infinity;
+          break;
+        }
+      }
       if (!this.canFit(0)) this.writeWarning = "History journal limit or disk reserve reached; persistence paused";
-      this.lastPressureCheck = -Infinity;
+      else if (this.writeWarning === "History journal limit or disk reserve reached; persistence paused") this.writeWarning = null;
     });
+  }
+  private async seal(file: string) {
+    await sealJournalForAppend(file, 1);
+    this.rawSizes.delete(file);
+    this.lastPressureCheck = -Infinity;
   }
   append(event: HistoryEvent) {
     if (
@@ -328,7 +382,7 @@ export class HistoryStore {
     );
     const line = JSON.stringify(event) + "\n";
     const bytes = Buffer.byteLength(line);
-    if (bytes > this.limits.maxBytes || this.queuedBytes + bytes > Math.min(this.limits.maxBytes, 16 * 1024 ** 2)) {
+    if (bytes > this.limits.maxBytes || this.queuedBytes + bytes > Math.min(this.limits.maxBytes, JOURNAL_APPEND_MAX_BYTES)) {
       this.refusedRows++;
       this.writeWarning = "History journal append exceeds storage or in-flight byte limit";
       return Promise.reject(new Error(this.writeWarning));
@@ -349,19 +403,23 @@ export class HistoryStore {
       if (this.batches.get(file) === batch) this.batches.delete(file);
       try {
         // Seal by size as well as day: bursts within one UTC day can reclaim complete old segments.
-        const rawSize = this.rawSizes.get(file) ?? 0;
-        if (rawSize > 0 && (rawSize + batch.bytes > this.segmentBytes || !this.canFit(batch.bytes))) {
-          await sealJournalForAppend(file, 1);
-          this.rawSizes.delete(file);
-          this.lastPressureCheck = -Infinity;
-        }
+        if (!this.pool && (this.rawSizes.get(file) ?? 0) > 0 && !this.canFit(batch.bytes)) await this.seal(file);
         if (!this.canFit(batch.bytes) && Date.now() - this.lastPressureCheck >= 1_000) {
           this.lastPressureCheck = Date.now();
           await this.enforceRetention(batch.bytes);
         }
         if (!this.canFit(batch.bytes))
           this.refuse(batch.lines.length, "History journal limit or disk reserve reached; persistence paused");
-        await appendJournalBatch(file, batch.lines.join(""));
+        const rawSize = this.rawSizes.get(file) ?? 0;
+        if (rawSize > 0 && rawSize + batch.bytes > this.segmentBytes) await this.seal(file);
+        const lines = batch.lines.join("");
+        try { await appendJournalBatch(file, lines); }
+        catch (error) {
+          if (!(error instanceof IncompleteAppendTail)) throw error;
+          // A torn tail is evidence. Keep its bytes and start new records in a separate generation.
+          await this.seal(file);
+          await appendJournalBatch(file, lines);
+        }
         this.journalBytes += batch.bytes;
         this.rawSizes.set(file, (this.rawSizes.get(file) ?? 0) + batch.bytes);
         this.freeBytes -= batch.bytes;
@@ -406,36 +464,23 @@ export class HistoryStore {
     const files = await this.files(kind);
     const saved = pending && resolveRotatedCheckpoints(files, pending);
     return files.map(file => {
-      const checkpoint = saved?.[file.dbKey];
-      const start = checkpoint?.identity === file.identity ? checkpoint.offset : 0;
+      const start = saved ? checkpointFor(file,saved)?.offset ?? 0 : 0;
       return {...file, start};
     }).filter(file => file.start < file.size);
   }
-  private async *events(file: JournalSegment, start = 0) {
-    let pending = Buffer.alloc(0),
-      offset = start;
-    for await (const chunk of journalBytes(file, start)) {
-      pending = Buffer.concat([pending, chunk as Buffer]);
-      let end: number;
-      while ((end = pending.indexOf(10)) >= 0) {
-        const line = pending.subarray(0, end).toString("utf8");
-        offset += end + 1;
-        pending = pending.subarray(end + 1);
-        let event: HistoryEvent;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          throw new Error(
-            `Corrupt journal ${file.name} at byte ${offset}; not overwritten`,
-          );
-        }
-        yield { event, offset, identity: file.identity };
-      }
+  private events(file: JournalSegment, start = 0) {
+    return parseJournalRecords(journalBytes(file, start), file.name, file.identity, start);
+  }
+  private async *queryRows(file: StoredJournal, start: number, onPartial?: (reason: string) => void) {
+    if (!onPartial) {
+      yield* this.events(file,start);
+      return;
     }
-    if (pending.length)
-      throw new Error(
-        `Incomplete journal tail in ${file.name}; recovery required`,
-      );
+    try { yield* this.partitionRows(file,start); }
+    catch (error) {
+      if (!(error instanceof JournalSourceError)) throw error;
+      onPartial(error.message);
+    }
   }
   async read(
     projectId: string,
@@ -449,18 +494,23 @@ export class HistoryStore {
   async sampleSnapshots(projectId:string,size:number,asOf=Date.now()) {
     if(!Number.isFinite(size)||size<300_000)throw new Error('Invalid sample interval');
     await this.queue;if(this.pool)await this.sync();
+    const pending = this.replicationPaused ? this.checkpoints : undefined;
+    const read = () => this.readSnapshotSamples(projectId,size,asOf,pending);
+    return pending ? this.readers.read(read) : read();
+  }
+  private async readSnapshotSamples(projectId: string, size: number, asOf: number, protectedOffsets?: Record<string,Checkpoint>) {
     const end=Math.floor((asOf-90_000)/size)*size,from=end-202*size-90_000;
-    let pending = this.replicationPaused ? this.checkpoints : undefined;
+    let pending = protectedOffsets;
     let databaseSamples: HistoryEvent[] = [];
     if(this.connected&&this.pool)try{
       const result=await this.pool.query(`SELECT DISTINCT ON (market_key,ceil(extract(epoch from event_time)*1000/$1)) id,kind,market_key AS "marketKey",project_id AS "projectId",extract(epoch from event_time)*1000 AS "eventTime",extract(epoch from ingest_time)*1000 AS "ingestTime",source,quality,payload FROM nox_history_events WHERE project_id=$2 AND kind='snapshot' AND event_time >= $3 AND event_time <= $4 AND ingest_time <= $5 AND ceil(extract(epoch from event_time)*1000/$1)*$1-extract(epoch from event_time)*1000 <= 90000 AND quality NOT IN ('stale','unavailable') ORDER BY market_key,ceil(extract(epoch from event_time)*1000/$1),event_time DESC,ingest_time DESC,id COLLATE "C" DESC`,[size,projectId,new Date(Math.max(0,from)),new Date(end),new Date(asOf)]);
       databaseSamples = result.rows.map(r=>({...r,eventTime:Number(r.eventTime),ingestTime:Number(r.ingestTime)})) as HistoryEvent[];
       if (!pending) return databaseSamples;
     }catch{pending=undefined;this.connected=false;this.error='Historical sampling query failed; local fallback';}
-    return this.readers.read(async () => {
+    const scan = async () => {
       const samples=new Map<string,HistoryEvent>();
       for (const e of databaseSamples) samples.set(`${e.marketKey}:${Math.ceil(e.eventTime/size)*size}`, e);
-      for(const file of (await this.queryFiles('snapshot',pending)).filter(f => overlaps(f, from, end, asOf)))for await(const{event:e}of this.events(file,file.start)){
+      for(const file of (await this.queryFiles('snapshot',pending)).filter(f => overlaps(f, from, end, asOf)))for await(const{event:e}of this.queryRows(file,file.start,pending ? reason => { this.error = reason; } : undefined)){
         if (pending && this.timescaleRetention.expired(e.eventTime)) continue;
         if(e.projectId!==projectId||e.eventTime<from||e.eventTime>end||e.ingestTime>asOf||['stale','unavailable'].includes(e.quality))continue;
         const boundary=Math.ceil(e.eventTime/size)*size;if(boundary-e.eventTime>90_000)continue;
@@ -468,28 +518,46 @@ export class HistoryStore {
         if(!current||e.eventTime>current.eventTime||(e.eventTime===current.eventTime&&e.ingestTime>current.ingestTime))samples.set(k,e);
       }
       return [...samples.values()].sort((a,b)=>a.eventTime-b.eventTime);
-    });
+    };
+    return protectedOffsets ? scan() : this.readers.read(scan);
   }
   /** Runs one query on a dedicated connection and cancels it in PostgreSQL on abort. */
   private async queryWithCancel(text: string, values: unknown[], signal?: AbortSignal) {
     if (!this.pool) throw new Error('database unavailable');
     if (!signal) return this.pool.query(text, values);
-    if (signal.aborted) throw new Error('cancelled');
+    signal.throwIfAborted();
     const client = await this.pool.connect();
     const processId = (client as unknown as { processID?: number }).processID;
+    let cancelling: Promise<unknown> | undefined;
+    let discarded = false;
+    let reusable = true;
     const onAbort = () => {
-      if (!processId) return;
-      // Cancel the server-side statement instead of merely dropping the promise.
-      void this.pool?.query('SELECT pg_cancel_backend($1)', [processId]).catch(() => undefined);
+      // Never queue a cancellation behind the very reads occupying the pool.
+      if (processId && this.pool && this.pool.idleCount > 0 && this.pool.waitingCount === 0) {
+        cancelling = this.pool.query('SELECT pg_cancel_backend($1)', [processId]).catch(() => undefined);
+      } else {
+        discarded = true;
+        client.release(true);
+      }
     };
-    signal.addEventListener('abort', onAbort, { once: true });
     const statementTimeout = Math.max(1_000, Number(process.env.NOX_DB_STATEMENT_TIMEOUT_MS ?? 10_000));
     try {
-      await client.query(`SET statement_timeout = ${Math.round(statementTimeout)}`);
-      return await client.query(text, values);
+      signal.throwIfAborted();
+      signal.addEventListener('abort', onAbort, { once: true });
+      reusable = false;
+      await client.query(`BEGIN READ ONLY; SET LOCAL statement_timeout = ${Math.round(statementTimeout)}`);
+      signal.throwIfAborted();
+      const result = await client.query(text, values);
+      signal.throwIfAborted();
+      await client.query('COMMIT');
+      signal.throwIfAborted();
+      reusable = true;
+      return result;
     } finally {
       signal.removeEventListener('abort', onAbort);
-      client.release();
+      if (cancelling) await cancelling;
+      // A delayed backend signal must never hit the next reader of this session.
+      if (!discarded) client.release(!reusable);
     }
   }
 
@@ -511,7 +579,15 @@ export class HistoryStore {
       if (this.connected && !this.replicationPaused && this.replicatedGeneration < requiredGeneration)
         await this.sync();
     }
+    // A concurrent replay may acknowledge and retire a pending partition after the
+    // database SELECT. Pin local sources across both halves of a hybrid read.
     const pending = this.replicationPaused ? this.checkpoints : undefined;
+    const read = () => this.readPage(projectId, query, cursor, asOf, from, to, limit, pending);
+    return pending ? this.readers.read(read) : read();
+  }
+  private async readPage(projectId: string, query: HistoryQuery, cursor: Position | null,
+    asOf: number, from: number, to: number, limit: number, pending?: Record<string,Checkpoint>) {
+    query.signal?.throwIfAborted();
     let rows: HistoryEvent[] = [],
       backend = "local-journal",
       fallback: string | null =
@@ -547,7 +623,9 @@ export class HistoryStore {
         }));
         backend = "timescaledb";
         if (pending) fallback = this.error;
-      } catch {
+      } catch (error) {
+        query.signal?.throwIfAborted();
+        if (query.signal && safeCode(error) === '57014') throw new Error('history page timeout');
         this.connected = false;
         this.error = "Database query failed; explicit local fallback";
         fallback = this.error;
@@ -555,7 +633,8 @@ export class HistoryStore {
     }
     const pendingOnly = backend === "timescaledb" ? pending : undefined;
     if (backend === "local-journal" || pendingOnly) {
-      rows = await this.readers.read(async () => {
+      query.signal?.throwIfAborted();
+      const scan = async () => {
         const keep = limit + 1; // The extra row proves whether a subsequent page exists.
         const matches = new Map<string, { event: HistoryEvent; fileOrder: number }>();
         for (const event of rows) matches.set(`${event.eventTime}:${event.id}`, { event, fileOrder: -1 });
@@ -575,7 +654,8 @@ export class HistoryStore {
         for (const { file, order, maxTime } of files) {
           if (query.signal?.aborted) throw new Error('cancelled');
           if (cutoff && maxTime < cutoff.eventTime) break;
-          for await (const { event: e } of this.events(file,file.start)) {
+          for await (const { event: e } of this.queryRows(file,file.start,pendingOnly ? reason => { fallback = reason; } : undefined)) {
+            query.signal?.throwIfAborted();
             if (pendingOnly && this.timescaleRetention.expired(e.eventTime)) continue;
             if (cutoff && e.eventTime < cutoff.eventTime) continue;
             const belongs =
@@ -624,7 +704,8 @@ export class HistoryStore {
           trim();
         }
         return [...matches.values()].map(match => match.event).sort(compare);
-      });
+      };
+      rows = pending ? await scan() : await this.readers.read(scan);
     }
     const more = rows.length > limit,
       items = rows.slice(0, limit),
@@ -651,13 +732,111 @@ export class HistoryStore {
       });
     return this.syncWork;
   }
+  // A failure reading a partition must never advance past the offending bytes.
+  // Scope it to the source so other partitions can still drain.
+  private async *partitionRows(file: StoredJournal, start: number, rewind?: () => Promise<void>): AsyncGenerator<JournalRow> {
+    let offset = start;
+    try {
+      for await (const row of this.events(file, start)) {
+        offset = row.offset;
+        yield row;
+      }
+    } catch (error) {
+      if (start > 0 && error instanceof JournalRecordError && error.offset === start) {
+        // Only inspect the preceding byte after a decode failure. Healthy gzip
+        // resumes avoid a second pass through their compressed prefix.
+        let insideRecord = false;
+        try {
+          for await (const chunk of journalBytes(file,start - 1)) {
+            insideRecord = chunk[0] !== 10;
+            break;
+          }
+        } catch { /* Keep the original partition error if its boundary cannot be verified. */ }
+        if (insideRecord) {
+          await rewind?.();
+          yield* this.partitionRows(file,0);
+          return;
+        }
+      }
+      const detail = error instanceof JournalRecordError ? error.message :
+        `Journal read failed at byte ${offset} ${safeCode(error)}`.trimEnd();
+      throw new JournalSourceError(`${file.dbKey}: ${detail}`);
+    }
+  }
+
+  // Split only deterministic data/constraint failures. Each committed prefix has
+  // its own checkpoint; a lost COMMIT response or checkpoint write replays safely.
+  private async commitRows(client: PoolClient, identity: string, file: StoredJournal, rows: JournalRow[], start: number): Promise<void> {
+    if (!rows.length) return;
+    await this.timescaleRetention.check(client, identity);
+    let bytes = 0, offset = start;
+    const accepted = rows.filter(row => {
+      const keep = !this.timescaleRetention.expired(row.event.eventTime);
+      if (keep) bytes += row.offset - offset;
+      offset = row.offset;
+      return keep;
+    });
+    if (accepted.length) {
+      try {
+        if (await this.timescaleRetention.admitBatch(client, identity, bytes, accepted.length)) {
+          return this.commitRows(client, identity, file, rows, start);
+        }
+      } catch (error) {
+        if (!(error instanceof HistoryBatchTooLarge)) throw error;
+        return this.splitRejectedBatch(client, identity, file, rows, start, error.message);
+      }
+      const values: unknown[] = [];
+      const tuples = accepted.map(({event: e}) => {
+        const first = values.length;
+        values.push(e.id,e.kind,e.marketKey,e.projectId,new Date(e.eventTime),new Date(e.ingestTime),e.source,e.quality,JSON.stringify(e.payload));
+        return "(" + Array.from({length:9}, (_, i) => "$" + (first+i+1)).join(",") + ")";
+      });
+      await client.query("BEGIN");
+      try {
+        await client.query(
+          "INSERT INTO nox_history_events (id,kind,market_key,project_id,event_time,ingest_time,source,quality,payload) VALUES " +
+          tuples.join(",") + " ON CONFLICT (event_time,id) DO NOTHING", values,
+        );
+      } catch (error) {
+        await client.query("ROLLBACK");
+        const code = safeCode(error);
+        if (!/^(22|23)/.test(code)) throw error;
+        return this.splitRejectedBatch(client,identity,file,rows,start,`SQLSTATE ${code}`);
+      }
+      try { await client.query("COMMIT"); }
+      catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+      this.timescaleRetention.recordBatch(bytes, accepted.length);
+    }
+    const checkpoint = checkpointFor(file, this.checkpoints);
+    const next = { ...this.checkpoints, [file.dbKey]: {
+      offset, identity: file.identity, birth: file.birth, rows: (checkpoint?.rows ?? 0) + accepted.length,
+    }};
+    await this.atomic(this.checkpointFile, {databaseId: this.databaseId, files: next});
+    this.checkpoints = next;
+  }
+
+  private async splitRejectedBatch(client: PoolClient, identity: string, file: StoredJournal, rows: JournalRow[], start: number, reason: string) {
+    if (rows.length === 1) throw new PartitionError(`${file.dbKey}: history row rejected at byte ${start} (${reason})`);
+    const mid = Math.floor(rows.length / 2);
+    await this.commitRows(client,identity,file,rows.slice(0,mid),start);
+    await this.commitRows(client,identity,file,rows.slice(mid),rows[mid-1].offset);
+  }
+
   private async replicate() {
+    let stage = "connecting to TimescaleDB";
+    let more = false, batches = 0, reclaimCache = false;
     try {
       const generation = this.generation;
       await this.queue;
       await this.readers.read(async () => {
+        this.verifiedDatabase = false;
         const client = await this.pool!.connect();
+        let reusable = true;
         try {
+          stage = "checking TimescaleDB extension";
           if (
             !(
               await client.query(
@@ -666,6 +845,7 @@ export class HistoryStore {
             ).rowCount
           )
             throw new Error("TimescaleDB extension missing");
+          stage = "checking history database identity";
           const identity = (
             await client.query(
               "SELECT store_id FROM nox_history_storage_meta WHERE singleton=true",
@@ -675,8 +855,12 @@ export class HistoryStore {
           if (this.databaseId !== identity) {
             this.checkpoints = {};
             this.databaseId = identity;
+            this.nextPartition = undefined;
           }
+          this.verifiedDatabase = true;
+          stage = "checking history retention";
           await this.timescaleRetention.check(client, identity);
+          stage = "replicating project market links";
           if (this.links.length)
             await client.query(
               // Match before inserting so idle syncs don't lock or rewrite unchanged rows.
@@ -703,86 +887,90 @@ export class HistoryStore {
                 this.links.map(l => l.to == null ? null : new Date(l.to)),
               ],
             );
+          stage = "listing history partitions";
           const files = await this.files();
-          const resolved = resolveRotatedCheckpoints(files, this.checkpoints);
+          let resolved = resolveRotatedCheckpoints(files, this.checkpoints);
+          // A restored volume can have checkpoints for partitions it no longer contains.
+          const present = new Set(files.map(file => file.dbKey));
+          if (Object.keys(resolved).some(key => !present.has(key)))
+            resolved = Object.fromEntries(Object.entries(resolved).filter(([key]) => present.has(key)));
           if (resolved !== this.checkpoints) {
             await this.atomic(this.checkpointFile, { databaseId: this.databaseId, files: resolved });
             this.checkpoints = resolved;
           }
-          for (const file of files) {
-            const checkpoint = this.checkpoints[file.dbKey];
-            if (checkpoint && checkpoint.identity !== file.identity)
-              throw new Error("Journal identity changed; recovery required");
-            let batch: Array<{
-              event: HistoryEvent;
-              offset: number;
-              identity: string;
-            }> = [];
-            let batchStart = checkpoint?.offset ?? 0;
+          const remaining = files.filter(f => (checkpointFor(f,this.checkpoints)?.offset ?? 0) < f.size);
+          const next = remaining.findIndex(f => f.dbKey === this.nextPartition);
+          const pending = next > 0 ? remaining.slice(next).concat(remaining.slice(0,next)) : remaining;
+          this.nextPartition = undefined;
+          const deadline = Date.now() + REPLAY_TURN_MS;
+          let blocked = 0, firstError = "";
+          for (const [i,file] of pending.entries()) {
+            let start = checkpointFor(file,this.checkpoints)?.offset ?? 0;
+            stage = `replicating ${file.dbKey} at byte ${start}`;
+            let batch: JournalRow[] = [];
             const flush = async () => {
               if (!batch.length) return;
-              await this.timescaleRetention.check(client, identity);
-              let bytes = 0, offset = batchStart;
-              const accepted = batch.filter(item => {
-                const retained = !this.timescaleRetention.expired(item.event.eventTime);
-                if (retained) bytes += item.offset - offset;
-                offset = item.offset;
-                return retained;
-              });
-              if (accepted.length) this.timescaleRetention.checkBatchSize(bytes);
-              await client.query("BEGIN");
-              try {
-                for (const { event: e } of accepted)
-                  await client.query(
-                    "INSERT INTO nox_history_events (id,kind,market_key,project_id,event_time,ingest_time,source,quality,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (event_time,id) DO NOTHING",
-                    [
-                      e.id,
-                      e.kind,
-                      e.marketKey,
-                      e.projectId,
-                      new Date(e.eventTime),
-                      new Date(e.ingestTime),
-                      e.source,
-                      e.quality,
-                      JSON.stringify(e.payload),
-                    ],
-                  );
-                await client.query("COMMIT");
-              } catch (e) {
-                await client.query("ROLLBACK");
-                throw e;
-              }
-              this.timescaleRetention.recordBatch(bytes, accepted.length);
-              const last = batch.at(-1)!,
-                next = {
-                  ...this.checkpoints,
-                  [file.dbKey]: {
-                    offset: last.offset,
-                    identity: last.identity,
-                    rows: (this.checkpoints[file.dbKey]?.rows ?? 0) + accepted.length,
-                  },
-                };
-              await this.atomic(this.checkpointFile, {
-                databaseId: this.databaseId,
-                files: next,
-              });
-              this.checkpoints = next;
-              batchStart = last.offset;
+              await this.commitRows(client, identity, file, batch, start);
+              start = batch[batch.length-1].offset;
+              stage = `replicating ${file.dbKey} at byte ${start}`;
+              batches++;
               batch = [];
             };
-            for await (const item of this.events(file, checkpoint?.offset ?? 0)) {
-              batch.push(item);
-              if (batch.length >= 250 || item.offset - batchStart >= this.timescaleRetention.batchBytes) await flush();
+            try {
+              try {
+                const rewind = async () => {
+                  const corrected = {...this.checkpoints};
+                  delete corrected[file.dbKey];
+                  await this.atomic(this.checkpointFile, {databaseId: this.databaseId, files: corrected});
+                  this.checkpoints = corrected;
+                  start = 0;
+                };
+                for await (const row of this.partitionRows(file,start,rewind)) {
+                  batch.push(row);
+                  // Validate decompression/CRC through EOF before acknowledging the final record.
+                  if (row.offset < file.size && (batch.length >= 250 || row.offset-start >= this.timescaleRetention.batchBytes)) {
+                    await flush();
+                    if (batches >= REPLAY_BATCHES || Date.now() >= deadline) {
+                      this.nextPartition = file.dbKey;
+                      break;
+                    }
+                  }
+                }
+              } catch (error) {
+                if (!(error instanceof PartitionError)) throw error;
+                // On a failed archive checksum, the final record is never acknowledged.
+                if (batch.at(-1)?.offset === file.size) batch.pop();
+                // A failed SQL batch has already isolated and acknowledged its valid prefix.
+                if (error instanceof JournalSourceError) await flush();
+                throw error;
+              }
+              await flush();
+            } catch (error) {
+              if (!(error instanceof PartitionError)) throw error;
+              blocked++;
+              firstError ||= error.message;
             }
-            await flush();
+            if (!this.nextPartition && i+1 < pending.length && (batches >= REPLAY_BATCHES || Date.now() >= deadline))
+              this.nextPartition = pending[i+1].dbKey;
+            if (this.nextPartition) { more = true; break; }
           }
-          if (!this.connected || this.replicatedGeneration !== generation) this.lastPressureCheck = -Infinity;
+          if (!this.connected || batches > 0) this.lastPressureCheck = -Infinity;
           this.connected = true;
-          this.replicationPaused = false;
-          this.replicatedGeneration = generation;
-          this.error = null;
+          this.replicationPaused = !!blocked || more;
+          if (!this.replicationPaused) this.replicatedGeneration = generation;
+          this.error = blocked ? `Journal recovery pending (${blocked} partitions in this pass): ${firstError}` :
+            more ? "History replication catching up; pending rows available locally" : null;
+          if (this.journalBytes > this.limits.ackCacheBytes) {
+            const cached = files.reduce((sum, file) =>
+              sum + (checkpointFor(file, this.checkpoints)?.offset === file.size ? file.storedBytes : 0), 0);
+            reclaimCache = cached > this.limits.ackCacheBytes;
+          }
+        } catch (error) {
+          // A lost response can leave a server-side transaction open. Discard the session before retrying.
+          reusable = error instanceof TimescaleWritesPaused;
+          throw error;
         } finally {
-          client.release();
+          client.release(!reusable);
         }
       });
     } catch (error) {
@@ -791,26 +979,42 @@ export class HistoryStore {
         this.connected = true;
         this.error = error.message;
         this.replicationPaused = true;
-        return;
+      } else {
+        this.replicationPaused = false;
+        this.connected = false;
+        this.error = `History sync failed while ${stage}${safeCode(error) ? " (" + safeCode(error) + ")" : ""}; local history retained`;
       }
-      this.replicationPaused = false;
-      this.connected = false;
-      this.error =
-        "TimescaleDB unavailable, migration missing or journal recovery required; local history retained";
+    }
+    if (this.verifiedDatabase && (reclaimCache || !this.canFit(0))) await this.runRetentionMaintenance();
+    if (more && batches > 0 && !this.closing && !this.catchupTimer) {
+      this.catchupTimer = setTimeout(() => {
+        this.catchupTimer = undefined;
+        void this.sync();
+      }, 100);
+      this.catchupTimer.unref();
     }
   }
   measure() {
     return this.enqueue(() => this.measureNow());
   }
-  private async measureNow() {
+  private async measureNow(listed?: StoredJournal[]) {
     let journalBytes = 0,
-      pendingBytes = 0;
-    const files = await this.files();
+      pendingBytes = 0, confirmed = 0;
+    const byKind: NonNullable<typeof this.capacity>["byKind"] = {};
+    const files = listed ?? await this.files();
     const checkpoints = resolveRotatedCheckpoints(files, this.checkpoints);
     for (const file of files) {
+      const saved = checkpointFor(file,checkpoints);
+      const pending = file.size - (saved?.offset ?? 0);
+      if (saved?.offset === file.size) confirmed += file.storedBytes;
       journalBytes += file.storedBytes;
-      const checkpoint = checkpoints[file.dbKey];
-      pendingBytes += Math.max(0, file.size - (checkpoint?.identity === file.identity ? checkpoint.offset : 0));
+      pendingBytes += pending;
+      const kind = KINDS.find(kind => file.name.endsWith(`-${kind}.ndjson`));
+      if (kind) {
+        const total = byKind[kind] ??= { journalBytes: 0, pendingBytes: 0 };
+        total.journalBytes += file.storedBytes;
+        total.pendingBytes += pending;
+      }
     }
     const fs = await statfs(this.directory),
       freeBytes = fs.bavail * fs.bsize,
@@ -821,6 +1025,8 @@ export class HistoryStore {
     this.capacity = {
       journalBytes,
       pendingBytes,
+      acknowledgedFileBytes: this.verifiedDatabase && this.connected ? confirmed : null,
+      byKind,
       freeBytes,
       warning:
         freeBytes < threshold
@@ -843,17 +1049,22 @@ export class HistoryStore {
       queryBackend: this.connected ? "timescaledb" : "local-journal",
       checkpoint: "persistent-byte-offset",
       partitioning: "UTC ingest date",
-      capacity: this.capacity,
+      capacity: this.capacity && { ...this.capacity,
+        acknowledgedFileBytes: this.verifiedDatabase && this.connected ? this.capacity.acknowledgedFileBytes : null },
       retention: {
-        ...this.limits, journalBytes: this.journalBytes, stagingBytes: this.stagingBytes, queuedBytes: this.queuedBytes,
+        ...this.limits, ackCacheBytes: this.pool ? this.limits.ackCacheBytes : null,
+        journalBytes: this.journalBytes, stagingBytes: this.stagingBytes, queuedBytes: this.queuedBytes,
         refusedRows: this.refusedRows, retiredBytes: this.removedBytes, warning: this.writeWarning, error: this.retentionError,
       },
       archiveError: this.archiveError,
     };
   }
   async close() {
+    this.closing = true;
+    if (this.catchupTimer) clearTimeout(this.catchupTimer);
     if (this.timer) clearInterval(this.timer);
     if (this.archiveTimer) clearInterval(this.archiveTimer);
+    await this.measurementWork;
     await this.archiveWork;
     await this.queue;
     await this.sync();

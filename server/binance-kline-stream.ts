@@ -9,8 +9,22 @@ export type StreamCandle = { time: number; close: number; volume: number };
 const WS = process.env.BINANCE_WS_BASE ?? 'wss://fstream.binance.com';
 const REST = process.env.BINANCE_REST_BASE ?? 'https://fapi.binance.com';
 const MAX = 600;
+const MAX_STREAMS = 128;
+const IDLE_MS = 10 * 60_000;
 
-interface Entry { candles: StreamCandle[]; socket: WebSocket | null; ready: boolean; retry: number; lastAt: number }
+type KlineSocket = Pick<WebSocket, 'terminate'> & {
+  on(event: 'open' | 'close' | 'error', listener: () => void): void;
+  on(event: 'message', listener: (raw: WebSocket.RawData) => void): void;
+};
+interface Entry {
+  candles: StreamCandle[];
+  socket: KlineSocket | null;
+  ready: boolean;
+  retry: number;
+  lastAt: number;
+  expiry?: NodeJS.Timeout;
+  reconnect?: NodeJS.Timeout;
+}
 
 export function mergeCandle(candles: StreamCandle[], candle: StreamCandle): StreamCandle[] {
   const next = candles.filter((item) => item.time !== candle.time);
@@ -22,27 +36,39 @@ export function mergeCandle(candles: StreamCandle[], candle: StreamCandle): Stre
 export class BinanceKlineStream {
   private entries = new Map<string, Entry>();
 
-  private key(symbol: string, interval: string) { return `${symbol.toUpperCase()}:${interval}`; }
+  constructor(private readonly openSocket: (url: string) => KlineSocket = url => new WebSocket(url)) {}
 
   async get(symbol: string, interval: string, limit: number, end: number): Promise<StreamCandle[]> {
-    const key = this.key(symbol, interval);
+    const key = `${symbol.toUpperCase()}:${interval}`;
     let entry = this.entries.get(key);
-    if (!entry) { entry = { candles: [], socket: null, ready: false, retry: 1_000, lastAt: 0 }; this.entries.set(key, entry); }
+    if (!entry) {
+      // Beyond the socket budget, serve the same candles from REST for this request.
+      if (this.entries.size >= MAX_STREAMS) return (await this.bootstrap(symbol, interval, limit, end)).slice(-limit);
+      entry = { candles: [], socket: null, ready: false, retry: 1_000, lastAt: 0 };
+      this.entries.set(key, entry);
+    }
+    const current = entry;
+    clearTimeout(current.expiry);
+    current.expiry = setTimeout(() => {
+      this.entries.delete(key);
+      clearTimeout(current.reconnect);
+      current.socket?.terminate();
+    }, IDLE_MS).unref();
     const needsBootstrap = entry.candles.length < limit || (entry.candles.at(-1)?.time ?? 0) < end - 2 * 300_000;
-    if (needsBootstrap) await this.bootstrap(key, entry, symbol, interval, limit, end);
+    if (needsBootstrap) entry.candles = await this.bootstrap(symbol, interval, limit, end);
     this.connect(key, entry, symbol, interval);
     return entry.candles.slice(-limit);
   }
 
-  private async bootstrap(key: string, entry: Entry, symbol: string, interval: string, limit: number, end: number) {
+  private async bootstrap(symbol: string, interval: string, limit: number, end: number) {
     const url = `${REST}/fapi/v1/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${Math.min(500, Math.max(limit, 100))}&endTime=${end - 1}`;
     const raw = await binanceGovernor.json<Array<Array<string | number>>>(url);
-    entry.candles = raw.filter((row) => Number(row[6]) < end).map((row) => ({ time: Number(row[0]) + 300_000, close: Number(row[4]), volume: Number(row[7]) })).filter((row) => Number.isFinite(row.time) && row.close > 0 && Number.isFinite(row.volume));
+    return raw.filter((row) => Number(row[6]) < end).map((row) => ({ time: Number(row[0]) + 300_000, close: Number(row[4]), volume: Number(row[7]) })).filter((row) => Number.isFinite(row.time) && row.close > 0 && Number.isFinite(row.volume));
   }
 
   private connect(key: string, entry: Entry, symbol: string, interval: string) {
-    if (entry.socket) return;
-    const socket = new WebSocket(`${WS}/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    if (this.entries.get(key) !== entry || entry.socket || entry.reconnect) return;
+    const socket = this.openSocket(`${WS}/ws/${symbol.toLowerCase()}@kline_${interval}`);
     entry.socket = socket;
     socket.on('open', () => { entry.retry = 1_000; entry.ready = true; });
     socket.on('message', (raw) => {
@@ -53,7 +79,16 @@ export class BinanceKlineStream {
         entry.lastAt = Date.now();
       } catch { /* ignore malformed */ }
     });
-    socket.on('close', () => { entry.socket = null; entry.ready = false; setTimeout(() => this.connect(key, entry, symbol, interval), Math.min(30_000, entry.retry *= 2)); });
+    socket.on('close', () => {
+      entry.socket = null;
+      entry.ready = false;
+      if (this.entries.get(key) !== entry) return;
+      entry.retry = Math.min(30_000, entry.retry * 2);
+      entry.reconnect = setTimeout(() => {
+        entry.reconnect = undefined;
+        this.connect(key, entry, symbol, interval);
+      }, entry.retry).unref();
+    });
     socket.on('error', () => { try { socket.terminate(); } catch { /* ignore */ } });
   }
 

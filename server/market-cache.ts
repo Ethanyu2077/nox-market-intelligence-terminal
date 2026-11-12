@@ -1,24 +1,26 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { SnapshotBudget } from './snapshot-budget.ts';
 import { storageLimit } from './storage-limits.ts';
 import path from 'node:path';
 
 export interface CachedResult<T> { value: T; at: number; stale: boolean }
 
-interface CacheOptions<T> { ttlMs: number; timeoutMs?: number; load: () => Promise<T> }
+interface CacheOptions<T> { ttlMs: number; timeoutMs?: number; storage?: 'memory'; load: () => Promise<T> }
 interface Snapshot { at: number; value: unknown }
 interface Entry {
   options: CacheOptions<unknown>;
   group: string;
   lastRead: number;
   snapshot?: Snapshot;
+  lastSaveAttempt?: number;
   stale: boolean;
   pending?: Promise<Snapshot>;
   timer?: NodeJS.Timeout;
 }
 
 const MAX_ACTIVE_KEYS = 128;
+const CHECKPOINT_INTERVAL_MS = 5 * 60_000;
 
 /** Serve a shared snapshot while the server refreshes recently used keys on its own cadence. */
 export class MarketCache {
@@ -43,10 +45,16 @@ export class MarketCache {
 
   private async readDisk(key: string): Promise<Snapshot | undefined> {
     const file = this.file(key);
-    if (!file) return;
+    if (!file || !this.budget) return;
     try {
-      const parsed = JSON.parse(await readFile(file, 'utf8')) as Snapshot & { key: string };
-      if (parsed.key === key && Number.isFinite(parsed.at)) return parsed;
+      const handle = await open(file, 'r');
+      try {
+        const { maxBytes, maxPendingBytes } = this.budget.status();
+        // Older snapshots can predate the current writer's admission limit.
+        if ((await handle.stat()).size > Math.min(maxBytes, maxPendingBytes)) return;
+        const parsed = JSON.parse(await handle.readFile('utf8')) as Snapshot & { key: string };
+        if (parsed.key === key && Number.isFinite(parsed.at)) return parsed;
+      } finally { await handle.close(); }
     } catch { /* a missing or incomplete cache is a cold start */ }
   }
 
@@ -74,7 +82,11 @@ export class MarketCache {
     try {
       const value = await entry.options.load();
       const snapshot = { value, at: Date.now() };
-      if (this.entries.get(key) === entry) await this.persist(key, snapshot);
+      if (this.dir && entry.options.storage !== 'memory' && this.entries.get(key) === entry &&
+          (entry.lastSaveAttempt === undefined || snapshot.at - entry.lastSaveAttempt >= CHECKPOINT_INTERVAL_MS)) {
+        entry.lastSaveAttempt = snapshot.at;
+        await this.persist(key, snapshot);
+      }
       entry.snapshot = snapshot;
       entry.stale = false;
       return snapshot;
@@ -84,10 +96,12 @@ export class MarketCache {
   }
 
   private async initialize(key: string, entry: Entry): Promise<Snapshot> {
+    if (!this.dir || entry.options.storage === 'memory') return this.refresh(key, entry);
     await this.initStorage();
     const saved = await this.readDisk(key);
     if (!saved) return this.refresh(key, entry);
     const untilRefresh = entry.options.ttlMs - (Date.now() - saved.at);
+    entry.lastSaveAttempt = Math.min(Date.now(), saved.at);
     entry.snapshot = saved;
     entry.stale = untilRefresh <= 0;
     this.schedule(key, entry, Math.max(0, untilRefresh));
@@ -110,7 +124,7 @@ export class MarketCache {
     let entry = this.entries.get(key);
     if (!entry) {
       if (this.entries.size >= MAX_ACTIVE_KEYS) throw new Error('market cache is at capacity');
-      entry = { options, group: path.basename(this.file(key) ?? ''), lastRead: Date.now(), stale: false };
+      entry = { options, group: options.storage === 'memory' ? '' : path.basename(this.file(key) ?? ''), lastRead: Date.now(), stale: false };
       this.entries.set(key, entry);
       entry.pending = this.deadline(this.initialize(key, entry), entry);
     }

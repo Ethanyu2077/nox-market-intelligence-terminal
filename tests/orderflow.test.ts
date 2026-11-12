@@ -5,6 +5,7 @@ import { aggregateFlow, clusterFlowTrades, flowBuckets, flowDivergences, robustZ
 import { normalizeFlowTrade, normalizeLiquidation, orderFlowCapability } from '../server/orderflow-adapters.ts';
 import { DEFAULT_FLOW_LAYOUT, isFlowLayout } from '../shared/flow-layout.ts';
 import { OrderFlowService } from '../server/orderflow-service.ts';
+import { flowHistoryEvent, rawTradeHistoryEnabled } from '../server/flow-history-policy.ts';
 import type { MarketProject, ProjectMarket } from '../shared/types.ts';
 import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,20 @@ import path from 'node:path';
 const now = 1_790_000_040_000;
 const market: ProjectMarket = { id: 'binance:spot:TESTUSDT', exchange: 'binance', symbol: 'TESTUSDT', base: 'TEST', quote: 'USDT', marketType: 'spot', status: 'TRADING' };
 const trade = (values: Partial<FlowTrade> = {}): FlowTrade => ({ id: '1', exchange: 'binance', symbol: 'TESTUSDT', marketType: 'spot', price: 2, quantity: 10, notional: 20, side: 'buy', time: now, source: 'rest', ...values });
+
+test('long-term capture is optional for trades and always keeps verified liquidation events', () => {
+  const tick = trade();
+  assert.equal(flowHistoryEvent('trade', tick, rawTradeHistoryEnabled(''), now), undefined);
+  assert.equal(flowHistoryEvent('trade', tick, rawTradeHistoryEnabled('false'), now), undefined);
+  const archived = flowHistoryEvent('trade', tick, rawTradeHistoryEnabled('true'), now);
+  assert.equal(archived?.id, 'binance:spot:TESTUSDT:trade:1');
+  assert.equal(archived?.payload, tick);
+  const liquidation = { id: 'L', exchange: 'bybit', symbol: 'TESTUSDT', time: now,
+    orderSide: 'sell', liquidatedSide: 'long', price: 2, quantity: 10, notional: 20 } as const;
+  const record = flowHistoryEvent('liquidation', liquidation, false, now);
+  assert.equal(record?.id, 'bybit:perpetual:TESTUSDT:liquidation:L');
+  assert.equal(record?.quality, 'partial');
+});
 
 test('maker-side Binance flags invert to aggressor-side and never treat null as sell', () => {
   assert.equal(normalizeFlowTrade(market, { a: 1, p: '2', q: '10', m: true, T: now }, 1)?.side, 'sell');
@@ -128,6 +143,31 @@ test('idle snapshot has unavailable metrics, no unsolicited data collection and 
   const response = service.snapshot(project, '1m', 'window', now);
   assert.equal(response.trades.length, 0); assert.equal(response.aggregates.spot.buckets.at(-1)?.delta, null);
   assert.equal(response.venues[0].market.symbol, 'TESTUSDT'); assert.equal(response.aggregates.perpetual.requested, 0);
+});
+
+test('bounded tape merge preserves as-of cutoff, equal timestamps, and the latest 1000 prints', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'nox-flow-replay-'));
+  const at = Date.now();
+  const future = at + 5_000;
+  const markets = [market, { ...market, id: 'perp', marketType: 'perpetual' as const }];
+  const project = { id: 'replay', markets: [...markets, market], monitoring: { streamingEnabled: true } } as MarketProject;
+  const tapes = markets.map(m => Array.from({ length: 1300 }, (_, i) => trade({
+    id: String(i), marketType: m.marketType, time: i < 1200 ? at - 1199 + i : future,
+  })));
+  let ready = 0;
+  const service = new OrderFlowService(dir, {
+    verify: async m => ({ ...m, venue: m.exchange, nativeSymbol: m.symbol, settlement: 'USDT', contractType: '', tickSize: 0, stepSize: 0 }),
+    recent: async m => tapes[m.marketType === 'spot' ? 0 : 1],
+    stream: () => { ready++; return () => {}; },
+  });
+  const release = service.acquire(project);
+  t.after(async () => { release(); await service.close(); await rm(dir, { recursive: true, force: true }); });
+  for (let i = 0; i < 100 && ready < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  const eligible = tapes.flat().filter(row => row.time <= at).sort((a,b) => a.time - b.time);
+  const result = service.snapshot(project, '1m', 'window', at);
+  assert.deepEqual(result.trades, eligible.slice(-1000));
+  assert.equal(result.venues.reduce((n, venue) => n + venue.buckets.reduce((sum,b) => sum + b.count, 0),0), eligible.length);
+  assert.equal(service.snapshot(project, '1m', 'window', at - 10_000).trades.length, 0);
 });
 
 test('shared collection deduplicates REST/WebSocket trades, separates types, and persists raw records', async () => {

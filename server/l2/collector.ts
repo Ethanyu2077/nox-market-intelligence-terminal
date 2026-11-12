@@ -20,13 +20,20 @@ const VENUES = new Set(['binance', 'bybit', 'okx']);
 const MAX_PENDING_BUCKETS = 512;
 const INTEGRITY_RANK: Record<L2Snapshot['integrity'], number> = { ok: 0, 'checksum-unchecked': 1, 'checksum-failed': 2, gap: 3, unknown: 4 };
 
-export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'], symbol: string, samples: L2Snapshot[], bucketMs: number, bucketStart: number, intervalMs: number, receivedAt: number, staleSkipped = 0, incomplete = false): L2BucketMetric {
+type BucketSample = Pick<L2Snapshot, 'state' | 'verified' | 'integrity' | 'epoch' | 'sequence' | 'gaps' | 'resyncs' |
+  'lastMessageAt' | 'spreadBps' | 'bidDepthUsd' | 'askDepthUsd' | 'imbalancePct'>;
+
+function bucketSample({state, verified, integrity, epoch, sequence, gaps, resyncs, lastMessageAt, spreadBps, bidDepthUsd, askDepthUsd, imbalancePct}: L2Snapshot): BucketSample {
+  return {state, verified, integrity, epoch, sequence, gaps, resyncs, lastMessageAt, spreadBps, bidDepthUsd, askDepthUsd, imbalancePct};
+}
+
+export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'], symbol: string, samples: BucketSample[], bucketMs: number, bucketStart: number, intervalMs: number, receivedAt: number, staleSkipped = 0, incomplete = false): L2BucketMetric {
   const first = samples[0], last = samples[samples.length - 1];
-  const mean = (pick: (row: L2Snapshot) => number | null): number | null => {
+  const mean = (pick: (row: BucketSample) => number | null): number | null => {
     const values = samples.map(pick).filter((value): value is number => value != null && Number.isFinite(value));
     return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
   };
-  const depthChange = (pick: (row: L2Snapshot) => number): number | null => {
+  const depthChange = (pick: (row: BucketSample) => number): number | null => {
     if (!first || !last) return null;
     const start = pick(first), end = pick(last);
     return start > 0 ? (end - start) / start * 100 : null;
@@ -82,7 +89,7 @@ export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'
   };
 }
 
-interface BucketState { start: number; samples: L2Snapshot[]; staleSkipped: number }
+interface BucketState { start: number; samples: BucketSample[]; staleSkipped: number }
 interface FeedHandle { release: () => void; snapshot: () => L2Snapshot }
 
 export interface L2CollectorDeps {
@@ -252,7 +259,12 @@ export class L2Collector {
             bucket = { start, samples: [], staleSkipped: 0 };
             this.buckets.set(bucketKey, bucket);
           }
-          if (advanced) { bucket.samples = [...bucket.samples, snapshot].slice(-Math.round(bucketMs / this.intervalMs)); this.sampled += 1; }
+          if (advanced) {
+            const capacity = Math.max(1, Math.round(bucketMs / this.intervalMs));
+            if (bucket.samples.length >= capacity) bucket.samples.shift();
+            bucket.samples.push(bucketSample(snapshot));
+            this.sampled += 1;
+          }
           else bucket.staleSkipped += 1;
         }
       }

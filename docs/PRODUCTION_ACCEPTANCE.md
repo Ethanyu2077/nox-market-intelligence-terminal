@@ -153,14 +153,14 @@ two valid updates is NOT VERIFIED.
   runtime limits (`NOX_RESEARCH_MAX_JOBS`, `_MAX_RECORDS`, `_TIMEOUT_MS`, `_PAGE_LIMIT`,
   `_PAGE_TIMEOUT_MS`). Statuses are QUEUED/RUNNING/COMPLETED/PARTIAL/FAILED/CANCELLED and
   PARTIAL always carries a truncation reason.
-- LIMITATION: HistoryStore has no AbortSignal, so cancellation happens between pages; an
-  in-flight database query is not aborted. This is not a substitute for DB-side cancellation.
 
 ## Updates (research job reliability)
 
-- Cancellation: `HistoryQuery.signal` → dedicated pg connection with `statement_timeout`
-  (NOX_DB_STATEMENT_TIMEOUT_MS) and `pg_cancel_backend(processID)` on abort. Unit tests
-  cover signal propagation; real PostgreSQL cancel is NOT VERIFIED without an instance.
+- Page deadlines and caller cancellation interrupt journal scans and database reads. Database
+  reads use a dedicated connection with a transaction-local `statement_timeout`
+  (NOX_DB_STATEMENT_TIMEOUT_MS). An idle pool connection can send `pg_cancel_backend`;
+  a saturated pool discards the reading connection immediately. Unit tests cover cancellation
+  during query setup. Live PostgreSQL cancellation requires an instance to verify.
 - Fingerprint: `[projectId, factor, timeframe, start, end, asOf]`; only identical active
   jobs are reused.
 - Persistence: `<dataDirectory>/research-jobs.json` (atomic rename), storing status,

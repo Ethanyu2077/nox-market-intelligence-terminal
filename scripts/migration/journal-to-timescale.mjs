@@ -96,11 +96,12 @@ for (const file of sourceFiles) {
     if (!pool || !batch.length) { batch = []; return; }
     await retention.check(pool, storeId, false);
     const accepted = batch.filter(event => !retention.expired(event.eventTime));
-    expired += batch.length - accepted.length;
-    batch = accepted;
+    const floorAdvanced = accepted.length && await retention.admitBatch(pool, storeId, batchBytes, accepted.length, false);
+    const kept = floorAdvanced ? accepted.filter(event => !retention.expired(event.eventTime)) : accepted;
+    expired += batch.length - kept.length;
+    batch = kept;
     let stored = 0;
     if (batch.length) {
-      retention.checkBatchSize(batchBytes);
       const params = batch.flatMap((event) => [event.id, event.kind, event.marketKey, event.projectId, new Date(event.eventTime), new Date(event.ingestTime), event.source, event.quality, event.payload]);
       const values = batch.map((_, i) => `($${i * 9 + 1},$${i * 9 + 2},$${i * 9 + 3},$${i * 9 + 4},$${i * 9 + 5},$${i * 9 + 6},$${i * 9 + 7},$${i * 9 + 8},$${i * 9 + 9})`).join(',');
       const result = await pool.query(`INSERT INTO nox_history_events (id,kind,market_key,project_id,event_time,ingest_time,source,quality,payload) VALUES ${values} ON CONFLICT (event_time,id) DO NOTHING`, params);

@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { Pool, PoolClient } from 'pg';
 import { HistoryStore, type HistoryEvent } from '../server/history-store.ts';
-import { TimescaleRetention, TimescaleWritesPaused } from '../server/timescale-retention.ts';
+import { HistoryBatchTooLarge, TimescaleRetention, TimescaleWritesPaused } from '../server/timescale-retention.ts';
 
 const day = 86_400_000;
 function fixture(clock: number, base: number, initial: Array<[number, number]>) {
@@ -39,6 +39,62 @@ function fixture(clock: number, base: number, initial: Array<[number, number]>) 
   return {state, client, pool};
 }
 const now = Date.now();
+test('admission includes pending estimates and index overhead and remeasures before dropping history', async () => {
+  const retention = new TimescaleRetention(), cap = retention.maxBytes;
+  const db = fixture(now, Math.floor(cap * .88), []);
+  await retention.check(db.client, 'a');
+  retention.recordBatch(Math.floor(cap * .10), 1);
+  // A duplicate replay can consume far fewer physical bytes than the estimate.
+  await retention.admitBatch(db.client, 'a', Math.ceil(cap * .02), 1);
+  assert.equal(db.state.inspected, 2);
+  assert.equal(db.state.floor, null);
+  await assert.rejects(retention.admitBatch(db.client, 'a', cap - 511, 1), HistoryBatchTooLarge);
+  assert.equal(db.state.inspected, 2, 'an impossible batch must not remove any history');
+});
+test('fresh measurement can make room before a large batch, then filters against the new replay floor', async () => {
+  const retention = new TimescaleRetention(), cap = retention.maxBytes;
+  const db = fixture(now, Math.floor(cap * .65), [[now-day, Math.floor(cap * .2)]]);
+  await retention.check(db.client, 'a');
+  const bytes = Math.ceil(cap * .16);
+  assert.equal(await retention.admitBatch(db.client, 'a', bytes, 10), true);
+  assert.equal(retention.expired(now-day-1), true);
+  assert.equal(db.state.chunks.length, 0);
+  assert.equal(await retention.admitBatch(db.client, 'a', bytes, 10), false);
+});
+test('invalid physical size or chunk accounting pauses retention without dropping a chunk', async () => {
+  const retention = new TimescaleRetention(), cap = retention.maxBytes;
+  const db = fixture(now, cap, [[now-day, 100]]);
+  const badChunks = { query: async (sql: string, args?: unknown[]) => sql.includes('FROM chunks_detailed_size')
+    ? {rows:[{end:new Date(now-day),bytes:null}]} : db.client.query(sql,args) } as PoolClient;
+  await assert.rejects(retention.check(badChunks, 'a'), TimescaleWritesPaused);
+  assert.equal(db.state.chunks.length, 1);
+  assert.equal(db.state.floor, null);
+  for (const value of [-1, null, '']) {
+    const badSize = {query:async () => ({rows:[{bytes:value,clock:new Date(now)}]})} as unknown as PoolClient;
+    await assert.rejects(new TimescaleRetention().check(badSize,'a'), TimescaleWritesPaused);
+  }
+});
+test('one oversized legacy record stays pending while another partition continues to replicate', async t => {
+  const original = process.env.NOX_TIMESCALE_MAX_BYTES;
+  process.env.NOX_TIMESCALE_MAX_BYTES = '16384';
+  t.after(() => { if (original === undefined) delete process.env.NOX_TIMESCALE_MAX_BYTES; else process.env.NOX_TIMESCALE_MAX_BYTES = original; });
+  const dir = await mkdtemp(path.join(tmpdir(),'nox-db-budget-'));
+  t.after(() => rm(dir,{recursive:true,force:true}));
+  const db = fixture(now,100,[]), store = new HistoryStore(dir,undefined,db.pool);
+  const small: HistoryEvent = { id:'small', kind:'trade', projectId:'p', marketKey:'x', source:'test',
+    eventTime:now, ingestTime:now, quality:'live', payload:{price:1} };
+  const big: HistoryEvent = {...small,kind:'snapshot',id:'large',payload:'x'.repeat(16_384)};
+  try {
+    await store.init();
+    await store.append(big);
+    await store.append(small);
+    await store.sync();
+    assert.deepEqual(db.state.inserts,['small']);
+    assert.match(store.status().error!,/history row rejected.*entire database history budget/);
+    assert.equal(store.status().timescaleRetention?.paused,null);
+    assert.equal((await store.measure()).pendingBytes,Buffer.byteLength(JSON.stringify(big)+'\n'));
+  } finally { await store.close(); }
+});
 test('reclaim oldest closed chunks by size and persist the replay floor; migration only admits data', async () => {
   const retention = new TimescaleRetention(), cap = retention.maxBytes;
   const db = fixture(now, Math.floor(cap * .1), [[now-day*8, Math.floor(cap*.2)], [now-day, Math.floor(cap*.15)], [now+day, Math.floor(cap*.5)]]);

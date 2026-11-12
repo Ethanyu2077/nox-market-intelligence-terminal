@@ -26,7 +26,7 @@ import { OrderFlowService } from './orderflow-service.ts';
 import { HistoryStore } from './history-store.ts';
 import { AuthStore, defaultAuthDirectory } from './auth.ts';
 import { ProjectCollector } from './collector.ts';
-import { flowKey } from './orderflow-calculations.ts';
+import { flowHistoryEvent, rawTradeHistoryEnabled } from './flow-history-policy.ts';
 import { signalLab } from './regime.ts';
 import { RegimeRecorder } from './regime-recorder.ts';
 import type { RegimeReport } from '../shared/regime-v2.ts';
@@ -83,9 +83,11 @@ const binanceExchange=new BinanceExchangeService();
 const history = new HistoryStore(dataDirectory, process.env.DATABASE_URL);
 await history.init();
 let archiveError: string | null = null;
+const archiveRawTrades = rawTradeHistoryEnabled();
 const orderFlow = new OrderFlowService(dataDirectory, undefined, (kind, event) => {
-  const key = kind === 'trade' && 'marketType' in event ? flowKey(event) : `${event.exchange}:perpetual:${event.symbol}`;
-  void history.append({ id: `${key}:${kind}:${event.id}`, kind, marketKey: key, projectId: null, eventTime: event.time, ingestTime: Date.now(), source: 'source' in event ? event.source : 'exchange-liquidation-snapshot', quality: kind === 'liquidation' ? 'partial' : 'verified-aggressor', payload: event })
+  const record = flowHistoryEvent(kind, event, archiveRawTrades, Date.now());
+  if (!record) return;
+  void history.append(record)
     .then(() => { archiveError = null; }, () => { archiveError = 'History write failed; inspect journal capacity'; });
 });
 await Promise.all([marketCache.initStorage(), orderFlow.initStorage()]);
@@ -141,11 +143,11 @@ const safe = (handler: express.RequestHandler): express.RequestHandler => async 
 const flowQuery = z.object({ interval: z.enum(['1m', '5m', '15m', '1h', '4h']).default('1m'), reset: z.enum(['window', 'utc-day', 'utc-hour']).default('window'), at: z.coerce.number().finite().min(1e12).optional() });
 app.get('/api/version', (_req, res) => res.json(versionInfo(process.env, PROCESS_STARTED_AT, process.version)));
 app.get('/api/operations', (_req, res) => res.json({
-  process: { pid: process.pid, startedAt: PROCESS_STARTED_AT },
+  process: { pid: process.pid, startedAt: PROCESS_STARTED_AT, memoryBytes: process.memoryUsage() },
   l2Collection: l2Collector.health(),
   binanceRest: binanceGovernor.status(),
   researchJobs: { total: researchJobs.size() },
-  storage: { ...history.status(), outcomes: eventStudies.storageStatus(), marketCache: marketCache.storageStatus(), orderFlow: orderFlow.storageStatus() },
+  storage: { ...history.status(), rawTradeArchiveEnabled: archiveRawTrades, outcomes: eventStudies.storageStatus(), marketCache: marketCache.storageStatus(), orderFlow: orderFlow.storageStatus() },
   archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
 app.get('/api/projects/:id/event-study',safe(async(req,res)=>{
   const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}
@@ -165,7 +167,22 @@ app.get('/api/projects/:id/history', safe(async (req,res) => {
   if (!project) { res.status(404).json({error:{message:'Project not found'}}); return; }
   const parsed = z.object({kind:z.enum(['trade','liquidation','snapshot','regime','volume','alignment']),from:z.coerce.number().finite().min(0).optional(),to:z.coerce.number().finite().min(0).optional(),asOf:z.coerce.number().finite().min(0).optional(),marketKey:z.string().max(200).optional(),limit:z.coerce.number().int().min(1).max(1000).default(200),cursor:z.string().max(2000).optional()}).safeParse(req.query);
   if (!parsed.success) { res.status(400).json({error:{message:'Invalid history query'}}); return; }
-  try { res.json(await history.page(project.id,parsed.data)); } catch (error) { if (error instanceof Error && /Invalid historical/.test(error.message)) { res.status(400).json({error:{message:error.message}}); return; } throw error; }
+  const controller = new AbortController();
+  const disconnect = () => controller.abort();
+  res.once('close', disconnect);
+  try {
+    const page = await history.page(project.id, { ...parsed.data, signal: controller.signal });
+    if (!res.destroyed) res.json(parsed.data.kind === 'trade' ? { ...page, rawTradeArchiveEnabled: archiveRawTrades } : page);
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    if (error instanceof Error && /Invalid historical/.test(error.message)) {
+      res.status(400).json({error:{message:error.message}});
+      return;
+    }
+    throw error;
+  } finally {
+    res.off('close', disconnect);
+  }
 }));
 app.get('/api/projects/:id/regimes', safe(async (req, res) => res.json({ items: (await history.read(String(req.params.id), 'regime', Date.now(), 1000)).filter(e=>e.source!=='nox.regime.v2').slice(-200).map(e => e.payload) })));
 app.get('/api/projects/:id/regimes-v2',safe(async(req,res)=>{
@@ -469,7 +486,7 @@ app.get('/api/watchlist/overview', safe(async (req, res) => {
 }));
 app.get('/api/watchlist/quotes', safe(async (_req, res) => {
   const cached = await marketCache.get('watchlist:quotes', {
-    ttlMs: 60_000, load: () => watchlistQuotes(store.getProjects(true)),
+    storage: 'memory', ttlMs: 60_000, load: () => watchlistQuotes(store.getProjects(true)),
   });
   res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
   res.json(cached.value);
@@ -479,7 +496,7 @@ app.get('/api/projects/:id/venues', safe(async (req, res) => {
   const project = store.getProjects(true).find((item) => item.id === String(req.params.id));
   if (!project) { res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Project not found', timestamp: Date.now() } }); return; }
   const cached = await marketCache.get(`venues:${project.id}:${JSON.stringify(project.markets)}`, {
-    ttlMs: 30_000, timeoutMs: 15_000, load: () => projectVenueSnapshots(project.markets),
+    storage: 'memory', ttlMs: 30_000, timeoutMs: 15_000, load: () => projectVenueSnapshots(project.markets),
   });
   res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
   res.json(cached.value);

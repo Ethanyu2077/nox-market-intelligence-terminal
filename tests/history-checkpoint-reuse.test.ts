@@ -21,12 +21,34 @@ function database() {
     if (sql.startsWith("SELECT hypertable_size")) return { rows: [{ bytes: 0, clock: new Date(2000), floor: null, expired: false }] };
     if (sql.startsWith("SELECT 1 FROM pg_extension")) return { rowCount: 1 };
     if (sql.startsWith("SELECT store_id")) return { rows: [{ store_id: "test" }] };
-    if (sql.startsWith("INSERT INTO nox_history_events")) inserts.push(params[0]);
+    if (sql.startsWith("INSERT INTO nox_history_events"))
+      for (let i = 0; i < params.length; i += 9) inserts.push(params[i]);
     return { rows: [] };
   }
   const pool = { on() {}, end() {}, connect: async () => ({ query, release() {} }) } as unknown as Pool;
   return { inserts, pool };
 }
+
+test('a same-sized raw replacement replays before retirement with a legacy inode-only checkpoint', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-checkpoint-legacy-"));
+  t.after(() => rm(dir, {recursive:true,force:true}));
+  const db = database(), first = new HistoryStore(dir, undefined, db.pool);
+  await first.init();
+  await first.append(event("old"));
+  await first.close();
+  const cp = path.join(dir, (await readdir(dir)).find(name => name.startsWith("history-checkpoints-"))!);
+  const saved = JSON.parse(await readFile(cp, "utf8"));
+  delete saved.files["history/" + plain].birth;
+  await writeFile(cp,JSON.stringify(saved));
+  await writeFile(path.join(dir,"history",plain),JSON.stringify(event("new"))+"\n");
+  const restored = new HistoryStore(dir, undefined, db.pool);
+  try {
+    await restored.init();
+    assert.deepEqual(db.inserts, ["old", "new"]);
+    await restored.sync();
+    assert.equal(db.inserts.length, 2);
+  } finally { await restored.close(); }
+});
 
 for (const reuse of [false, true]) {
   test(reuse ? "an ambiguous legacy inode replays both generations exactly once" :
@@ -52,7 +74,8 @@ for (const reuse of [false, true]) {
     const second = new HistoryStore(dir, undefined, pool);
     try {
       await second.init();
-      assert.equal(second.status().capacity?.pendingBytes, reuse ? bytes.length + Buffer.byteLength(late) : 0);
+      // Startup measures again after replication and retention finish.
+      assert.equal(second.status().capacity?.pendingBytes, 0);
       assert.deepEqual(inserts, reuse ? ["old", "late1", "late2"] : []);
       await second.sync();
       assert.equal(second.status().connected, true);

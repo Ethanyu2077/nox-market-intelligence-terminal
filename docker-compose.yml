@@ -1,6 +1,12 @@
+x-log-rotation: &log-rotation
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
+    logging: *log-rotation
     environment:
       POSTGRES_USER: nox
       POSTGRES_PASSWORD: nox_local_only
@@ -17,6 +23,7 @@ services:
       retries: 15
   redis:
     image: redis:7-alpine
+    logging: *log-rotation
     ports:
       - "127.0.0.1:6379:6379"
     command: ["redis-server", "--appendonly", "yes"]

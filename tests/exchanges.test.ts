@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { aggregateSnapshots, computeExchangeContribution, detectCrossExchangeInsights, normalizeContractQuantity } from '../server/exchanges.ts';
-import { normalizeExchangeMessage } from '../server/exchange-streams.ts';
+import { normalizeExchangeMessage, openExchangeStream } from '../server/exchange-streams.ts';
 import type { VenueMarketSnapshot } from '../shared/types.ts';
 
 function row(values: Partial<VenueMarketSnapshot>): VenueMarketSnapshot {
@@ -14,6 +14,19 @@ function row(values: Partial<VenueMarketSnapshot>): VenueMarketSnapshot {
     ...values
   };
 }
+
+test('releasing an old subscription twice preserves the replacement shared stream', t => {
+  const tokens = t.mock.method(globalThis, 'fetch', async () => Response.json({}));
+  const subscribe = () => openExchangeStream('kucoin', 'TESTUSDTM', () => {}, () => {});
+  const first = subscribe();
+  first();
+  const second = subscribe();
+  first();
+  const third = subscribe();
+  second();
+  third();
+  assert.equal(tokens.mock.callCount(), 2);
+});
 
 test('contract quantities are normalized with venue multipliers', () => {
   assert.equal(normalizeContractQuantity(1_000, 0.01), 10);

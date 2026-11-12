@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { L2Book, okxChecksum } from '../server/l2/engine.ts';
+import { L2Feed } from '../server/l2/feed.ts';
+import { binanceGovernor, BinanceCooldownError } from '../server/binance-governor.ts';
 
 const snap = (last: number) => ({
   bids: [['100', '2'], ['99', '1']] as Array<[string, string]>,
@@ -123,4 +125,44 @@ test('every snapshot rebuild advances the book epoch', () => {
   book.applySnapshot({ ...snap(200), eventTime: 2_000 });
   assert.equal(book.snapshot(2_000).epoch, 2);
   assert.equal(book.snapshot(2_000).sequence.last, 200);
+});
+
+test('growing depth books remain bounded and resume verified sequences after a rebuild', () => {
+  const book = new L2Book('binance', 'BTCUSDT');
+  book.applySnapshot(snap(0));
+  let rebuilds = 0;
+  for (let sequence = 1; sequence <= 21_000; sequence++) {
+    const delta = { first: sequence, last: sequence, previous: null, eventTime: sequence,
+      bids: [], asks: [[String(1000 + sequence), '1']] as Array<[string, string]> };
+    const result = book.applyDelta(delta);
+    if (result.reason === 'depth-limit') {
+      assert.equal(book.snapshot().verified, false);
+      assert.equal(book.snapshot().sequence.last, sequence - 1);
+      assert.equal(book.applyDelta(delta).reason, 'not-synced');
+      book.applySnapshot(snap(sequence));
+      rebuilds++;
+    } else assert.equal(result.reason, 'ok');
+    assert.ok(book['asks'].size <= 4096);
+  }
+  assert.ok(rebuilds >= 5);
+  assert.equal(book['askText'].size, 0);
+  assert.equal(book.snapshot().verified, true);
+});
+
+test('depth recovery drops an overflowed buffer and schedules one retry during an exchange cooldown', async t => {
+  const feed = new L2Feed('binance', 'BTCUSDT');
+  t.after(() => feed.stop());
+  const delta = { bids: [], asks: [], first: 1, last: 1, previous: null, eventTime: 1 };
+  for (let i = 0; i < 5000; i++) feed['bufferDelta'](delta, 8192);
+  assert.equal(feed['bufferOverflow'], true);
+  assert.equal(feed['bufferedBytes'], 0);
+  assert.equal(feed['buffer'].length, 0);
+  const request = t.mock.method(binanceGovernor, 'json', async () => { throw new BinanceCooldownError(60_000, 'HTTP 429'); });
+  await feed['resync']();
+  const retry = feed['retryTimer'];
+  assert.ok(retry);
+  for (let i = 0; i < 10_000; i++) await feed['resync']();
+  assert.equal(request.mock.callCount(), 1);
+  assert.equal(feed['retryTimer'], retry);
+  assert.equal(feed['bufferOverflow'], false);
 });

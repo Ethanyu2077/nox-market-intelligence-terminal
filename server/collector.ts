@@ -31,11 +31,18 @@ export class ProjectCollector {
   private async collect() {
     const projects = this.projects();
     await this.history.reconcileProjects(projects);
+    // This list includes archived and paused projects. Only deleted project IDs are obsolete.
+    const projectIds = new Set(projects.map(project => project.id));
+    if (this.recorder) await this.recorder.reconcileProjects(projectIds).catch(() => {
+      // Retry hint cleanup next tick. An index write failure must not stop market collection.
+    });
     for (const [id, current] of this.active) {
       const project = projects.find(p => p.id === id);
       if (!project || collectionMode(project) !== 'active' || current.signature !== JSON.stringify(project.markets)) { current.release(); this.active.delete(id); }
     }
-    for (const id of this.states.keys()) if (!projects.some(p => p.id === id)) { this.states.delete(id); this.due.delete(id); }
+    for (const id of this.states.keys()) if (!projectIds.has(id)) {
+      this.states.delete(id); this.due.delete(id); this.lastAlignment.delete(id);
+    }
     await Promise.all(projects.map(async project => {
       const mode = collectionMode(project);
       if (this.states.get(project.id)?.mode !== mode) this.due.delete(project.id);

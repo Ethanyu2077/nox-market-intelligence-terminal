@@ -11,7 +11,7 @@ export interface CoverageKindReport {
   lastIngestAgeMs: number | null;
   largestIngestGapMs: number | null;
   gaps: number;
-  state: 'live' | 'partial' | 'stale' | 'empty';
+  state: 'live' | 'partial' | 'stale' | 'empty' | 'disabled';
   note: string;
 }
 

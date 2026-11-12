@@ -73,12 +73,31 @@ test('snapshot and L2 cursors are independent and truncation is reported', async
 });
 
 test('a hanging page is bounded by the scan timeout', async () => {
-  const hanging = { page: () => new Promise<never>(() => undefined) };
+  let signal: AbortSignal | undefined;
+  const hanging = { page: (_id: string, query: { signal?: AbortSignal }) => {
+    signal = query.signal;
+    return new Promise<never>(() => undefined);
+  } };
   const started = Date.now();
   const result = await scanHistory(hanging as never, 'p1', { kind: 'snapshot', limit: 100, maxPages: 3, maxRecords: 100, timeoutMs: 200 });
   assert.equal(result.truncated, true);
   assert.equal(result.reason, 'timeout');
+  assert.equal(signal?.aborted, true, 'the underlying page receives the deadline');
   assert.ok(Date.now() - started < 2_000, 'the scan returns instead of hanging');
+});
+
+test('completed pages release their deadline and detach from the caller', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const parent = new AbortController();
+  let signal: AbortSignal | undefined;
+  const store = { page: async (_project: string, query: { signal?: AbortSignal }) => {
+    signal = query.signal;
+    return { items: [], nextCursor: null };
+  } };
+  await scanHistory(store, 'p1', { kind: 'trade', limit: 1, maxPages: 1, maxRecords: 1, timeoutMs: 100, signal: parent.signal });
+  t.mock.timers.tick(200);
+  parent.abort();
+  assert.equal(signal?.aborted, false);
 });
 
 test('a database error is query-error, truncated and keeps partial data', async () => {

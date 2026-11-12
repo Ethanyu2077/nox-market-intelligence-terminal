@@ -2,6 +2,11 @@
 services:
   timescale:
     image: timescale/timescaledb:latest-pg16
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     container_name: nox-timescale-test
     environment:
       POSTGRES_DB: ${NOX_TEST_DB_NAME:-nox_test}

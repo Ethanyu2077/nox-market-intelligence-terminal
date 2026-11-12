@@ -105,17 +105,21 @@ export class OrderFlowCheckpoint {
     // Take immutable array views before yielding; live trades continue during filesystem I/O.
     const next: Tape = { trades: feed.trades.slice(), gaps: feed.gaps.slice(), liquidations: feed.liquidations.slice(),
       coverageFrom: feed.coverageFrom, coverageTo: feed.coverageTo };
-    if (this.previous && this.generation && this.count < MAX_DELTAS) {
+    if (this.previous && this.generation) {
       const delta: Delta = { trades: changes(this.previous.trades, next.trades), gaps: changes(this.previous.gaps, next.gaps),
         liquidations: changes(this.previous.liquidations, next.liquidations), coverageFrom: next.coverageFrom, coverageTo: next.coverageTo };
-      const data = JSON.stringify(delta);
-      const bytes = Buffer.byteLength(data);
-      const budget = Math.min(MAX_DELTA_BYTES, Math.max(64 * 1024, this.baseBytes));
-      if (this.bytes + bytes <= budget) {
-        const name = `${this.generation}.${String(this.count + 1).padStart(2, '0')}.json`;
-        await this.write(path.join(this.directory, name), data);
-        this.count++; this.bytes += bytes; this.previous = next;
-        return;
+      if (!delta.trades && !delta.gaps && !delta.liquidations &&
+          delta.coverageFrom === this.previous.coverageFrom && delta.coverageTo === this.previous.coverageTo) return;
+      if (this.count < MAX_DELTAS) {
+        const data = JSON.stringify(delta);
+        const bytes = Buffer.byteLength(data);
+        const budget = Math.min(MAX_DELTA_BYTES, Math.max(64 * 1024, this.baseBytes));
+        if (this.bytes + bytes <= budget) {
+          const name = `${this.generation}.${String(this.count + 1).padStart(2, '0')}.json`;
+          await this.write(path.join(this.directory, name), data);
+          this.count++; this.bytes += bytes; this.previous = next;
+          return;
+        }
       }
     }
     const generation = randomUUID();

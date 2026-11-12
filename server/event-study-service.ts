@@ -14,6 +14,7 @@ export class EventStudyService {
   constructor(
     private history: HistoryStore,
     private outcomes: OutcomeStore,
+    private auditEnabled = process.env.NOX_OUTCOME_AUDIT_ENABLED === "true",
   ) {
     const maintain = () => {
       void this.outcomes.maintain().then(() => { this.maintenanceError = null; })
@@ -25,7 +26,7 @@ export class EventStudyService {
   }
 
   storageStatus() {
-    return { ...this.outcomes.status(), maintenanceError: this.maintenanceError };
+    return { ...this.outcomes.status(), auditEnabled: this.auditEnabled, maintenanceError: this.maintenanceError };
   }
   private async collect(
     projectId: string,
@@ -139,8 +140,9 @@ export class EventStudyService {
         truncated,
         backend: events.backend,
       },
-      persistence:
-        "Derived outcomes recorded by the background worker; this read does not mutate frozen evidence",
+      persistence: this.auditEnabled
+        ? "Derived outcomes recorded by the background worker; this read does not mutate frozen evidence"
+        : "Calculated on request from frozen observations",
     };
   }
   async study(projectId: string, options: StudyOptions, lookbackDays = 7) {
@@ -152,6 +154,7 @@ export class EventStudyService {
   }
   refresh(project: MarketProject) {
     if (
+      !this.auditEnabled ||
       this.running.has(project.id) ||
       Date.now() < (this.due.get(project.id) ?? 0)
     )

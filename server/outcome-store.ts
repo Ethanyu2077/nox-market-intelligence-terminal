@@ -37,6 +37,7 @@ export class OutcomeStore {
   private readonly days = storageLimit("NOX_OUTCOME_RETENTION_DAYS", 35);
   private readonly reserve = storageReserveBytes();
   private bytes = 0;
+  private block = 4096;
   private removed = 0;
   private skipped = 0;
   private blocked: string | null = null;
@@ -63,6 +64,7 @@ export class OutcomeStore {
 
   private async inventory(cleanTemps = false): Promise<Inventory> {
     await mkdir(this.directory, { recursive: true });
+    this.block = (await statfs(this.directory)).bsize || 4096;
     if (cleanTemps) {
       // The single outcome writer waits for its own archiver before reclaiming abandoned staging files.
       for (const file of await readdir(this.directory)) {
@@ -70,16 +72,22 @@ export class OutcomeStore {
       }
     }
     const size = async (name: string) => {
-      try { return (await stat(path.join(this.directory, name))).size; }
+      try {
+        const info = await stat(path.join(this.directory, name));
+        return Math.max(this.charge(info.size), info.blocks * 512);
+      }
       catch (error) { if (missing(error)) return 0; throw error; }
     };
-    const [parts, checkpoint, legacy] = await Promise.all([
+    const [segments, checkpoint, legacy] = await Promise.all([
       journalSegments(this.directory, name => outcomeFile.test(name)), size(checkpointName), size(legacyName),
     ]);
+    const parts = segments.map(p => ({...p, storedBytes: Math.max(this.charge(p.storedBytes), p.allocatedBytes ?? 0)}));
     const bytes = parts.reduce((sum, p) => sum + p.storedBytes, checkpoint + legacy);
     this.bytes = bytes;
     return { parts, checkpoint, legacy, bytes };
   }
+
+  private charge(bytes: number) { return Math.max(1, Math.ceil(bytes / this.block)) * this.block; }
 
   private async removeIndex(state: Inventory) {
     await rm(path.join(this.directory, checkpointName), { force: true });
@@ -166,15 +174,21 @@ export class OutcomeStore {
       if (saved?.version === 2) {
         const { file, offset } = saved.active;
         const active = state.parts.find(p => p.name === file && p.key === p.name);
-        if (!outcomeFile.test(file) || !Number.isSafeInteger(offset) || offset < 0 || offset > (active?.size ?? 0))
+        if (!outcomeFile.test(file) || !Number.isSafeInteger(offset) || offset < 0)
           throw new Error("Invalid outcome journal checkpoint");
-        for (const [key, value] of Object.entries(saved.revisions)) revisions.set(key, value);
-        this.sequence = saved.sequence;
-        this.backdated = saved.backdated;
-        if (active) await this.replay(active, offset, revisions);
-        this.active = saved.active;
-        this.revisions = revisions;
-        return;
+        // Cold maintenance can archive the former writer's active file during downtime.
+        // A saved byte offset identifies the old raw file; rebuild from retained revisions
+        // when that file has been sealed.
+        if (active || !state.parts.some(p => p.name === file)) {
+          if (offset > (active?.size ?? 0)) throw new Error("Invalid outcome journal checkpoint");
+          for (const [key, value] of Object.entries(saved.revisions)) revisions.set(key, value);
+          this.sequence = saved.sequence;
+          this.backdated = saved.backdated;
+          if (active) await this.replay(active, offset, revisions);
+          this.active = saved.active;
+          this.revisions = revisions;
+          return;
+        }
       }
     }
     for (const part of state.parts) await this.replay(part, 0, revisions);
@@ -192,7 +206,8 @@ export class OutcomeStore {
     const checkpoint: Checkpoint = { version: 2, active, backdated: this.backdated, sequence: this.sequence, revisions: Object.fromEntries(this.revisions!) };
     const compressed = await compress(JSON.stringify(checkpoint));
     // The old checkpoint, its replacement and the new batch must fit even before rename.
-    if (compressed.length > Math.min(this.maxBytes / 8, this.maxBytes - state.bytes - incoming, free - incoming)) {
+    const headroom = Math.min(this.maxBytes - state.bytes - incoming, free - incoming);
+    if (compressed.length > this.maxBytes / 8 || this.charge(compressed.length) > headroom) {
       await this.removeIndex(state);
       this.active = active;
       return;
@@ -200,9 +215,20 @@ export class OutcomeStore {
     const destination = path.join(this.directory, checkpointName);
     const temporary = destination + "." + randomUUID() + ".tmp";
     const handle = await open(temporary, "wx", 0o600);
+    let allocated: number;
     try {
-      try { await handle.writeFile(compressed); await handle.sync(); }
+      try {
+        await handle.writeFile(compressed);
+        await handle.sync();
+        allocated = Math.max(this.charge(compressed.length), (await handle.stat()).blocks * 512);
+      }
       finally { await handle.close(); }
+      if (allocated > headroom) {
+        await rm(temporary);
+        await this.removeIndex(state);
+        this.active = active;
+        return;
+      }
       await rename(temporary, destination);
     } catch (error) {
       await rm(temporary, { force: true });
@@ -211,8 +237,8 @@ export class OutcomeStore {
     const directory = await open(this.directory, "r");
     try { await directory.sync(); } finally { await directory.close(); }
     await rm(path.join(this.directory, legacyName), { force: true });
-    state.bytes += compressed.length - state.checkpoint - state.legacy;
-    state.checkpoint = compressed.length;
+    state.bytes += allocated - state.checkpoint - state.legacy;
+    state.checkpoint = allocated;
     state.legacy = 0;
     this.active = active;
   }
@@ -231,9 +257,9 @@ export class OutcomeStore {
     await rename(part.file, file);
   }
 
-  private scheduleArchive() {
+  private scheduleArchive(state?: Inventory) {
     const today = new Date().toISOString().slice(0, 10);
-    if (!this.active || this.archiveDay === today) return;
+    if (this.archiveDay === today || (!this.active && !state?.parts.length)) return;
     this.archiveDay = today;
     const active = this.active?.file;
     this.archive = archiveClosedJournals(this.directory, name => outcomeFile.test(name) && name !== active, {
@@ -241,7 +267,8 @@ export class OutcomeStore {
         const {bytes} = await this.inventory();
         return { bytes: Math.max(0, Math.min(requested, this.maxBytes - bytes)), release() {} };
       },
-    }).catch(error => { console.warn("Could not compress closed outcome journals", error); });
+    }).then(async () => { await this.inventory(); })
+      .catch(error => { console.warn("Could not compress closed outcome journals", error); });
   }
 
   maintain() {
@@ -250,7 +277,7 @@ export class OutcomeStore {
       const state = await this.inventory(true);
       await this.prune(state, 0);
       this.lastPruneDay = new Date().toISOString().slice(0, 10);
-      this.scheduleArchive();
+      this.scheduleArchive(state);
     });
   }
 
@@ -282,30 +309,43 @@ export class OutcomeStore {
       const data = lines.join("\n") + "\n";
       const incoming = Buffer.byteLength(data);
       await this.archive;
-      const free = await this.freeBytes();
-      if (incoming > this.maxBytes || incoming > free) {
+      if (this.charge(incoming) > this.maxBytes) {
         this.skipped += lines.length;
-        this.blocked = incoming > this.maxBytes ? "batch-exceeds-quota" : "filesystem-reserve";
+        this.blocked = "batch-exceeds-quota";
+        return 0;
+      }
+      // Optional output must not evict a recent study while the volume is below reserve.
+      if (this.charge(incoming) > await this.freeBytes()) {
+        this.skipped += lines.length;
+        this.blocked = "filesystem-reserve";
         return 0;
       }
       state = await this.inventory();
-      const raw = state.parts.find(p => p.name === file && p.key === file);
+      let raw = state.parts.find(p => p.name === file && p.key === file);
       const segmentTarget = Math.min(16 * 1024 ** 2, Math.floor(this.maxBytes / 8));
       if (raw && raw.size && raw.size + incoming > segmentTarget) {
         await this.rotate(raw, state);
         state = await this.inventory();
+        raw = undefined;
       }
-      await this.prune(state, incoming);
+      let growth = Math.max(0, this.charge((raw?.size ?? 0) + incoming) - (raw?.storedBytes ?? 0));
+      await this.prune(state, growth);
+      if (raw && !state.parts.includes(raw)) {
+        raw = undefined;
+        growth = this.charge(incoming);
+        await this.prune(state, growth);
+      }
       if (!this.revisions) await this.load(state);
       if (state.parts.some(part => part.name > file)) this.backdated = true;
-      if (this.active?.file !== file) await this.startPartition(file, state, incoming, free);
+      if (this.active?.file !== file) await this.startPartition(file, state, growth, await this.freeBytes());
       const destination = path.join(this.directory, file);
       await appendJournalBatch(destination, data);
       const info = await stat(destination);
       const source = owner({ name: file, identity: info.dev + ":" + info.ino, birth: Math.round(info.birthtimeMs * 1000) });
       this.sequence = sequence;
       for (const [key, revision] of changed) this.revisions!.set(key, [revision, source, sequence]);
-      this.bytes = state.bytes + incoming;
+      this.bytes = state.bytes - (raw?.storedBytes ?? 0) + Math.max(this.charge(info.size), info.blocks * 512);
+      if (this.bytes > this.maxBytes) await this.prune(await this.inventory(), 0);
       this.blocked = null;
       this.scheduleArchive();
       return lines.length;

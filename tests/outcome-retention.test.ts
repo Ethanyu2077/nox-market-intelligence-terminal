@@ -1,6 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, statfs, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
@@ -29,14 +29,21 @@ async function setup(t: TestContext, bytes: number) {
 }
 
 test("a high-volume day rolls and evicts within budget, preserving the latest deduplication after restart", async t => {
-  const budget = 3072;
+  const block = (await statfs(tmpdir())).bsize;
+  const budget = 4 * block;
   const { root, directory, store } = await setup(t, budget);
   const count = 40, now = Date.now();
+  const row = (n: number) => {
+    const item = study("study-" + n, now);
+    item.rows[0].label += "x".repeat(block / 2);
+    return item;
+  };
   for (let n = 0; n < count; n++) {
-    assert.equal(await store.record(study("study-" + n, now)), 1);
+    assert.equal(await store.record(row(n)), 1);
     const filenames = await readdir(directory);
     const sizes = await Promise.all(filenames.map(f => stat(path.join(directory, f))));
     assert.ok(sizes.reduce((total, s) => total + s.size, 0) <= budget);
+    assert.ok(sizes.reduce((total, s) => total + s.blocks * 512, 0) <= budget);
   }
   assert.ok(store.status().removedSegments > 1);
   await store.close();
@@ -45,10 +52,10 @@ test("a high-volume day rolls and evicts within budget, preserving the latest de
   const complete = await readFile(file);
   await writeFile(file, Buffer.concat([complete, Buffer.from('{"id":"incomplete')]));
   const restarted = new OutcomeStore(root);
-  assert.equal(await restarted.record(study("study-39", now)), 0);
+  assert.equal(await restarted.record(row(39)), 0);
   assert.deepEqual(await readFile(file), complete);
   // Once its backing revision was evicted, this ID no longer lives indefinitely in the index.
-  assert.equal(await restarted.record(study("study-0", now)), 1);
+  assert.equal(await restarted.record(row(0)), 1);
   await restarted.close();
 });
 
@@ -76,6 +83,27 @@ test("startup drops expired raw and interrupted archive copies before opening an
   const restarted = new OutcomeStore(root);
   assert.equal(await restarted.record(study("new")), 0);
   await restarted.close();
+});
+
+test("cold audit maintenance compresses old exports even with no new writer and replay keeps the latest revision", async t => {
+  const { root, directory, store } = await setup(t, 1024 ** 2);
+  const at = Date.now() - 5 * DAY;
+  const input = study('compressible'.repeat(300), at);
+  assert.equal(await store.record(input), 1);
+  await store.close();
+  const file = path.join(directory, dateFile(at));
+  const before = (await stat(file)).size;
+  await utimes(file, at / 1000, at / 1000);
+  const cold = new OutcomeStore(root);
+  await cold.maintain();
+  await cold.close();
+  const archived = (await readdir(directory)).find(s => s.startsWith(dateFile(at) + '.') && s.endsWith('.gz'));
+  assert.ok(archived);
+  assert.ok((await stat(path.join(directory, archived))).size < before / 2);
+  await assert.rejects(stat(file), {code:'ENOENT'});
+  const resumed = new OutcomeStore(root);
+  assert.equal(await resumed.record(input), 0);
+  await resumed.close();
 });
 
 test("oversize batches and filesystem reserve skip derived writes without evicting a fitting recent study", async t => {

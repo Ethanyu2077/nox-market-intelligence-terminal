@@ -11,25 +11,34 @@ export function timeGrid(now: number, interval: FlowInterval, length = 60) {
   const step = FLOW_INTERVALS[interval], end = Math.floor(now / step) * step;
   return Array.from({ length }, (_, i) => end - (length - 1 - i) * step);
 }
-export function flowBuckets(trades: FlowTrade[], interval: FlowInterval, reset: FlowReset, times: number[], coverage: { from: number | null; to: number | null; gaps: FlowGap[] }): FlowBucket[] {
-  const step = FLOW_INTERVALS[interval]; const grouped = new Map<number, FlowTrade[]>();
-  for (const trade of trades) { const time = Math.floor(trade.time / step) * step; const group = grouped.get(time) ?? []; group.push(trade); grouped.set(time, group); }
+export function flowBuckets(trades: FlowTrade[], interval: FlowInterval, reset: FlowReset, times: number[], coverage: { from: number | null; to: number | null; gaps: FlowGap[] }, asOf = Infinity): FlowBucket[] {
+  const step = FLOW_INTERVALS[interval];
+  const grouped = new Map(times.map(time => [time, { count: 0, buy: 0, sell: 0, buyBase: 0, sellBase: 0, notional: 0, high: -Infinity, low: Infinity, maxNotional: -Infinity }]));
+  for (const trade of trades) {
+    if (trade.time > asOf) continue;
+    const group = grouped.get(Math.floor(trade.time / step) * step);
+    if (!group) continue;
+    group.count++;
+    group[trade.side] += trade.notional;
+    if (trade.side === 'buy') group.buyBase += trade.quantity;
+    else group.sellBase += trade.quantity;
+    group.notional += trade.notional;
+    group.high = Math.max(group.high, trade.price);
+    group.low = Math.min(group.low, trade.price);
+    group.maxNotional = Math.max(group.maxNotional, trade.notional);
+  }
   let cvd = 0, lastReset = '', continuity = false;
   const history: number[] = [];
   return times.map(time => {
-    const group = grouped.get(time) ?? [];
+    const group = grouped.get(time)!;
     const complete = coverage.from != null && coverage.to != null && time >= coverage.from && time + step <= coverage.to && !coverage.gaps.some(g => g.from < time + step && g.to > time);
-    const known = group.length > 0 || complete;
-    const buy = known ? group.filter(t => t.side === 'buy').reduce((sum, t) => sum + t.notional, 0) : null;
-    const sell = known ? group.filter(t => t.side === 'sell').reduce((sum, t) => sum + t.notional, 0) : null;
-    const buyBase = known ? group.filter(t => t.side === 'buy').reduce((sum, t) => sum + t.quantity, 0) : null;
-    const sellBase = known ? group.filter(t => t.side === 'sell').reduce((sum, t) => sum + t.quantity, 0) : null;
-    const base = buyBase == null || sellBase == null ? null : buyBase + sellBase;
-    const knownNotional = known ? group.reduce((sum, t) => sum + t.notional, 0) : null;
-    const vwap = knownNotional != null && base != null && base > 0 ? knownNotional / base : null;
-    const high = known && group.length ? Math.max(...group.map((t) => t.price)) : null;
-    const low = known && group.length ? Math.min(...group.map((t) => t.price)) : null;
-    const maxTradeNotional = known && group.length ? Math.max(...group.map((t) => t.notional)) : null;
+    const known = group.count > 0 || complete;
+    const buy = known ? group.buy : null, sell = known ? group.sell : null;
+    const buyBase = known ? group.buyBase : null, sellBase = known ? group.sellBase : null;
+    const base = known ? group.buyBase + group.sellBase : null;
+    const vwap = base != null && base > 0 ? group.notional / base : null;
+    const high = group.count ? group.high : null, low = group.count ? group.low : null;
+    const maxTradeNotional = group.count ? group.maxNotional : null;
     const delta = buy == null || sell == null ? null : buy - sell;
     const resetKey = reset === 'window' ? 'window' : String(Math.floor(time / (reset === 'utc-day' ? 86_400_000 : 3_600_000)));
     const didReset = resetKey !== lastReset || !continuity;
@@ -40,7 +49,7 @@ export function flowBuckets(trades: FlowTrade[], interval: FlowInterval, reset: 
     const zScore = complete && delta != null ? robustZ(delta, history.slice(-60)) : null;
     if (complete && delta != null) history.push(delta);
     continuity = complete; lastReset = resetKey;
-    return { time, buy, sell, delta, cvd: cvdValue, base, buyBase, sellBase, vwap, high, low, maxTradeNotional, complete, count: group.length, zScore, reset: didReset };
+    return { time, buy, sell, delta, cvd: cvdValue, base, buyBase, sellBase, vwap, high, low, maxTradeNotional, complete, count: group.count, zScore, reset: didReset };
   });
 }
 export function aggregateFlow(venues: FlowVenue[], times: number[], interval: FlowInterval, reset: FlowReset): FlowBucket[] {

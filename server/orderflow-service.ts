@@ -16,6 +16,31 @@ type Feed = {
   instrument?: Instrument; stopped: boolean; loading: boolean; liquidationState: string; liquidations: LiquidationEvent[];
   dirty: boolean; checkpoint: OrderFlowCheckpoint;
 };
+/** Merge the newest 1,000 eligible trades without copying each feed's 50,000-trade history. */
+function latestTape(feeds: Feed[], at: number) {
+  const cursors = feeds.map(({trades}) => {
+    let low = 0, high = trades.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (trades[mid].time <= at) low = mid + 1;
+      else high = mid;
+    }
+    return low - 1;
+  });
+  const trades: FlowTrade[] = [];
+  while (trades.length < 1000) {
+    let newest = -1;
+    for (let index = 0; index < feeds.length; index++) {
+      if (cursors[index] < 0) continue;
+      // The later feed comes last on equal timestamps in the original stable sort.
+      if (newest < 0 || feeds[index].trades[cursors[index]].time >= feeds[newest].trades[cursors[newest]].time) newest = index;
+    }
+    if (newest < 0) break;
+    trades.push(feeds[newest].trades[cursors[newest]--]);
+  }
+  return trades.reverse();
+}
+
 /** Venues whose public liquidation stream is normalised in this version. */
 const LIQUIDATION_FEEDS = new Set(['binance', 'bybit', 'okx']);
 
@@ -45,7 +70,10 @@ export class OrderFlowService {
       if (!feed) {
         const file = path.join(this.directory, 'orderflow', `${createHash('sha256').update(key).digest('hex')}.json`);
         feed = { market, trades: [], seen: new Set(), gaps: [], state: 'connecting', detail: '', checkedAt: null, coverageFrom: null, coverageTo: null, lastWs: null, refs: 0, stopped: false, loading: false, dirty: false, checkpoint: new OrderFlowCheckpoint(file, this.budget), liquidations: [], liquidationState: 'waiting-for-verified-events' };
-        this.feeds.set(key, feed); void this.start(feed);
+        this.feeds.set(key, feed);
+        // A previous incarnation can be finishing its final checkpoint. Its single
+        // completion handler starts whichever feed still owns this key at that time.
+        if (!this.checkpoints.has(file)) void this.start(feed);
       }
       feed.refs++; if (feed.closing) clearTimeout(feed.closing);
       const current = feed;
@@ -58,11 +86,11 @@ export class OrderFlowService {
     });
     return () => releases.forEach(release => release());
   }
-  private async persist(feed: Feed, final = false) {
+  private persist(feed: Feed, final = false) {
     const file = feed.checkpoint.file;
     const previous = this.checkpoints.get(file);
     if (previous && !final) return previous;
-    if (!feed.dirty && !previous) return;
+    if (!feed.dirty && (!previous || !feed.instrument)) return previous;
     const work = (previous ?? Promise.resolve()).then(async () => {
       if (!feed.dirty) return;
       try {
@@ -72,10 +100,14 @@ export class OrderFlowService {
         feed.dirty = true;
         feed.detail = `Persistence failed: ${String(error)}`;
       }
+    }).finally(() => {
+      if (this.checkpoints.get(file) !== work) return;
+      this.checkpoints.delete(file);
+      const current = this.feeds.get(flowKey(feed.market));
+      if (current && current !== feed && !current.stopped) void this.start(current);
     });
     this.checkpoints.set(file, work);
-    await work;
-    if (this.checkpoints.get(file) === work) this.checkpoints.delete(file);
+    return work;
   }
   private async start(feed: Feed) {
     const capability = orderFlowCapability(feed.market);
@@ -83,13 +115,21 @@ export class OrderFlowService {
     try {
       feed.instrument = await this.adapters.verify(feed.market); if (feed.stopped) return;
       try {
-        await this.checkpoints.get(feed.checkpoint.file); // A just-released feed may still be flushing this same market.
         await this.initStorage();
         const saved = await feed.checkpoint.load();
         if (feed.stopped) return;
         feed.trades = saved.trades.filter(t => flowKey(t) === flowKey(feed.market) && t.time >= Date.now() - 86_400_000).slice(-MAX_TRADES);
         feed.dirty = feed.trades.length !== saved.trades.length;
-        feed.seen = new Set(feed.trades.map(t => t.id)); feed.gaps = saved.gaps.slice(); feed.coverageFrom = saved.coverageFrom; feed.coverageTo = saved.coverageTo; feed.liquidations = saved.liquidations.slice();
+        feed.seen = new Set(feed.trades.map(t => t.id));
+        if (feed.seen.size !== feed.trades.length) {
+          feed.trades = [...new Map(feed.trades.map(trade => [trade.id, trade])).values()];
+          feed.dirty = true;
+        }
+        if (feed.trades.some((trade, index, tape) => index > 0 && trade.time < tape[index - 1].time)) {
+          feed.trades.sort((a, b) => a.time - b.time);
+          feed.dirty = true;
+        }
+        feed.gaps = saved.gaps.slice(); feed.coverageFrom = saved.coverageFrom; feed.coverageTo = saved.coverageTo; feed.liquidations = saved.liquidations.slice();
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') feed.detail = 'Local history unavailable; rebuilding from real recent trades'; }
       await this.poll(feed);
       if (feed.stopped) return;
@@ -165,15 +205,15 @@ export class OrderFlowService {
     const collectionPaused = !project.monitoring.streamingEnabled || project.monitoring.collectionMode === 'paused';
     const venues: FlowVenue[] = markets.map(market => {
       const key = flowKey(market), feed = this.feeds.get(key), capability = orderFlowCapability(market);
-      return { key, market, state: feed ? feed.checkedAt != null && at - feed.checkedAt > 30_000 ? 'stale' : feed.state : collectionPaused ? 'unavailable' : capability.available ? 'connecting' : 'unavailable', transport: feed?.lastWs && at - feed.lastWs < 30_000 ? 'WebSocket + REST overlap recovery' : 'REST recent trades', lastTradeAt: feed?.trades.at(-1)?.time ?? null, checkedAt: feed?.checkedAt ?? null, coverageFrom: feed?.coverageFrom ?? null, coverageTo: feed?.coverageTo ?? null, gaps: feed?.gaps ?? [], buckets: flowBuckets(feed?.trades.filter(t => t.time <= at) ?? [], interval, reset, times, { from: feed?.coverageFrom ?? null, to: feed?.coverageTo == null ? null : Math.min(at, feed.coverageTo), gaps: feed?.gaps ?? [] }), warnings: [capability.reason, collectionPaused ? 'Collection is paused/streaming disabled for this project; no trades are being ingested.' : '', feed?.detail ?? '', 'USDT quote notional; USD-equivalent convention only, no live USDT/USD conversion.', 'First/last buckets can be partial. CVD never fills unknown time with zero.'].filter(Boolean), retainedTrades: feed?.trades.length ?? 0 };
+      return { key, market, state: feed ? feed.checkedAt != null && at - feed.checkedAt > 30_000 ? 'stale' : feed.state : collectionPaused ? 'unavailable' : capability.available ? 'connecting' : 'unavailable', transport: feed?.lastWs && at - feed.lastWs < 30_000 ? 'WebSocket + REST overlap recovery' : 'REST recent trades', lastTradeAt: feed?.trades.at(-1)?.time ?? null, checkedAt: feed?.checkedAt ?? null, coverageFrom: feed?.coverageFrom ?? null, coverageTo: feed?.coverageTo ?? null, gaps: feed?.gaps ?? [], buckets: flowBuckets(feed?.trades ?? [], interval, reset, times, { from: feed?.coverageFrom ?? null, to: feed?.coverageTo == null ? null : Math.min(at, feed.coverageTo), gaps: feed?.gaps ?? [] }, at), warnings: [capability.reason, collectionPaused ? 'Collection is paused/streaming disabled for this project; no trades are being ingested.' : '', feed?.detail ?? '', 'USDT quote notional; USD-equivalent convention only, no live USDT/USD conversion.', 'First/last buckets can be partial. CVD never fills unknown time with zero.'].filter(Boolean), retainedTrades: feed?.trades.length ?? 0 };
     });
     const aggregate = (type: 'spot' | 'perpetual') => {
       const group = venues.filter(v => v.market.marketType === type);
       return { requested: group.length, covered: group.filter(v => v.buckets.some(b => b.complete)).length, keys: group.map(v => v.key), buckets: aggregateFlow(group, times, interval, reset) };
     };
     const aggregates = { spot: aggregate('spot'), perpetual: aggregate('perpetual') };
-    const feeds = project.markets.map(m => this.feeds.get(flowKey(m))).filter((feed): feed is Feed => Boolean(feed));
-    const trades = [...new Map(feeds.flatMap(f => f.trades).filter(t => t.time <= at).map(t => [`${flowKey(t)}:${t.id}`, t])).values()].sort((a, b) => a.time - b.time).slice(-1000);
+    const feeds = markets.map(m => this.feeds.get(flowKey(m))).filter((feed): feed is Feed => Boolean(feed));
+    const trades = latestTape(feeds, at);
     return {
       projectId: project.id, generatedAt: Date.now(), interval, reset, unit: 'USDT', venues, aggregates, trades,
       tradeClusters: clusterFlowTrades(trades), signals: flowDivergences(aggregates.spot.buckets, aggregates.perpetual.buckets, at),

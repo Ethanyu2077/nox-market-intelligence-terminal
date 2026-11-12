@@ -73,15 +73,15 @@ export function DataCoveragePanel({ projects, language }: { projects: MarketProj
     return () => { active = false; clearInterval(timer); };
   }, [projects]);
   return <section className="ops-panel"><h2>{zh ? '本地采集覆盖' : 'Local collection coverage'}</h2>
-    <p>{zh ? '按事件流检查本地 journal 是否真的在积累：快照、成交量矩阵、alignment 判断、逐笔 tape。采样为最新 N 条，不是全量计数；缺口只说明采集连续性未验证，不代表市场无数据。' : 'Checks whether the local journal is actually accumulating streams: snapshots, volume matrix, alignment claims and trade tape. Counts are newest-N samples, not lifetime totals; a gap means sampling continuity is unverified, not that the market had no data.'}</p>
+    <p>{zh ? '根据最近的历史记录检查快照、成交量矩阵和周期一致性判断的采集情况。开启逐笔成交归档后也会检查成交记录。缺口表示该时段的采集连续性尚未验证。' : 'Coverage uses recent snapshots, volume records and alignment decisions. Trade records are checked when raw trade archiving is enabled. Gaps indicate periods of unverified collection.'}</p>
     <div className="table-wrap"><table><thead><tr>{['Project', 'Stream', 'Sampled', 'Last ingest', 'Gaps', 'State'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
       {rows.flatMap(({ project, coverage }) => coverage.kinds.map((kind) => <tr key={`${project.id}:${kind.kind}`}>
         <td>{project.name}<small>{coverage.mode}</small></td>
         <td>{kind.kind}</td>
-        <td>{kind.sampledEvents}</td>
+        <td>{kind.state === 'disabled' ? '—' : kind.sampledEvents}</td>
         <td>{kind.lastIngestAgeMs == null ? '—' : `${Math.round(kind.lastIngestAgeMs / 1000)}s`}</td>
-        <td>{kind.gaps}</td>
-        <td><span className={`coverage-badge ${kind.state}`}>{kind.state}</span></td>
+        <td>{kind.state === 'disabled' ? '—' : kind.gaps}</td>
+        <td><span className={`coverage-badge ${kind.state}`}>{kind.state === 'disabled' ? (zh ? '归档已关闭' : 'Archive off') : kind.state}</span></td>
       </tr>))}
       {!rows.length && <tr><td colSpan={6}>{zh ? '等待本地采集数据。' : 'Awaiting local collection data.'}</td></tr>}
     </tbody></table></div>

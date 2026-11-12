@@ -1,5 +1,6 @@
 import { open } from 'node:fs/promises';
 import path from 'node:path';
+export class IncompleteAppendTail extends Error {}
 
 /** The history queue serializes appends and rotations for this single-writer partition. */
 export async function appendJournalBatch(file: string, lines: string) {
@@ -10,7 +11,7 @@ export async function appendJournalBatch(file: string, lines: string) {
       const tail = Buffer.allocUnsafe(1);
       const { bytesRead } = await handle.read(tail, 0, 1, size - 1);
       if (bytesRead !== 1 || tail[0] !== 10)
-        throw new Error(`Incomplete journal tail in ${path.basename(file)}; recovery required`);
+        throw new IncompleteAppendTail(`Incomplete journal tail in ${path.basename(file)}; recovery required`);
     }
     try {
       await handle.writeFile(lines);

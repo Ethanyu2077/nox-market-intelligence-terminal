@@ -49,7 +49,8 @@ const TERMINAL: ResearchJob['status'][] = ['COMPLETED', 'PARTIAL', 'FAILED', 'CA
 export class ResearchJobManager {
   private jobs = new Map<string, JobRecord>();
   private statePath: string | null = null;
-  private persistChain: Promise<void> = Promise.resolve();
+  private writing: Promise<void> | null = null;
+  private dirty = false;
   private timer: NodeJS.Timeout | null = null;
   private now: () => number;
 
@@ -70,6 +71,7 @@ export class ResearchJobManager {
       for (const job of parsed.jobs ?? []) {
         if (!job?.id || !job.projectId) continue;
         if (job.status === 'RUNNING' || job.status === 'QUEUED') { job.status = 'INTERRUPTED'; job.updatedAt = manager.now(); }
+        manager.limitReport(job);
         manager.jobs.set(job.id, { job, controller: new AbortController(), done: Promise.resolve() });
       }
     } catch { /* no state yet */ }
@@ -95,6 +97,7 @@ export class ResearchJobManager {
       job.status = 'FAILED';
       job.error = 'Concurrent research job limit reached; retry later';
       this.jobs.set(job.id, { job, controller: new AbortController(), done: Promise.resolve() });
+      this.prune();
       void this.flush();
       return { job, duplicate: false };
     }
@@ -139,17 +142,35 @@ export class ResearchJobManager {
     }
   }
 
-  async flush(): Promise<void> {
-    if (!this.statePath) return;
-    const pathName = this.statePath;
-    const jobs = [...this.jobs.values()].map((record) => record.job);
-    this.persistChain = this.persistChain.then(async () => {
-      await mkdir(path.dirname(pathName), { recursive: true });
-      const temp = `${pathName}.tmp`;
-      await writeFile(temp, JSON.stringify({ version: 1, jobs }), { mode: 0o600 });
-      await rename(temp, pathName);
-    }).catch(() => undefined);
-    await this.persistChain;
+  flush(): Promise<void> {
+    if (!this.statePath) return Promise.resolve();
+    this.dirty = true;
+    this.writing ??= this.writeLatest(this.statePath);
+    return this.writing;
+  }
+
+  private async writeLatest(pathName: string): Promise<void> {
+    const temp = `${pathName}.tmp`;
+    try {
+      while (this.dirty) {
+        this.dirty = false;
+        try {
+          await mkdir(path.dirname(pathName), { recursive: true });
+          const jobs = [...this.jobs.values()].map((record) => record.job);
+          await writeFile(temp, JSON.stringify({ version: 1, jobs }), { mode: 0o600 });
+          await rename(temp, pathName);
+        } catch { /* Persistence is best effort; subsequent changes retry the latest state. */ }
+      }
+    } finally {
+      this.writing = null;
+    }
+  }
+
+  private limitReport(job: ResearchJob): void {
+    if (job.report == null || Buffer.byteLength(JSON.stringify(job.report)) <= this.limits.maxReportBytes) return;
+    job.report = null;
+    job.status = 'PARTIAL';
+    job.truncationReason = 'report-too-large';
   }
 
   close(): void { if (this.timer) clearInterval(this.timer); this.timer = null; }
@@ -211,21 +232,15 @@ export class ResearchJobManager {
         ...(job.start ? { windowStart: job.start } : {}),
         ...(job.end ? { windowEnd: job.end } : {}),
       });
-      let complete = !reason;
-      let reportValue: unknown = {
-        ...report, partial: !complete, researchComplete: complete,
+      job.report = {
+        ...report, partial: !!reason, researchComplete: !reason,
         scannedRecords: job.progress.scanned, asOf: job.asOf,
         snapshotCursor: job.progress.snapshotCursor, l2Cursor: job.progress.l2Cursor,
         truncationReason: reason,
       };
-      const serialized = JSON.stringify(reportValue);
-      if (serialized.length > this.limits.maxReportBytes) {
-        complete = false; reason = 'report-too-large';
-        reportValue = { ...report, partial: true, researchComplete: false, reportTooLarge: true, truncationReason: reason, scannedRecords: job.progress.scanned };
-      }
       job.truncationReason = reason;
-      job.report = reportValue;
-      job.status = complete ? 'COMPLETED' : 'PARTIAL';
+      job.status = reason ? 'PARTIAL' : 'COMPLETED';
+      this.limitReport(job);
     } catch (error) {
       job.status = 'FAILED';
       job.error = error instanceof Error ? error.message.slice(0, 200) : 'Research job failed';

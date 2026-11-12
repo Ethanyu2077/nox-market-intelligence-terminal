@@ -27,11 +27,26 @@ export interface ScanResult {
 
 type Pager = { page: (projectId: string, query: HistoryQuery) => Promise<{ items: HistoryEvent[]; nextCursor: string | null }> };
 
-function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    work,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('history page timeout')), ms)),
-  ]);
+async function readPage<T>(read: (signal: AbortSignal) => Promise<T>, ms: number, parent?: AbortSignal): Promise<T> {
+  const controller = new AbortController();
+  const stopped = Promise.withResolvers<never>();
+  const stop = (reason: unknown) => {
+    stopped.reject(reason);
+    controller.abort(reason);
+  };
+  const cancel = () => stop(parent?.reason);
+  const timer = setTimeout(() => stop(new Error('history page timeout')), ms);
+  parent?.addEventListener('abort', cancel, { once: true });
+  try {
+    const work = Promise.resolve().then(() => {
+      controller.signal.throwIfAborted();
+      return read(controller.signal);
+    });
+    return await Promise.race([work, stopped.promise]);
+  } finally {
+    clearTimeout(timer);
+    parent?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function scanHistory(store: Pager, projectId: string, options: ScanOptions): Promise<ScanResult> {
@@ -53,9 +68,9 @@ export async function scanHistory(store: Pager, projectId: string, options: Scan
     try {
       // Bound the page call itself: a hung journal/DB query must not hold the HTTP request
       // past the proxy timeout. On timeout we return what has been scanned so far.
-      page = await withTimeout(store.page(projectId, {
-        kind: options.kind, from: options.from, to: options.to, asOf: options.asOf, cursor: cursor ?? undefined, limit: options.limit, signal: options.signal,
-      }), Math.max(1_000, Math.min(options.timeoutMs, Math.max(1_000, options.timeoutMs - (now() - started)))));
+      page = await readPage((signal) => store.page(projectId, {
+        kind: options.kind, from: options.from, to: options.to, asOf: options.asOf, cursor: cursor ?? undefined, limit: options.limit, signal,
+      }), Math.max(1, options.timeoutMs - (now() - started)), options.signal);
     } catch (error) {
       // Never look like a clean end. Classify without leaking SQL, connection strings or
       // driver internals to the caller.

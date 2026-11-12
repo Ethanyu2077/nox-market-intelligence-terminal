@@ -8,7 +8,7 @@ This increment extends the existing NOX frontend, collector and history store. I
 - Forward price horizons: 15 minutes, 1 hour, 4 hours and 24 hours. Filters: global venue/window, regime label, minimum evidence quality, flow concentration and 1/7/30-day research range.
 - Signal Readiness shows current per-venue baseline count, remaining samples, freshness, flow continuity/gaps and observed metric availability. Paused, unsupported, stale, warming and ready states do not relax the V2 quality gates.
 - Separate OI-USDT and rolling-24H-volume weighted distributions use the latest frozen event's known inputs. Original count-based consensus remains unchanged. Missing weights are null; shares use known weights only. All-zero denominators have no dominant label or share. These are exposure distributions, not probabilities or causal leadership scores.
-- Background outcome tracking runs after collection, at most once per project per five minutes. One bounded input scan serves all four horizons. Derived revisions are stored separately under `.data/outcomes`; original signal journals are never rewritten by this feature.
+- When offline auditing is enabled, a single input scan covers all four horizons after collection, at most once per project per five minutes.
 - Read-only endpoints: `GET /api/projects/:id/event-study` and `GET /api/projects/:id/readiness`. Background errors appear in `/api/operations`.
 
 ## Methodology: `nox.event-study.v1`
@@ -21,7 +21,7 @@ The interactive study purges overlapping project-event horizons within the selec
 
 Median, Q10/Q90 and positive-price frequency are descriptive. Quantiles are not confidence intervals. Positive-price frequency is not strategy win rate. No calibrated edge, executable strategy, fee/funding/slippage simulation or independent-sample confidence interval is supplied. A signed directional scenario is present only for applicable inferred labels in the API; it is not represented as observed position opening or executable return.
 
-Background tracking retains overlapping observations. Each changed study appends rows with stable methodology/event-venue/horizon IDs and revision hashes. Identical refreshes reuse the retained revisions. The worker expires the oldest derived data at 35 days or under its 256 MiB budget. The original market observations have their own journal and database retention settings. See [Dokku deployment](DOKKU_DEPLOYMENT.md).
+Studies run on request from historical snapshots and regime observations. Set `NOX_OUTCOME_AUDIT_ENABLED=true` to also export revisions in the background. Each changed study then appends rows with stable methodology/event-venue/horizon IDs and revision hashes. Existing exports remain subject to the 35-day, 256 MiB budget. See [Dokku deployment](DOKKU_DEPLOYMENT.md).
 
 ## Bounded history and deployment
 

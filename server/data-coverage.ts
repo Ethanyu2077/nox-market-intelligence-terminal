@@ -1,6 +1,7 @@
 import type { HistoryStore } from './history-store.ts';
 import type { MarketProject } from '../shared/types.ts';
 import type { CoverageKind, CoverageKindReport, DataCoverageResponse } from '../shared/coverage.ts';
+import { rawTradeHistoryEnabled } from './flow-history-policy.ts';
 
 export interface CoverageSample { eventTime: number; ingestTime: number }
 
@@ -17,12 +18,15 @@ export function summarizeDataCoverage(
   mode: 'active' | 'standard' | 'paused',
   samples: Partial<Record<CoverageKind, CoverageSample[]>>,
   now = Date.now(),
+  archiveRawTrades = rawTradeHistoryEnabled(),
 ): DataCoverageResponse {
   const expectedCadenceMs = CADENCE[mode];
   const kinds: CoverageKindReport[] = KINDS.map((kind) => {
-    const events = [...(samples[kind] ?? [])].filter((event) => Number.isFinite(event.eventTime) && Number.isFinite(event.ingestTime)).sort((a, b) => a.ingestTime - b.ingestTime);
+    const disabled = kind === 'trade' && !archiveRawTrades;
+    const events = disabled ? [] : [...(samples[kind] ?? [])].filter((event) => Number.isFinite(event.eventTime) && Number.isFinite(event.ingestTime)).sort((a, b) => a.ingestTime - b.ingestTime);
     if (!events.length) {
-      return { kind, sampledEvents: 0, from: null, to: null, lastIngestAt: null, lastIngestAgeMs: null, largestIngestGapMs: null, gaps: 0, state: 'empty', note: 'no sampled record of this kind yet' };
+      return { kind, sampledEvents: 0, from: null, to: null, lastIngestAt: null, lastIngestAgeMs: null, largestIngestGapMs: null, gaps: 0,
+        state: disabled ? 'disabled' : 'empty', note: disabled ? 'Raw trade history archiving is turned off.' : 'no sampled record of this kind yet' };
     }
     const lastIngestAt = events[events.length - 1].ingestTime;
     const lastIngestAgeMs = Math.max(0, now - lastIngestAt);
@@ -57,18 +61,20 @@ export function summarizeDataCoverage(
       'Sampled counts use the newest records read from the local journal (limit applies); they are not lifetime totals.',
       'Gaps are measured between consecutive ingest times against 2.5x the collector cadence; a gap means sampling continuity is unverified, not that the market had no data.',
       'States describe local accumulation health only; they do not validate source correctness, research quality or forward performance.',
-      'Trade tape is event-driven and therefore has no fixed cadence; its state is based on gaps against the collector cadence.',
+      archiveRawTrades ? 'Trade tape is event-driven and therefore has no fixed cadence; its state is based on gaps against the collector cadence.' :
+        'Raw trade history archiving is turned off. Trade coverage is excluded from sampling and freshness checks.',
     ],
   };
 }
 
-export async function projectDataCoverage(history: HistoryStore, project: MarketProject, asOf = Date.now(), limit = 5000): Promise<DataCoverageResponse> {
+export async function projectDataCoverage(history: HistoryStore, project: MarketProject, asOf = Date.now(), limit = 5000, archiveRawTrades = rawTradeHistoryEnabled()): Promise<DataCoverageResponse> {
   const mode = project.archived || !project.monitoring.streamingEnabled ? 'paused' : project.monitoring.collectionMode ?? 'standard';
   const samples: Partial<Record<CoverageKind, CoverageSample[]>> = {};
-  const results = await Promise.allSettled(KINDS.map((kind) => history.read(project.id, kind, asOf, limit)));
+  const sampledKinds = KINDS.filter(kind => kind !== 'trade' || archiveRawTrades);
+  const results = await Promise.allSettled(sampledKinds.map((kind) => history.read(project.id, kind, asOf, limit)));
   results.forEach((result, index) => {
     if (result.status !== 'fulfilled') return;
-    samples[KINDS[index]] = result.value.map((event) => ({ eventTime: event.eventTime, ingestTime: event.ingestTime }));
+    samples[sampledKinds[index]] = result.value.map((event) => ({ eventTime: event.eventTime, ingestTime: event.ingestTime }));
   });
-  return summarizeDataCoverage(project.id, mode, samples, asOf);
+  return summarizeDataCoverage(project.id, mode, samples, asOf, archiveRawTrades);
 }

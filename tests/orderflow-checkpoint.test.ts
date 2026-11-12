@@ -11,6 +11,20 @@ const trade = (n: number): FlowTrade => ({ id: String(n), exchange: 'binance', m
 const liquidation: LiquidationEvent = { id: 'liq', exchange: 'binance', symbol: 'TESTUSDT', time: 15,
   price: 3, quantity: 10, notional: 30, orderSide: 'sell', liquidatedSide: 'long' };
 
+test('repeated checkpoints of an unchanged tape do not allocate deltas or replace its base', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'nox-idle-checkpoint-'));
+  t.after(() => rm(dir, {recursive: true, force: true}));
+  const file = path.join(dir, 'market.json');
+  const writer = new OrderFlowCheckpoint(file);
+  const feed = { trades: [trade(1)], coverageFrom: 1, coverageTo: 1, gaps: [], liquidations: [] };
+  await writer.save(feed);
+  const base = await stat(file);
+  for (let i = 0; i < 50; i++) await writer.save(feed);
+  assert.deepEqual(await readdir(dir), ['market.json']);
+  assert.equal((await stat(file)).ino, base.ino);
+  assert.deepEqual(await new OrderFlowCheckpoint(file).load(), feed);
+});
+
 test('reads legacy order flow, checkpoints active tape incrementally and retries an interrupted delta', async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'nox-flow-checkpoint-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

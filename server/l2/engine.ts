@@ -18,6 +18,9 @@ import type { L2Level, L2Metrics, L2RestSnapshot, L2Sequence, L2Snapshot, L2Stat
 
 const DEPTH_WINDOW_BPS = 25;
 const LEVEL_LIMIT = 50;
+// The largest requested bootstrap contains 1,000 levels per side. Rebuild from the
+// venue if incremental updates accumulate too many old prices outside that snapshot.
+const MAX_BOOK_LEVELS = 4096;
 const LIMITATIONS = [
   'Continuous book is rebuilt from a REST snapshot plus deltas; a detected gap forces a full resync.',
   'Bybit publishes monotonic but non-contiguous update ids, so gaps are not inferable from them; reconnect/resync is the integrity mechanism.',
@@ -26,7 +29,7 @@ const LIMITATIONS = [
 
 export type DeltaResult = {
   applied: boolean;
-  reason: 'ok' | 'stale' | 'gap' | 'duplicate' | 'not-synced' | 'checksum';
+  reason: 'ok' | 'stale' | 'gap' | 'duplicate' | 'not-synced' | 'checksum' | 'depth-limit';
   expected?: number | null;
   received?: number | null;
 };
@@ -80,11 +83,19 @@ export class L2Book {
     if (this.state === 'live') this.state = 'stale';
   }
 
-  applySnapshot(snapshot: L2RestSnapshot, now = this.now()): void {
+  get lastMessageTime(): number | null { return this.lastMessageAt; }
+
+  applySnapshot(snapshot: L2RestSnapshot, now = this.now()): boolean {
+    if (snapshot.bids.length > MAX_BOOK_LEVELS || snapshot.asks.length > MAX_BOOK_LEVELS) {
+      this.markResyncing();
+      return false;
+    }
     this.bids = toMap(snapshot.bids);
     this.asks = toMap(snapshot.asks);
-    this.bidText = toTextMap(snapshot.bids);
-    this.askText = toTextMap(snapshot.asks);
+    if (this.venue === 'okx') {
+      this.bidText = toTextMap(snapshot.bids);
+      this.askText = toTextMap(snapshot.asks);
+    }
     this.sequence = { first: snapshot.sequence.first ?? null, last: snapshot.sequence.last, previous: null };
     this.eventTime = snapshot.eventTime;
     this.syncedAt = now;
@@ -95,6 +106,7 @@ export class L2Book {
     this.lastPu = null;
     if (this.venue === 'okx') this.checksumState = 'unchecked';
     this.state = 'live';
+    return true;
   }
 
   applyDelta(delta: L2Delta, now = this.now()): DeltaResult {
@@ -135,6 +147,10 @@ export class L2Book {
       }
     }
 
+    if (this.bids.size + delta.bids.length > MAX_BOOK_LEVELS || this.asks.size + delta.asks.length > MAX_BOOK_LEVELS) {
+      this.markResyncing();
+      return { applied: false, reason: 'depth-limit' };
+    }
     this.applyLevels(delta.bids, delta.asks);
     this.sequence = { first: delta.first, last: delta.last, previous: delta.previous };
     this.eventTime = delta.eventTime;
@@ -157,7 +173,6 @@ export class L2Book {
   }
 
   private applyLevels(bids: Array<[string, string]>, asks: Array<[string, string]>): void {
-    const bidPrices = new Set(bids.map(([price]) => Number(price)));
     const update = (raw: Array<[string, string]>, side: 'bid' | 'ask') => {
       for (const [price, quantity] of raw) {
         const key = Number(price);
@@ -167,24 +182,26 @@ export class L2Book {
         const text = side === 'bid' ? this.bidText : this.askText;
         if (value === 0) { numeric.delete(key); text.delete(key); continue; }
         numeric.set(key, value);
-        text.set(key, [price, quantity]);
+        if (this.venue === 'okx') text.set(key, [price, quantity]);
         (side === 'bid' ? this.asks : this.bids).delete(key);
         (side === 'bid' ? this.askText : this.bidText).delete(key);
       }
     };
-    for (const [price] of bids) {
-      const key = Number(price);
-      // A price can switch sides only if the venue sends it as a bid and it was an ask;
-      // delete the stale side entry first.
-      if (!bidPrices.has(key)) continue;
-    }
     update(bids, 'bid');
     update(asks, 'ask');
   }
 
   metrics(now = this.now(), record = true): L2Metrics {
-    const bids = sortedLevels(this.bids, 'desc');
-    const asks = sortedLevels(this.asks, 'asc');
+    const metric = this.measure(now, sortedLevels(this.bids, 'desc'), sortedLevels(this.asks, 'asc'));
+    if (record) {
+      this.lastMetric = metric;
+      if (this.history.length >= 600) this.history.shift();
+      this.history.push(metric);
+    }
+    return metric;
+  }
+
+  private measure(now: number, bids: L2Level[], asks: L2Level[]): L2Metrics {
     const bestBid = bids[0]?.price ?? null;
     const bestAsk = asks[0]?.price ?? null;
     const mid = bestBid != null && bestAsk != null && bestAsk >= bestBid ? (bestBid + bestAsk) / 2 : null;
@@ -192,7 +209,7 @@ export class L2Book {
     const askDepthUsd = depthWithin(asks, mid, DEPTH_WINDOW_BPS, 'ask');
     const total = bidDepthUsd + askDepthUsd;
     const previous = this.lastMetric;
-    const metric: L2Metrics = {
+    return {
       time: now,
       midPrice: mid,
       spreadBps: bestBid != null && bestAsk != null && mid ? (bestAsk - bestBid) / mid * 10_000 : null,
@@ -202,25 +219,20 @@ export class L2Book {
       bidWithdrawalPct: previous && previous.bidDepthUsd > 0 ? (previous.bidDepthUsd - bidDepthUsd) / previous.bidDepthUsd * 100 : null,
       askWithdrawalPct: previous && previous.askDepthUsd > 0 ? (previous.askDepthUsd - askDepthUsd) / previous.askDepthUsd * 100 : null,
     };
-    if (record) {
-      this.lastMetric = metric;
-      this.history = [...this.history, metric].slice(-600);
-    }
-    return metric;
   }
 
   snapshot(now = this.now()): L2Snapshot {
-    const bids = sortedLevels(this.bids, 'desc').slice(0, LEVEL_LIMIT);
-    const asks = sortedLevels(this.asks, 'asc').slice(0, LEVEL_LIMIT);
-    const metric = this.metrics(now, false);
+    const bids = sortedLevels(this.bids, 'desc');
+    const asks = sortedLevels(this.asks, 'asc');
+    const metric = this.measure(now, bids, asks);
     const integrity = this.integrity();
     return {
       venue: this.venue,
       symbol: this.symbol,
       state: this.state,
       sequence: { ...this.sequence },
-      bids,
-      asks,
+      bids: bids.slice(0, LEVEL_LIMIT),
+      asks: asks.slice(0, LEVEL_LIMIT),
       bestBid: bids[0]?.price ?? null,
       bestAsk: asks[0]?.price ?? null,
       midPrice: metric.midPrice,

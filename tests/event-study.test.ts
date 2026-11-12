@@ -6,6 +6,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eventStudy } from "../server/event-study.ts";
+import { EventStudyService } from "../server/event-study-service.ts";
 import {
   weightedConsensus,
   signalReadiness,
@@ -75,6 +76,41 @@ const prices = (minutes = 15, marketKey = key) =>
   Array.from({ length: minutes + 1 }, (_, i) =>
     snapshot(decision + i * 60_000, 100 + i, marketKey),
   );
+test("on-demand studies match audit mode and only an enabled background refresh records outcomes", async () => {
+  const project = { id: "p" } as MarketProject;
+  let reads = 0, maintenance = 0;
+  const horizons: number[] = [];
+  const history = {
+    page: async (_id: string, query: { kind: string }) => {
+      reads++;
+      return { items: query.kind === "regime" ? [signal()] : prices(), backend: "local-journal", nextCursor: null };
+    },
+  } as unknown as HistoryStore;
+  const outcomes = {
+    maintain: async () => { maintenance++; },
+    record: async (study: { horizonMinutes: number }) => { horizons.push(study.horizonMinutes); },
+    status: () => ({}),
+    close: async () => {},
+  } as unknown as OutcomeStore;
+  const live = new EventStudyService(history, outcomes, false);
+  const audited = new EventStudyService(history, outcomes, true);
+  try {
+    live.refresh(project);
+    assert.equal(reads, 0);
+    assert.equal(maintenance, 2, "existing audit histories are maintained in both modes");
+    const options = { horizonMinutes: 15 as const, asOf: decision + 900_000 };
+    const fromRequest = await live.study("p", options);
+    const fromAuditMode = await audited.study("p", options);
+    assert.deepEqual({ ...fromRequest, persistence: fromAuditMode.persistence }, fromAuditMode);
+    assert.equal(fromRequest.rows[0]?.status, "complete");
+    assert.deepEqual(horizons, []);
+    audited.refresh(project);
+    audited.refresh(project);
+  } finally {
+    await Promise.all([live.close(), audited.close()]);
+  }
+  assert.deepEqual(horizons, [15, 60, 240, 1440]);
+});
 test("event study uses actual decision entry, not window close, and rejects late-known entry", () => {
   const old = snapshot(decision - 90_000, 50),
     data = prices();

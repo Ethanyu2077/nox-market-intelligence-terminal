@@ -9,7 +9,7 @@ import { acquireL2 } from './feed.ts';
  *
  * Only projects in `Active` collection mode with streaming enabled are collected; the feed
  * is reference-counted and kept open while the project stays active. Samples are aggregated
- * into 1s / 5s / 1m buckets and appended to the existing history journal (kind `l2`), so no
+ * into five-minute buckets and appended to the existing history journal (kind `l2`), so no
  * separate storage system is introduced.
  *
  * Depth change and "withdrawal" are NET values: without matched aggressor trades we cannot
@@ -17,6 +17,7 @@ import { acquireL2 } from './feed.ts';
  */
 
 const VENUES = new Set(['binance', 'bybit', 'okx']);
+const MAX_PENDING_BUCKETS = 512;
 const INTEGRITY_RANK: Record<L2Snapshot['integrity'], number> = { ok: 0, 'checksum-unchecked': 1, 'checksum-failed': 2, gap: 3, unknown: 4 };
 
 export function aggregateBucket(projectId: string, venue: L2BucketMetric['venue'], symbol: string, samples: L2Snapshot[], bucketMs: number, bucketStart: number, intervalMs: number, receivedAt: number, staleSkipped = 0, incomplete = false): L2BucketMetric {
@@ -96,7 +97,10 @@ export class L2Collector {
   private feeds = new Map<string, FeedHandle>();
   private buckets = new Map<string, BucketState>();
   private lastSequence = new Map<string, { epoch: number; last: number }>();
-  private retries: Array<{ key: string; bucket: BucketState; bucketMs: number }> = [];
+  private pending = new Map<string, HistoryEvent>();
+  private draining?: Promise<void>;
+  private writingId?: string;
+  private droppedBuckets = 0;
   private sampled = 0;
   private writes = 0;
   private writeFailures = 0;
@@ -127,27 +131,54 @@ export class L2Collector {
   async flush(now = Date.now()): Promise<void> {
     for (const [bucketKey, bucket] of [...this.buckets.entries()]) {
       const bucketMs = Number(bucketKey.split(':').at(-1));
-      await this.appendBucket(bucketKey.split(':').slice(0, -1).join(':'), bucket, bucketMs, now, true);
+      this.queueBucket(bucketKey.split(':').slice(0, -1).join(':'), bucket, bucketMs, now, true);
       this.buckets.delete(bucketKey);
     }
+    await this.drain(now);
   }
 
-  private async appendBucket(key: string, bucket: BucketState, bucketMs: number, now: number, incomplete: boolean): Promise<void> {
+  private queueBucket(key: string, bucket: BucketState, bucketMs: number, now: number, incomplete: boolean) {
     const [projectId, venue, symbol] = key.split(':');
     const metric = aggregateBucket(projectId, venue as L2BucketMetric['venue'], symbol, bucket.samples, bucketMs, bucket.start, this.intervalMs, now, bucket.staleSkipped, incomplete);
-    try {
-      await this.append({
-        id: `l2_${projectId}_${venue}_${symbol}_${bucketMs}_${bucket.start}`,
-        kind: 'l2', marketKey: `${venue}:perpetual:${symbol}`, projectId,
-        eventTime: metric.eventTime, ingestTime: metric.receivedAt,
-        source: `l2:${venue}`, quality: metric.researchUsable ? 'verified' : 'unverified', payload: metric,
-      });
-      this.writes += 1;
+    const id = `l2_${projectId}_${venue}_${symbol}_${bucketMs}_${bucket.start}`;
+    if (this.pending.has(id)) return;
+    if (this.pending.size >= MAX_PENDING_BUCKETS) {
+      // Keep the most recent completed buckets during a long write outage.
+      for (const oldest of this.pending.keys()) {
+        if (oldest === this.writingId) continue;
+        this.pending.delete(oldest);
+        this.droppedBuckets++;
+        break;
+      }
+    }
+    this.pending.set(id, {
+      id, kind: 'l2', marketKey: `${venue}:perpetual:${symbol}`, projectId,
+      eventTime: metric.eventTime, ingestTime: metric.receivedAt,
+      source: `l2:${venue}`, quality: metric.researchUsable ? 'verified' : 'unverified', payload: metric,
+    });
+  }
+
+  private drain(now: number): Promise<void> {
+    if (this.draining) return this.draining;
+    if (!this.pending.size) return Promise.resolve();
+    this.draining = this.persistPending(now).finally(() => {
+      this.draining = undefined;
+      this.writingId = undefined;
+    });
+    return this.draining;
+  }
+
+  private async persistPending(now: number) {
+    for (const event of this.pending.values()) {
+      this.writingId = event.id;
+      try { await this.append(event); }
+      catch (error) {
+        this.writeFailures++;
+        throw error; // One failed attempt per tick; retry the same compact, immutable event.
+      }
+      this.pending.delete(event.id);
+      this.writes++;
       this.lastPersistAt = now;
-    } catch (error) {
-      this.writeFailures += 1;
-      this.retries = [...this.retries, { key, bucket, bucketMs }];
-      throw error;
     }
   }
 
@@ -171,7 +202,9 @@ export class L2Collector {
       writes: this.writes,
       writeFailures: this.writeFailures,
       pendingBuckets: this.buckets.size,
-      pendingRetries: this.retries.length,
+      pendingRetries: this.pending.size,
+      maxPendingBuckets: MAX_PENDING_BUCKETS,
+      droppedBuckets: this.droppedBuckets,
       lastPersistAt: this.lastPersistAt,
       activeFeeds: this.feeds.size,
     };
@@ -183,13 +216,13 @@ export class L2Collector {
     for (const handle of this.feeds.values()) handle.release();
     this.feeds.clear();
     this.buckets.clear();
+    this.lastSequence.clear();
   }
 
   /** One sampling tick; exported for tests with an explicit clock. */
   async tick(now = Date.now()): Promise<void> {
     const active = this.projects().filter((project) => !project.archived && project.monitoring.streamingEnabled && project.monitoring.collectionMode === 'active');
     const wanted = new Set<string>();
-    const persisted: Array<{ key: string; bucket: BucketState; bucketMs: number }> = [];
 
     for (const project of active) {
       for (const market of project.markets) {
@@ -215,7 +248,7 @@ export class L2Collector {
           let bucket = this.buckets.get(bucketKey);
           const start = Math.floor(now / bucketMs) * bucketMs;
           if (!bucket || bucket.start !== start) {
-            if (bucket && bucket.samples.length) persisted.push({ key, bucket, bucketMs });
+            if (bucket && bucket.samples.length) this.queueBucket(key, bucket, bucketMs, now, false);
             bucket = { start, samples: [], staleSkipped: 0 };
             this.buckets.set(bucketKey, bucket);
           }
@@ -234,20 +267,13 @@ export class L2Collector {
         for (const [bucketKey, bucket] of [...this.buckets.entries()]) {
           if (!bucketKey.startsWith(`${key}:`)) continue;
           const bucketMs = Number(bucketKey.split(':').at(-1));
-          void this.appendBucket(key, bucket, bucketMs, now, true).catch(() => undefined);
+          this.queueBucket(key, bucket, bucketMs, now, true);
           this.buckets.delete(bucketKey);
         }
       }
     }
 
-    // Retry audit writes that failed previously (at-least-once, idempotent event ids).
-    for (const entry of [...this.retries]) {
-      try { await this.appendBucket(entry.key, entry.bucket, entry.bucketMs, now, true); this.retries = this.retries.filter((item) => item !== entry); }
-      catch { /* keep for the next tick */ }
-    }
-    for (const entry of persisted) {
-      // Failures are counted and queued for retry; they never lose the audit record.
-      await this.appendBucket(entry.key, entry.bucket, entry.bucketMs, now, false).catch(() => undefined);
-    }
+    // Sampling continues while a previous append is blocked, with only one writer.
+    if (!this.draining) await this.drain(now).catch(() => undefined);
   }
 }

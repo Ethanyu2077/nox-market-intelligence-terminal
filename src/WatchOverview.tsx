@@ -7,7 +7,7 @@ import { CapitalFlowVisual } from './CapitalFlowVisual';
 import { FlowCards } from './FlowCards';
 import { LiveFlowEvents } from './LiveFlowEvents';
 import { StrengthPlot } from './LiveStrengthChart';
-import { liveStrengthReturns, strengthMarketKey, strengthValueAt, STRENGTH_WINDOW_MS, STRENGTH_GAP_MS } from '../shared/strength-history';
+import { liveStrengthReturns, strengthMarketKey, strengthValueAt, STRENGTH_GAP_MS } from '../shared/strength-history';
 import { useStrengthFeed } from './useStrengthFeed';
 import { connectWatchLive, type WatchLiveState } from './watch-live-connection';
 
@@ -15,10 +15,10 @@ const LIVE_PROJECT_LIMIT = 12; // /ws/live subscription limit
 const COLORS=Array.from({length:8},(_,i)=>`var(--series-${i+1})`);
 const pct=(v:number|null)=>v===null?'—':`${v>0?'+':''}${v.toFixed(2)}%`;
 const windows = [1, 5, 15, 60, 240, 1440] as const;
-const windowLabel = (minutes: number) => minutes === 1 ? '60s' : minutes < 60 ? `${minutes}m` : `${minutes / 60}h`;
 const money=(v:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:2}).format(v);
 export function WatchOverview({projects,language,onOpen,onManage}:{projects:MarketProject[];language:'zh'|'en';onOpen:(id:string)=>void;onManage:()=>void}){
   const zh=language==='zh',t=(cn:string,en:string)=>zh?cn:en;
+  const windowLabel = (period: number) => period === 1 ? t('实时', 'Live') : period < 60 ? `${period}m` : `${period / 60}h`;
   const [data,setData]=useState<OverviewData|null>(null),[error,setError]=useState(''),[loading,setLoading]=useState(false),[refresh,setRefresh]=useState(0);
   const end=data?.end??0;
   const [indicator,setIndicator]=useState<WatchIndicator>('price');
@@ -41,7 +41,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     const subscribed = new Set([...selectedProjects, ...rest].slice(0, LIVE_PROJECT_LIMIT).map(project => project.id));
     return activeProjects.filter(project => subscribed.has(project.id));
   }, [activeProjects, selected]);
-  const { series, now, staleIds, ingest, restore } = useStrengthFeed(liveProjects, liveWindow);
+  const { series, start: liveStart, now, staleIds, ingest, restore } = useStrengthFeed(liveProjects, liveWindow);
   const liveReturns = useMemo(() => liveStrengthReturns(series, now, staleIds, liveConnected),
     [series, now, staleIds, liveConnected]);
   const [live,setLive]=useState<Record<string,{price:number|null;change:number|null;stale:boolean;at:number}>>({});
@@ -113,11 +113,12 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
   const returns = new Map(rows.map(row => [row.projectId, liveWindow
     ? liveReturns.get(row.projectId)?.latest ?? null : historicalReturn(row, minutes)]));
   const relative = (row: WatchRow) => returns.get(row.projectId) ?? null;
+  // Keep the same traces visible when a feed goes quiet. Rankings still require fresh returns.
+  const lastObservedReturn = (row: WatchRow) => liveWindow
+    ? liveReturns.get(row.projectId)?.points.at(-1)?.value : relative(row);
   const sorted = [...rows].sort((a, b) => {
-    const left = relative(a), right = relative(b);
-    if (left !== right) return (right ?? -Infinity) - (left ?? -Infinity);
-    // During an outage keep previously observed traces ahead of projects with no samples.
-    return liveWindow ? Number(liveReturns.has(b.projectId)) - Number(liveReturns.has(a.projectId)) : 0;
+    const left = lastObservedReturn(a) ?? -Infinity, right = lastObservedReturn(b) ?? -Infinity;
+    return left === right ? (liveWindow ? a.projectId.localeCompare(b.projectId) : 0) : right - left;
   });
   const chartRows = selected === null ? sorted.slice(0, 4) : rows.filter(row => selected.includes(row.projectId));
   const withLiveFlow=(row:WatchRow):WatchRow=>liveFlow[row.projectId]?{...row,flow:{...(row.flow??{buy:null,sell:null,delta:null,cvd:null,spotDelta:null,perpDelta:null,buckets:[],venues:[],covered:0,requested:0,source:'orderflow' as const}),...liveFlow[row.projectId]}}:row;
@@ -165,7 +166,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
     syncing: t('正在同步最近报价', 'Resynchronizing recent quotes'),
   }[connection];
   const plotEnd = liveWindow ? now : end;
-  const plotStart = plotEnd - (liveWindow ? STRENGTH_WINDOW_MS : minutes * 60_000);
+  const plotStart = liveWindow ? liveStart : end - minutes * 60_000;
   const canShowLive = indicator === 'price' && benchmark === 'absolute';
   const setWindow = (period: number) => { setMinutes(period); setHover(null); };
   const stale=!!data&&(Date.now()-data.end>10*60_000||!!error);
@@ -192,7 +193,7 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
           </select>
           <div className="wo-tabs">{windows.map(period => <button key={period}
             disabled={period === 1 && !canShowLive} aria-pressed={minutes === period}
-            title={period === 1 ? t('60 秒实时价格涨跌幅', 'Live 60-second price return') : undefined}
+            title={period === 1 ? t('自本次首笔报价起的涨跌幅', 'Return since the first quote in this session') : undefined}
             onClick={() => setWindow(period)}>{windowLabel(period)}</button>)}</div>
           <select aria-label={t('比较基准','Benchmark')} value={benchmark} onChange={event => {
             const next = event.target.value;
@@ -214,13 +215,13 @@ export function WatchOverview({projects,language,onOpen,onManage}:{projects:Mark
             <span className="wo-dot"/>{names.get(row.projectId)} <b>{indicatorLabel(value)}</b>
           </button>;
         })}<small>{t('最多选 4 个','Up to 4')}</small></div>
-        <StrengthPlot lines={chartLines} start={plotStart} end={plotEnd} gapMs={liveWindow ? STRENGTH_GAP_MS : BUCKET}
+        <StrengthPlot live={liveWindow} lines={chartLines} start={plotStart} end={plotEnd} gapMs={liveWindow ? STRENGTH_GAP_MS : BUCKET}
           unit={unit} language={language} hoverTime={hover} onHoverTime={setHover}
-          ariaLabel={liveWindow ? t('关注项目最近 60 秒相对涨跌幅','Watchlist returns over the last 60 seconds') : t('所选周期内的关注项目指标走势','Watchlist indicator trends over the selected period')}
+          ariaLabel={liveWindow ? t('关注项目自本次首笔报价起的实时涨跌幅','Live watchlist returns since the first session quote') : t('所选周期内的关注项目指标走势','Watchlist indicator trends over the selected period')}
           emptyText={!chartRows.length ? t('选择标的以对比走势','Select projects to compare')
             : liveWindow ? t('等待实时报价…','Waiting for live quotes…')
             : t('所选标的暂无历史数据','No historical data for the selected projects')}/>
-    <div className="wo-chart-foot"><span>{liveWindow ? (connectionNote || t('最近 60 秒 · 每秒更新 · 窗口首笔报价归零','Last 60s · 1s updates · First quote rebased to zero')) : indicator === 'flow' ? t('累计已观测的主动净额','Cumulative observed net flow') : t('各项目以期内首个有效样本归零','Each series starts at zero at its first observation')}</span><button onClick={()=>setTableOpen(!tableOpen)} aria-expanded={tableOpen}>{tableOpen?t('收起周期矩阵 ↑','Hide matrix ↑'):t('周期矩阵 ↓','Timeframe matrix ↓')}</button></div></div>
+    <div className="wo-chart-foot"><span>{liveWindow ? (connectionNote || t('首笔报价归零 · 每秒更新 · 缺报时沿用上一笔报价','First quote rebased to zero · Updates every second · Holds the last quote during gaps')) : indicator === 'flow' ? t('累计已观测的主动净额','Cumulative observed net flow') : t('各项目以期内首个有效样本归零','Each series starts at zero at its first observation')}</span><button onClick={()=>setTableOpen(!tableOpen)} aria-expanded={tableOpen}>{tableOpen?t('收起周期矩阵 ↑','Hide matrix ↑'):t('周期矩阵 ↓','Timeframe matrix ↓')}</button></div></div>
     <aside className="wo-leaders">{[{title:t('强势榜','Leaders'),items:gainers,positive:true},{title:t('弱势榜','Laggards'),items:losers,positive:false}].map(group=><div className="wo-leader-column" key={group.title}><h3 className={group.positive?'wo-up':'wo-down'}>{group.positive?'↗':'↘'} {group.title}<small>{benchmark === 'absolute' ? '%' : 'pp'}</small></h3>{group.items.slice(0,10).map((r,i)=><button className="wo-leader-row" key={r.projectId} onClick={()=>toggle(r.projectId)} aria-pressed={chartRows.some(c=>c.projectId===r.projectId)} title={t('点击加入或移出图表','Toggle chart comparison')}><em>{i+1}</em><strong>{names.get(r.projectId)}</strong><b className={group.positive?'wo-up':'wo-down'}>{relativeLabel(relative(r))}</b><span className={group.positive?'wo-meter wo-positive':'wo-meter wo-negative'} style={{width:`${Math.min(100,Math.abs(relative(r)??0)/Math.max(.01,...valid.map(Math.abs))*100)}%`}}/></button>)}{!group.items.length&&<div className="wo-small-empty">{t('暂无符合标的','No matching projects')}</div>}</div>)}</aside></div>
     <details className="wo-coverage wo-metric-coverage"><summary>{t('指标覆盖详情','Metric coverage')}</summary><div className="wo-metric-grid">{rows.map(r=><div key={r.projectId} className="wo-metric-row"><strong>{names.get(r.projectId)}</strong>{Object.entries(buildWatchMetrics(r)).map(([name,metric])=><span key={name} className={metric.state==='LIVE'?'ok':'off'} title={`${metric.state}${metric.at?` · ${new Date(metric.at).toLocaleTimeString()}`:''}${metric.error?` · ${metric.error}`:''}${metric.source?` · ${metric.source}`:''}`}>{name}</span>)}</div>)}</div></details>
     {tableOpen&&<div className="wo-table-scroll"><table><thead><tr><th>{t('标的 / 研究','Project / Research')}</th>{[15,60,240,1440].map(m=><th key={m}>{m<60?`${m}m`:`${m/60}h`}</th>)}</tr></thead><tbody>{sorted.map(r=><tr key={r.projectId}><td><button className="wo-link" onClick={()=>onOpen(r.projectId)}>{names.get(r.projectId)} ↗</button><small title={r.error??''}>{r.venue} · {r.marketType==='spot'?t('现货','Spot'):t('永续','Perp')}{r.error?' · !':''}</small></td>{[15,60,240,1440].map(m=>{const v=historicalReturn(r,m);return <td key={m} className={v===null?'':v>=0?'wo-up':'wo-down'}>{relativeLabel(v)}</td>;})}</tr>)}</tbody></table></div>}

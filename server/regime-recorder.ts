@@ -47,6 +47,7 @@ export class RegimeRecorder {
         const existing = await this.history.page(report.projectId, {
           kind: "regime",
           id: report.id,
+          from: report.windowEnd,
           limit: 1,
         });
         if (!existing.items.length)

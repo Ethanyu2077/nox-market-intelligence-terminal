@@ -9,10 +9,24 @@ export class EventStudyService {
   private running = new Map<string, Promise<void>>();
   private due = new Map<string, number>();
   private errors = new Map<string, string>();
+  private maintenance: NodeJS.Timeout;
+  private maintenanceError: string | null = null;
   constructor(
     private history: HistoryStore,
     private outcomes: OutcomeStore,
-  ) {}
+  ) {
+    const maintain = () => {
+      void this.outcomes.maintain().then(() => { this.maintenanceError = null; })
+        .catch(() => { this.maintenanceError = "Outcome retention maintenance failed"; });
+    };
+    maintain();
+    this.maintenance = setInterval(maintain, 3_600_000);
+    this.maintenance.unref();
+  }
+
+  storageStatus() {
+    return { ...this.outcomes.status(), maintenanceError: this.maintenanceError };
+  }
   private async collect(
     projectId: string,
     query: HistoryQuery,
@@ -184,6 +198,7 @@ export class EventStudyService {
     };
   }
   async close() {
+    clearInterval(this.maintenance);
     await Promise.all(this.running.values());
     await this.outcomes.close();
   }

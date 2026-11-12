@@ -7,7 +7,7 @@ const market: ProjectMarket = { id: 'BTC-PERP', exchange: 'binance', marketType:
 const project = { id: 'btc', primaryMarketId: market.id, markets: [market] };
 
 test('strength history stores the newest positive price per second and keeps its source time', () => {
-  const history = new StrengthHistory();
+  const history = new StrengthHistory(0);
   history.watch([project]);
   const tick = { projectId: 'btc', price: 100, priceAt: 3100, at: 6900, stale: false };
   history.ingest([tick, { ...tick, price: 102, priceAt: 3490 }, { ...tick, price: 97 }], 7000);
@@ -19,12 +19,14 @@ test('strength history stores the newest positive price per second and keeps its
   assert.equal(history.snapshot(10_000).staleIds.has('btc'), true);
   history.ingest([{ ...tick, stale: true, priceAt: 8100 }], 8200);
   assert.equal(history.snapshot(8200).staleIds.has('btc'), true);
-  assert.deepEqual(history.snapshot(64_100).series.get('btc'), [{ t: 4100, p: 101 }]);
-  assert.equal(history.snapshot(64_101).series.size, 0);
+  const afterOutage = history.snapshot(164_100);
+  assert.deepEqual(afterOutage.series, view.series);
+  assert.ok(afterOutage.staleIds.has('btc'));
+  assert.equal(afterOutage.start, view.start);
 });
 
 test('changing the primary market clears its history and rejects queued quotes from the old feed', () => {
-  const history = new StrengthHistory();
+  const history = new StrengthHistory(0);
   history.watch([project]);
   const tick = { projectId: 'btc', price: 10, at: 2500, marketKey: strengthMarketKey(project) };
   history.ingest([tick], 3000);
@@ -39,20 +41,101 @@ test('changing the primary market clears its history and rejects queued quotes f
   assert.equal(history.snapshot(3300).series.size, 0);
 });
 
-test('rolling watchlist returns use the first valid in-window quote and the latest observed quote', () => {
+test('session returns use the first valid quote and keep old observations during outages', () => {
   const quotes = new Map([
     ['active', [
-      { t: 999, p: 1 }, { t: 1000, p: 0 }, { t: 1001, p: 20 },
+      { t: -1, p: 1 }, { t: 1000, p: 0 }, { t: 1001, p: 20 },
       { t: 60_000, p: 0 }, { t: 60_500, p: 21 }, { t: 61_001, p: 999 },
     ]],
     ['new', [{ t: 61_000, p: 5 }]],
-    ['expired', [{ t: 500, p: 18 }]],
+    ['quiet', [{ t: 500, p: 18 }]],
     ['unavailable', []],
   ]);
   const result = liveStrengthReturns(quotes, 61_000, new Set(), true);
-  assert.deepEqual([...result.keys()], ['active', 'new']);
+  assert.deepEqual([...result.keys()], ['active', 'new', 'quiet']);
+  assert.deepEqual(result.get('quiet'), { points: [{ t: 500, value: 0 }], latest: null, stale: true });
   assert.deepEqual(result.get('active'), { points: [{ t: 1001, value: 0 }, { t: 60_500, value: 5 }], latest: 5, stale: false });
   assert.deepEqual(result.get('new'), { points: [{ t: 61_000, value: 0 }], latest: 0, stale: false });
+});
+
+test('the first displayed quote survives same-second updates, late replay and reconnect after an outage', () => {
+  const history = new StrengthHistory(100_000);
+  history.watch([project]);
+  const projectId = project.id, marketKey = strengthMarketKey(project);
+  const read = (now: number, connected: boolean) => {
+    const snapshot = history.snapshot(now);
+    assert.equal(snapshot.start, 104_100);
+    return liveStrengthReturns(snapshot.series, now, snapshot.staleIds, connected).get(projectId);
+  };
+  history.restore([{ projectId, marketKey, points: [{ t: 99_999, p: 7 }, { t: 104_100, p: 100 }] }], 105_000);
+  assert.deepEqual(read(105_000, true)?.points, [{ t: 104_100, value: 0 }]);
+  history.ingest([{ projectId, priceAt: 104_950, price: 102 }], 105_000);
+  const group = { projectId, marketKey, points: [
+    { t: 101_000, p: 15 }, { t: 104_100, p: 101 }, { t: 104_950, p: 103 },
+  ] };
+  history.restore([group, group], 105_000);
+  const points = [{ t: 104_100, value: 0 }, { t: 104_950, value: 2 }];
+  assert.deepEqual(read(105_000, true), { points, latest: 2, stale: false });
+  assert.deepEqual(read(300_000, false), { points, latest: null, stale: true });
+  history.restore([{ projectId, marketKey, points: [{ t: 301_000, p: 110 }] }], 302_000);
+  assert.equal(read(302_000, true)?.latest, null);
+  history.ingest([{ projectId, priceAt: 301_000, price: 110 }], 302_000);
+  assert.deepEqual(read(302_000, true), { points: [...points, { t: 301_000, value: 10 }], latest: 10, stale: false });
+});
+
+test('warm replay pins the earliest visible project once; later subscriptions cannot rewind the axis', () => {
+  const history = new StrengthHistory(50_000);
+  const second = { ...project, id: 'second' }, third = { ...project, id: 'third' };
+  history.watch([project, second]);
+  assert.equal(history.snapshot(110_000).series.size, 0);
+  const marketKey = strengthMarketKey(project);
+  history.restore([
+    { projectId: project.id, marketKey, points: [{ t: 66_000, p: 20 }, { t: 109_000, p: 21 }] },
+    { projectId: second.id, marketKey, points: [{ t: 58_000, p: 19 }] },
+  ], 110_000);
+  assert.equal(history.snapshot(110_000).start, 58_000);
+  history.watch([project, third]);
+  history.restore([{ projectId: third.id, marketKey, points: [{ t: 55_000, p: 10 }, { t: 76_000, p: 11 }] }], 111_000);
+  const later = history.snapshot(200_000);
+  assert.equal(later.start, 58_000);
+  assert.deepEqual(later.series.get(third.id), [{ t: 76_000, p: 11 }]);
+});
+
+test('a cold feed starts at its first visible quote even after waiting longer than a minute', () => {
+  const history = new StrengthHistory(1000);
+  history.watch([project]);
+  assert.equal(history.snapshot(121_000).series.size, 0);
+  history.ingest([{ projectId: project.id, priceAt: 122_000, price: 10 }], 121_000);
+  assert.equal(history.snapshot(121_500).series.size, 0);
+  assert.equal(history.snapshot(122_000).start, 122_000);
+  assert.equal(history.snapshot(722_000).start, 122_000);
+});
+
+test('multi-hour sessions bound storage while preserving the origin, real extremes, gaps and recent seconds', () => {
+  const history = new StrengthHistory(1000);
+  history.watch([project]);
+  for (let second = 1; second <= 18_000; second++) {
+    if (second > 320 && second < 500) continue;
+    const price = second === 120 ? 5 : second === 121 ? 1234 : 100;
+    history.ingest([{ projectId: project.id, priceAt: second * 1000, price }], second * 1000);
+    if (second === 1) history.snapshot(1000);
+  }
+  const now = 18_000_000;
+  const { series, staleIds } = history.snapshot(now);
+  const points = series.get(project.id)!;
+  assert.ok(points.length <= 2048);
+  assert.deepEqual(points[0], { t: 1000, p: 100 });
+  assert.equal(Math.min(...points.map(point => point.p)), 5);
+  assert.equal(Math.max(...points.map(point => point.p)), 1234);
+  const gapEnd = points.findIndex(point => point.t === 500_000);
+  assert.equal(points[gapEnd - 1].t, 320_000);
+  assert.equal(points[gapEnd].compactedBefore, undefined);
+  assert.ok(points.some(point => point.compactedBefore));
+  assert.deepEqual(points.slice(-61).map(point => point.t),
+    Array.from({ length: 61 }, (_, i) => now - 60_000 + i * 1000));
+  const result = liveStrengthReturns(series, now, staleIds, true).get(project.id)!;
+  assert.equal(result.latest, 0);
+  assert.ok(result.points.some(point => point.compactedBefore));
 });
 
 test('retained stale paths have no current return for rankings or averages', () => {
@@ -80,10 +163,15 @@ test('cursor reads the last observed value only within its freshness interval', 
   assert.equal(strengthValueAt(points, 15_000), -6);
   assert.equal(strengthValueAt(points, 15_001), null);
   assert.equal(strengthValueAt([...points, { t: 11_000, value: null }], 11_040), null);
+  const shortGap = [{ t: 1200, value: 2 }, { t: 3000, value: 8 }];
+  assert.equal(strengthValueAt(shortGap, 2300), null);
+  assert.equal(strengthValueAt(shortGap, 3000), 8);
+  const compacted = [{ t: 1200, value: 2 }, { t: 3000, value: 8, compactedBefore: true as const }];
+  assert.equal(strengthValueAt(compacted, 2500), null);
 });
 
 test('replay fills missing seconds in chronological order and retains the latest observation per second', () => {
-  const history = new StrengthHistory();
+  const history = new StrengthHistory(0);
   history.watch([project]);
   const projectId = project.id, marketKey = strengthMarketKey(project), now = 110_000;
   history.ingest([
@@ -105,7 +193,7 @@ test('replay fills missing seconds in chronological order and retains the latest
 });
 
 test('replayed points alone never establish freshness or override a stale quote flag', () => {
-  const history = new StrengthHistory();
+  const history = new StrengthHistory(0);
   history.watch([project]);
   const group = { projectId: project.id, marketKey: strengthMarketKey(project), points: [{ t: 9000, p: 20 }] };
   const tick = { projectId: project.id, at: 9000, price: 20 };

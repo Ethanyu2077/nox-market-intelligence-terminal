@@ -3,7 +3,7 @@ loadLocalEnv();
 import { Pool } from "pg";
 import { historyPolicy } from "./history-policy.ts";
 
-// An operator-only CLI. No API endpoint or automatic startup applies deletion policies.
+// Configure optional database-native jobs independently of the application's storage budgets.
 const plan = historyPolicy(
   Number(process.env.NOX_HISTORY_COMPRESSION_DAYS ?? 0),
   Number(process.env.NOX_HISTORY_RETENTION_DAYS ?? 0),
@@ -16,7 +16,7 @@ if (!apply)
         applied: false,
         ...plan,
         notice:
-          "Dry run only. Retention deletes database chunks on a schedule. Local journals are not automatically deleted.",
+          "Dry run. This command configures database-native jobs only. Application-managed retention and byte budgets operate separately.",
       },
       null,
       2,

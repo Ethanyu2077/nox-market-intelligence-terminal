@@ -6,7 +6,7 @@ import { normalizeFlowTrade, normalizeLiquidation, orderFlowCapability } from '.
 import { DEFAULT_FLOW_LAYOUT, isFlowLayout } from '../shared/flow-layout.ts';
 import { OrderFlowService } from '../server/orderflow-service.ts';
 import type { MarketProject, ProjectMarket } from '../shared/types.ts';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -152,10 +152,17 @@ test('shared collection deduplicates REST/WebSocket trades, separates types, and
     assert.equal(snapshot.trades.length, 3); assert.equal(snapshot.venues.find(v => v.market.marketType === 'spot')?.retainedTrades, 2);
     assert.equal(snapshot.venues.find(v => v.market.marketType === 'perpetual')?.retainedTrades, 1);
     release1(); release2(); await service.close();
+    const checkpoints = path.join(directory, 'orderflow');
+    const files = await readdir(checkpoints);
+    assert.equal(files.length, 2);
+    const identities = () => Promise.all(files.map(async file => (await stat(path.join(checkpoints, file))).ino));
+    const saved = await identities();
     const restored = new OrderFlowService(directory, dependencies); restored.acquire(project);
     try {
       for (let i = 0; i < 20 && connections < 4; i++) await new Promise(resolve => setTimeout(resolve, 10));
       assert.equal(restored.snapshot(project, '1m', 'window', current + 1).trades.length, 3);
     } finally { await restored.close(); }
+    // Repeated REST overlap and a graceful close leave the existing checkpoints untouched.
+    assert.deepEqual(await identities(), saved);
   } finally { await service.close(); await rm(directory, { recursive: true }); }
 });

@@ -36,6 +36,7 @@ export class AlertService {
   private events: AlertEvent[] = [];
   private runtime = new Map<string, AlertRuntime>();
   private deliveries = new Map<string, AlertDelivery>();
+  private cleanupPending = false;
   private evaluations: AlertEvaluation[] = [];
   private lastEvaluatedAt: number | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -65,6 +66,10 @@ export class AlertService {
       this.events = state.events;
       this.runtime = new Map(Object.entries(state.runtime ?? {}));
       this.deliveries = new Map(Object.entries(state.deliveries ?? {}));
+      const removedDeliveries = this.trimDeliveries();
+      if (this.trimRuntime(this.rules()) || removedDeliveries) {
+        try { await this.persist(); } catch { this.cleanupPending = true; }
+      }
       return;
     }
     // Migrate the v1 events-only file so existing event history is not lost.
@@ -117,6 +122,7 @@ export class AlertService {
 
   private async runTick(now: number): Promise<AlertsStatus> {
     const rules = this.rules();
+    if (this.trimRuntime(rules)) this.cleanupPending = true;
     const readings = new Map<string, AlertReading>();
     const enabled = rules.filter((rule) => rule.enabled);
     const settled = await Promise.allSettled(enabled.map(async (rule) => ({ rule, reading: await this.resolve(rule) })));
@@ -135,9 +141,25 @@ export class AlertService {
       for (const event of fresh) {
         this.deliveries.set(event.id, { eventId: event.id, status: 'pending', attempts: 0, lastAttemptAt: 0, error: null });
       }
+      this.trimDeliveries();
     }
-    if (fresh.length || this.pendingDeliveries().length) await this.flush();
+    if (this.cleanupPending || fresh.length || this.pendingDeliveries().length) await this.flush();
     return this.status();
+  }
+
+  // Delivery is local to the event log. An evicted event has no deliverable payload.
+  private trimDeliveries() {
+    const existing = new Set(this.events.map(event => event.id));
+    const previous = this.deliveries.size;
+    for (const id of this.deliveries.keys()) if (!existing.has(id)) this.deliveries.delete(id);
+    return this.deliveries.size !== previous;
+  }
+
+  private trimRuntime(rules: AlertRule[]) {
+    const ruleIds = new Set(rules.map(rule => rule.id));
+    const previous = this.runtime.size;
+    for (const id of this.runtime.keys()) if (!ruleIds.has(id)) this.runtime.delete(id);
+    return this.runtime.size !== previous;
   }
 
   private pendingDeliveries(): AlertDelivery[] {
@@ -155,6 +177,7 @@ export class AlertService {
       }
       // Rewrite once more so the delivered status is on disk, not only in memory.
       if (pending.length) await this.persist();
+      this.cleanupPending = false;
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 200) : 'Persist failed';
       for (const delivery of pending) {

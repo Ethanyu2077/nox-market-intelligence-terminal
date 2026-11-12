@@ -46,7 +46,12 @@ export class ProjectCollector {
       try {
         const data = await this.snapshots(project.markets);
         const now = Date.now();
-        for (const snapshot of data.snapshots) await this.history.append({ id: `${project.id}:${snapshot.exchange}:${snapshot.marketType}:${snapshot.symbol}:${now}`, kind: 'snapshot', marketKey: `${snapshot.exchange}:${snapshot.marketType}:${snapshot.symbol}`, projectId: project.id, eventTime: snapshot.eventTime, ingestTime: now, source: snapshot.source, quality: snapshot.quality, payload: snapshot });
+        await Promise.all(data.snapshots.map(snapshot => this.history.append({
+          id: `${project.id}:${snapshot.exchange}:${snapshot.marketType}:${snapshot.symbol}:${now}`,
+          kind: 'snapshot', marketKey: `${snapshot.exchange}:${snapshot.marketType}:${snapshot.symbol}`,
+          projectId: project.id, eventTime: snapshot.eventTime, ingestTime: now,
+          source: snapshot.source, quality: snapshot.quality, payload: snapshot,
+        })));
         // Persist the per-venue spot/perpetual turnover matrix so share migration can be studied
         // over time. Spot legs are fetched once here; perpetual legs reuse the snapshots above.
         const spotLegs = await this.spotVolumes(project);

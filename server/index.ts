@@ -85,8 +85,10 @@ await history.init();
 let archiveError: string | null = null;
 const orderFlow = new OrderFlowService(dataDirectory, undefined, (kind, event) => {
   const key = kind === 'trade' && 'marketType' in event ? flowKey(event) : `${event.exchange}:perpetual:${event.symbol}`;
-  void history.append({ id: `${key}:${kind}:${event.id}`, kind, marketKey: key, projectId: null, eventTime: event.time, ingestTime: Date.now(), source: 'source' in event ? event.source : 'exchange-liquidation-snapshot', quality: kind === 'liquidation' ? 'partial' : 'verified-aggressor', payload: event }).catch(() => { archiveError = 'History write failed; inspect disk availability'; });
+  void history.append({ id: `${key}:${kind}:${event.id}`, kind, marketKey: key, projectId: null, eventTime: event.time, ingestTime: Date.now(), source: 'source' in event ? event.source : 'exchange-liquidation-snapshot', quality: kind === 'liquidation' ? 'partial' : 'verified-aggressor', payload: event })
+    .then(() => { archiveError = null; }, () => { archiveError = 'History write failed; inspect journal capacity'; });
 });
+await Promise.all([marketCache.initStorage(), orderFlow.initStorage()]);
 const eventStudies=new EventStudyService(history,new OutcomeStore(dataDirectory));
 const collector = new ProjectCollector(() => store.getProjects(true), orderFlow, history, undefined, new RegimeRecorder(dataDirectory,history),project=>eventStudies.refresh(project), undefined, project=>timeframeAlignment(project));
 const allowedOrigins = resolveAllowedOrigins(port);
@@ -142,7 +144,9 @@ app.get('/api/operations', (_req, res) => res.json({
   process: { pid: process.pid, startedAt: PROCESS_STARTED_AT },
   l2Collection: l2Collector.health(),
   binanceRest: binanceGovernor.status(),
-  researchJobs: { total: researchJobs.size() }, storage: history.status(), archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
+  researchJobs: { total: researchJobs.size() },
+  storage: { ...history.status(), outcomes: eventStudies.storageStatus(), marketCache: marketCache.storageStatus(), orderFlow: orderFlow.storageStatus() },
+  archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
 app.get('/api/projects/:id/event-study',safe(async(req,res)=>{
   const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}
   const parsed=z.object({horizon:z.coerce.number().refine(v=>[15,60,240,1440].includes(v)).default(60),interval:z.enum(['5m','15m','1h','4h']).optional(),venue:exchangeSchema.optional(),label:z.string().max(100).optional(),minQuality:z.coerce.number().min(0).max(100).default(0),concentration:z.enum(['all','high','low']).default('all'),days:z.coerce.number().int().min(1).max(30).default(7),asOf:z.coerce.number().finite().min(1e12).optional()}).safeParse(req.query);

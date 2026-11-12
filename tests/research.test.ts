@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHmac } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { analyzeResearch, READ_ONLY_TOOLS, signalsFromSnapshots } from '../server/research.ts';
@@ -63,7 +63,17 @@ test('publisher rejects non-test success and does not retry permission failures'
 });
 test('signal registry persists and deduplicates concurrent engine events', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'nox-registry-test-'));
-  try { const registry = new SignalRegistry(directory); await Promise.all([registry.register([event]), registry.register([event])]); assert.equal((await new SignalRegistry(directory).list()).length, 1); }
+  try {
+    const registry = new SignalRegistry(directory);
+    await registry.register([]);
+    assert.deepEqual(await readdir(directory), []);
+    await Promise.all([registry.register([event]), registry.register([event])]);
+    const file = path.join(directory, 'signals.json');
+    const previous = await stat(file);
+    await registry.register([event]);
+    assert.equal((await stat(file)).ino, previous.ino);
+    assert.equal((await new SignalRegistry(directory).list()).length, 1);
+  }
   finally { await rm(directory, { recursive: true }); }
 });
 test('read-only research separates facts, hypotheses and missing data without fabricated observations', () => {

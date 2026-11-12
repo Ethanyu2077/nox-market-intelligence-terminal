@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, open, readFile, readdir, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
+import { randomUUID, createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eventStudy } from "../server/event-study.ts";
@@ -15,7 +17,7 @@ import type { HistoryEvent } from "../shared/history.ts";
 import type { MarketProject } from "../shared/types.ts";
 import type { OrderFlowResponse } from "../shared/orderflow.ts";
 
-const decision = 1_800_000_000_000,
+const decision = Math.floor(Date.now() / 86_400_000) * 86_400_000,
   key = "binance:perpetual:TESTUSDT";
 function snapshot(time: number, value = 100, marketKey = key): HistoryEvent {
   return {
@@ -227,6 +229,96 @@ test("derived outcomes version independently and deduplicate across restart", as
   assert.notEqual(JSON.parse(lines[0]).revision, JSON.parse(lines[1]).revision);
   assert.equal(JSON.stringify(input), frozen);
 });
+test("unchanged outcomes leave the journal and checkpoint untouched; recovery repairs a torn append", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-outcome-batch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const study = eventStudy([signal()], prices(), { horizonMinutes: 15, asOf: decision + 900_000 });
+  const two = { ...study, rows: [study.rows[0], { ...study.rows[0], id: "second" }] };
+  let store = new OutcomeStore(dir);
+  assert.equal(await store.record(two), 2);
+  const outcomes = path.join(dir, "outcomes");
+  const file = path.join(outcomes, new Date(two.asOf).toISOString().slice(0, 10) + ".ndjson");
+  const checkpoint = path.join(outcomes, "revision-checkpoint.json.gz");
+  const info = async (p: string) => {
+    const s = await stat(p, { bigint: true });
+    return [s.size, s.ino, s.mtimeNs];
+  };
+  const original = await Promise.all([info(file), info(checkpoint)]);
+  assert.deepEqual(await Promise.all([store.record(two), store.record(two)]), [0, 0]);
+  assert.deepEqual(await Promise.all([info(file), info(checkpoint)]), original);
+  const changed = { ...two, rows: two.rows.map(row => ({ ...row, label: "changed" })) };
+  assert.equal(await store.record(changed), 2);
+  assert.deepEqual(await info(checkpoint), original[1]);
+  await store.close();
+  const complete = await readFile(file);
+  await appendFile(file, '{"id":"unfinished');
+  store = new OutcomeStore(dir);
+  assert.equal(await store.record(changed), 0);
+  assert.deepEqual(await readFile(file), complete);
+  const tomorrow = { ...changed, asOf: changed.asOf + 86_400_000, rows: study.rows };
+  assert.equal(await store.record(tomorrow), 1);
+  await store.close();
+  store = new OutcomeStore(dir);
+  assert.equal(await store.record(tomorrow), 0);
+  await store.close();
+});
+
+test("imports an existing revision index and can rebuild from sealed outcome partitions", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-outcome-import-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const directory = path.join(dir, "outcomes");
+  await mkdir(directory);
+  const study = eventStudy([signal()], prices(), { horizonMinutes: 15, asOf: decision + 900_000 });
+  const row = study.rows[0];
+  const revision = createHash("sha256").update(JSON.stringify([study.methodology, row])).digest("hex");
+  const day = new Date(study.asOf).toISOString().slice(0, 10);
+  const line = JSON.stringify({ id: row.id, revision, methodology: study.methodology, asOf: study.asOf, row }) + "\n";
+  const archive = path.join(directory, `${day}.ndjson.1-2-${randomUUID()}.${Buffer.byteLength(line)}.x.x.gz`);
+  await writeFile(archive, gzipSync(line));
+  let store = new OutcomeStore(dir);
+  assert.equal(await store.record(study), 0);
+  await store.close();
+  const legacy = path.join(directory, "revision-index.json");
+  await writeFile(legacy, JSON.stringify({ [`${study.methodology}:${row.id}`]: revision }));
+  store = new OutcomeStore(dir);
+  assert.equal(await store.record(study), 0);
+  const updated = { ...study, rows: [{ ...row, label: "new label" }] };
+  assert.equal(await store.record(updated), 1);
+  await store.close();
+  await assert.rejects(stat(legacy), { code: "ENOENT" });
+  store = new OutcomeStore(dir);
+  assert.equal(await store.record(updated), 0);
+  await store.close();
+});
+
+test("a disk-full checkpoint write frees the partial file and retains the old index for retry", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-outcome-full-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const directory = path.join(dir, "outcomes");
+  await mkdir(directory);
+  const index = path.join(directory, "revision-index.json");
+  await writeFile(index, "{}");
+  const handle = await open(index, "r");
+  const prototype = Object.getPrototypeOf(handle) as FileHandle;
+  await handle.close();
+  const write = prototype.writeFile;
+  const failure = t.mock.method(prototype, "writeFile", async function (this: FileHandle) {
+    await write.call(this, "partial");
+    throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+  });
+  const store = new OutcomeStore(dir);
+  const study = eventStudy([signal()], prices(), { horizonMinutes: 15, asOf: decision + 900_000 });
+  await assert.rejects(store.record(study), { code: "ENOSPC" });
+  failure.mock.restore();
+  assert.deepEqual(await readdir(directory), ["revision-index.json"]);
+  assert.equal(await readFile(index, "utf8"), "{}");
+  assert.equal(await store.record(study), 1);
+  await store.close();
+  const restarted = new OutcomeStore(dir);
+  assert.equal(await restarted.record(study), 0);
+  await restarted.close();
+});
+
 test("history research projection filters source and interval without changing frozen payload", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "nox-study-history-")),
     store = new HistoryStore(dir);

@@ -86,6 +86,7 @@ function database() {
   };
   const query = async (sql: string) => {
     state.queries.push(sql);
+    if (sql.startsWith("SELECT hypertable_size")) return { rows: [{ bytes: 0, clock: new Date(2000), floor: null, expired: false }] };
     if (sql.startsWith("SELECT 1 FROM pg_extension"))
       return { rowCount: 1, rows: [{}] };
     if (sql.startsWith("SELECT store_id"))
@@ -279,21 +280,46 @@ test(
             "utf8",
           ),
         );
+      await migrationPool.query(`INSERT INTO nox_history_events(id,kind,market_key,event_time,ingest_time,source,quality,payload)
+        VALUES ('expired','trade','x',now()-interval '400 days',now(),'fixture','live','{}')`);
       await migrationPool.end();
       const dir = await mkdtemp(path.join(tmpdir(), "nox-timescale-"));
       store = new HistoryStore(dir, url, new Pool(options));
       await store.init();
-      await store.reconcileProjects([project], 1000);
-      await store.append(event("real", 1100, null));
-      const result = await store.page("p", { kind: "trade", asOf: 2000 });
+      assert.equal(store.status().timescaleRetention?.paused, null);
+      assert.equal((await admin.query(`SELECT 1 FROM ${schema}.nox_history_events WHERE id='expired'`)).rowCount, 0);
+      assert.ok((await admin.query(`SELECT retained_from FROM ${schema}.nox_history_storage_meta`)).rows[0].retained_from);
+      const start = Date.now() - 2000;
+      await store.reconcileProjects([project], start);
+      await store.append(event("real", start + 100, null));
+      const result = await store.page("p", { kind: "trade", asOf: start + 1000 });
       assert.equal(result.backend, "timescaledb");
       assert.equal(result.items[0].id, "real");
+      const link = async () => (await admin.query(
+        `SELECT xmin::text AS revision, valid_to FROM ${schema}.nox_project_market_links WHERE project_id = $1`,
+        [project.id],
+      )).rows[0];
+      const open = await link();
+      assert.equal(open.valid_to, null);
+      await store.sync();
+      assert.deepEqual(await link(), open);
+      await store.reconcileProjects([], start + 200);
+      await store.sync();
+      const closed = await link();
+      assert.equal(closed.valid_to.getTime(), start + 200);
+      assert.notEqual(closed.revision, open.revision);
+      await store.sync();
+      assert.deepEqual(await link(), closed);
+      // A restored database can lack a link even when it retains the same store ID.
+      await admin.query(`DELETE FROM ${schema}.nox_project_market_links WHERE project_id = $1`, [project.id]);
+      await store.sync();
+      assert.equal((await link()).valid_to.getTime(), start + 200);
       await store.close();
       store = new HistoryStore(dir, url, new Pool(options));
       await store.init();
       assert.equal(store.status().databaseRowsAcknowledged, 1);
       assert.equal(
-        (await store.page("p", { kind: "trade", asOf: 2000 })).items.length,
+        (await store.page("p", { kind: "trade", asOf: start + 1000 })).items.length,
         1,
       );
     } finally {
@@ -303,3 +329,72 @@ test(
     }
   },
 );
+
+test("closed journal gzip preserves read offsets, replication and late arrivals to a sealed day", async () => {
+  const { archiveClosedJournals, journalBytes, journalSegments } = await import('../server/journal-archive.ts');
+  const { utimes, rm } = await import('node:fs/promises');
+  const dir = await mkdtemp(path.join(tmpdir(), 'nox-journal-gzip-'));
+  const daily = path.join(dir, 'history'), db = database(), kind = (name: string) => name.endsWith('-trade.ndjson');
+  const store = new HistoryStore(dir, undefined, db.pool);
+  try {
+    await store.init();
+    const rows = Array.from({length: 40}, (_,index) => ({...event('ordered-' + index, 1000 + index), payload:{ message:'sample'.repeat(100) }}));
+    const acknowledgements = rows.map(row => store.append(row));
+    assert.equal(new Set(acknowledgements).size, 1);
+    await Promise.all(acknowledgements);
+    await store.sync();
+    assert.equal(db.state.inserts, rows.length);
+    await utimes(path.join(daily, '1970-01-01-trade.ndjson'), new Date(0), new Date(0));
+    const [original] = await journalSegments(daily, kind);
+    const plain = await readFile(original.file);
+    await archiveClosedJournals(daily, kind, {indexTime:true});
+    const [archive] = await journalSegments(daily, kind);
+    assert.equal(archive.compressed, true);
+    assert.ok(archive.storedBytes < archive.size / 4);
+    assert.deepEqual([archive.minTime, archive.maxTime], [1000, 1039]);
+    const tail: Buffer[] = [];
+    for await (const chunk of journalBytes(original, 97)) tail.push(chunk);
+    assert.deepEqual(Buffer.concat(tail), plain.subarray(97));
+    // archive and new raw name share the date but have independent checkpoints.
+    await store.append(event('late', 2000));
+    await store.sync();
+    assert.equal(db.state.inserts, rows.length + 1);
+    const measured = await store.measure();
+    assert.equal(measured.pendingBytes, 0);
+    assert.ok(measured.journalBytes < plain.length / 3);
+    db.state.failRead = true;
+    const fallback = await store.page('p', {kind:'trade', from:1010, to:2000, limit:100});
+    assert.equal(fallback.items.length, 31);
+    assert.equal(fallback.items[0].id, 'late');
+    db.state.id = 'db-rebuilt';
+    await store.sync();
+    assert.equal(db.state.inserts, 2 * (rows.length + 1));
+  } finally {
+    await store.close();
+    await rm(dir, {recursive:true, force:true});
+  }
+});
+
+test("archive staging reserves live space and keeps incompressible originals readable", async () => {
+  const { archiveByteBudget, archiveClosedJournals, journalBytes, journalSegments } = await import('../server/journal-archive.ts');
+  const { utimes, writeFile, rm } = await import('node:fs/promises');
+  const {storageReserveBytes} = await import('../server/storage-limits.ts');
+  const reserve = storageReserveBytes();
+  assert.equal(archiveByteBudget(500, reserve - 1), 0);
+  assert.equal(archiveByteBudget(500, reserve + 121), 121);
+  assert.equal(archiveByteBudget(500, reserve * 2), 499);
+  const dir = await mkdtemp(path.join(tmpdir(), 'nox-keep-raw-'));
+  const file = path.join(dir, '2000-01-01-trade.ndjson');
+  try {
+    await writeFile(file, '{}\n');
+    await utimes(file, new Date(0), new Date(0));
+    await archiveClosedJournals(dir, name => name.endsWith('.ndjson'));
+    const items = await journalSegments(dir, name => name.endsWith('.ndjson'));
+    assert.equal(items.length, 1);
+    assert.equal(items[0].compressed, false);
+    const buffers = [];
+    for await (const chunk of journalBytes(items[0])) buffers.push(chunk);
+    assert.equal(Buffer.concat(buffers).toString(), '{}\n');
+    assert.equal((await readdir(dir)).some(name => name.endsWith('.tmp')), false);
+  } finally { await rm(dir, {recursive:true, force:true}); }
+});

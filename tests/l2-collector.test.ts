@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { aggregateBucket, L2Collector } from '../server/l2/collector.ts';
 import type { L2Snapshot } from '../shared/l2.ts';
+import type { HistoryEvent } from '../shared/history.ts';
 import type { MarketProject } from '../shared/types.ts';
 
 const snapshot = (over: Partial<L2Snapshot> = {}): L2Snapshot => ({
@@ -120,19 +121,49 @@ test('health tracks sampling, writes, open buckets and flush', async () => {
 });
 
 test('a failed journal write is retried on the next tick', async () => {
-  let attempts = 0;
+  const attempts: HistoryEvent[] = [];
   const collector = new L2Collector(() => [project('active')], {} as never, {
     intervalMs: 1_000, buckets: [1_000],
     acquire: () => ({ release: () => undefined, snapshot: () => snapshot() }),
-    append: async () => { attempts += 1; if (attempts === 1) throw new Error('disk full'); },
+    append: async event => { attempts.push(event); if (attempts.length <= 6) throw new Error('disk full'); },
   });
   await collector.tick(1_000);
   await collector.tick(2_000).catch(() => undefined);
   assert.equal(collector.health().writeFailures, 1);
-  assert.ok(collector.health().pendingRetries >= 1);
-  await collector.tick(3_000);
+  assert.equal(collector.health().pendingRetries, 1);
+  for (let second = 3; second <= 8; second++) await collector.tick(second * 1000);
+  assert.equal(attempts.length, 7, 'each retry gets a single attempt per tick');
+  assert.deepEqual(attempts.at(-1), attempts[0], 'retry keeps observation time, quality and the complete bucket');
+  assert.equal(attempts[0].quality, 'verified');
+  assert.equal(collector.health().droppedBuckets, 0);
   assert.equal(collector.health().pendingRetries, 0);
   assert.ok(collector.health().writes >= 1);
+  collector.stop();
+});
+
+test('blocked writes keep sampling without unbounded queues or extra writers', { timeout: 5_000 }, async () => {
+  let sequence = 0, complete!: () => void;
+  const blocked = new Promise<void>(resolve => { complete = resolve; });
+  const writes: string[] = [];
+  const collector = new L2Collector(() => [project('active')], {} as never, {
+    intervalMs: 1000, buckets: [1000],
+    acquire: () => ({ release: () => undefined, snapshot: () => snapshot({ sequence: { first: 1, last: ++sequence, previous: null } }) }),
+    append: async event => { writes.push(event.id); await blocked; },
+  });
+  await collector.tick(1000);
+  const firstWrite = collector.tick(2000);
+  const limit = collector.health().maxPendingBuckets;
+  for (let second = 3; second <= limit + 11; second++) await collector.tick(second * 1000);
+  assert.equal(writes.length, 1);
+  assert.equal(collector.health().pendingRetries, limit);
+  assert.equal(collector.health().droppedBuckets, 10);
+  complete();
+  await firstWrite;
+  assert.equal(writes.length, limit);
+  assert.equal(new Set(writes).size, limit);
+  assert.equal(writes[0], 'l2_p1_binance_BTCUSDT_1000_1000');
+  assert.equal(writes.at(-1), `l2_p1_binance_BTCUSDT_1000_${(limit + 10) * 1000}`);
+  assert.equal(collector.health().pendingRetries, 0);
   collector.stop();
 });
 

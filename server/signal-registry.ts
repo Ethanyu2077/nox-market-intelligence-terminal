@@ -14,9 +14,12 @@ export class SignalRegistry {
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
   }
   async register(events: SignalEvent[]) {
+    if (!events.length) return this.queue;
     const work = this.queue.then(async () => {
       const map = new Map((await this.read()).map(s => [s.id, s]));
+      const previousSize = map.size;
       for (const event of events) if (!map.has(event.id)) map.set(event.id, event);
+      if (map.size === previousSize) return;
       await mkdir(this.directory, { recursive: true });
       const target = path.join(this.directory, 'signals.json');
       await writeFile(`${target}.tmp`, JSON.stringify([...map.values()].slice(-2000), null, 2), { mode: 0o600 });

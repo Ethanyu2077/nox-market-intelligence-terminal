@@ -1,5 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { SnapshotBudget } from './snapshot-budget.ts';
+import { storageLimit } from './storage-limits.ts';
 import path from 'node:path';
 
 export interface CachedResult<T> { value: T; at: number; stale: boolean }
@@ -8,6 +10,7 @@ interface CacheOptions<T> { ttlMs: number; timeoutMs?: number; load: () => Promi
 interface Snapshot { at: number; value: unknown }
 interface Entry {
   options: CacheOptions<unknown>;
+  group: string;
   lastRead: number;
   snapshot?: Snapshot;
   stale: boolean;
@@ -20,10 +23,18 @@ const MAX_ACTIVE_KEYS = 128;
 /** Serve a shared snapshot while the server refreshes recently used keys on its own cadence. */
 export class MarketCache {
   private entries = new Map<string, Entry>();
+  private budget?: SnapshotBudget;
   constructor(
     private dir: string | null = path.join(process.env.DATA_DIR ?? '.data', 'cache'),
     private idleMs = 120_000,
-  ) {}
+    maxBytes = storageLimit('NOX_MARKET_CACHE_MAX_BYTES', 128 * 1024 ** 2),
+  ) {
+    if (dir) this.budget = new SnapshotBudget(dir, 'market', maxBytes,
+      group => [...this.entries.values()].some(entry => entry.group === group));
+  }
+
+  initStorage() { return this.budget?.init(); }
+  storageStatus() { return this.budget?.status() ?? null; }
 
   private file(key: string) {
     if (!this.dir) return null;
@@ -42,14 +53,8 @@ export class MarketCache {
   private async persist(key: string, snapshot: Snapshot) {
     const file = this.file(key);
     if (!file) return;
-    const temp = `${file}.${randomUUID()}.tmp`;
-    try {
-      await mkdir(path.dirname(file), { recursive: true });
-      await writeFile(temp, JSON.stringify({ key, ...snapshot }), { mode: 0o600 });
-      await rename(temp, file);
-    } catch {
-      await unlink(temp).catch(() => undefined);
-    }
+    try { await this.budget?.write(path.basename(file), file, JSON.stringify({ key, ...snapshot })); }
+    catch { /* Cached persistence is optional; serve the fresh snapshot from memory. */ }
   }
 
   private schedule(key: string, entry: Entry, delay: number) {
@@ -79,6 +84,7 @@ export class MarketCache {
   }
 
   private async initialize(key: string, entry: Entry): Promise<Snapshot> {
+    await this.initStorage();
     const saved = await this.readDisk(key);
     if (!saved) return this.refresh(key, entry);
     const untilRefresh = entry.options.ttlMs - (Date.now() - saved.at);
@@ -104,7 +110,7 @@ export class MarketCache {
     let entry = this.entries.get(key);
     if (!entry) {
       if (this.entries.size >= MAX_ACTIVE_KEYS) throw new Error('market cache is at capacity');
-      entry = { options, lastRead: Date.now(), stale: false };
+      entry = { options, group: path.basename(this.file(key) ?? ''), lastRead: Date.now(), stale: false };
       this.entries.set(key, entry);
       entry.pending = this.deadline(this.initialize(key, entry), entry);
     }
@@ -117,6 +123,7 @@ export class MarketCache {
   close() {
     for (const entry of this.entries.values()) clearTimeout(entry.timer);
     this.entries.clear();
+    this.budget?.close();
   }
 }
 

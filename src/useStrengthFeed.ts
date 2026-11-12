@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { StrengthHistory, type WatchProject } from '../shared/strength-history';
+import { StrengthHistory, STRENGTH_WINDOW_MS, type WatchProject } from '../shared/strength-history';
 
 /** Collect on the overview's existing socket; copy data for plotting only while the chart is open. */
 export function useStrengthFeed(projects: readonly WatchProject[], open: boolean) {
-  const [history] = useState(() => new StrengthHistory());
+  const [history] = useState(() => new StrengthHistory(Date.now() - STRENGTH_WINDOW_MS));
   const [view, setView] = useState(() => history.snapshot(Date.now()));
   useEffect(() => { history.watch(projects); }, [history, projects]);
   const restore = useCallback((groups: readonly unknown[]) => history.restore(groups, Date.now()), [history]);

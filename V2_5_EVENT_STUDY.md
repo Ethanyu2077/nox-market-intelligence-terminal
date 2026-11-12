@@ -21,7 +21,7 @@ The interactive study purges overlapping project-event horizons within the selec
 
 Median, Q10/Q90 and positive-price frequency are descriptive. Quantiles are not confidence intervals. Positive-price frequency is not strategy win rate. No calibrated edge, executable strategy, fee/funding/slippage simulation or independent-sample confidence interval is supplied. A signed directional scenario is present only for applicable inferred labels in the API; it is not represented as observed position opening or executable return.
 
-Raw background tracking retains overlapping events so future cohort choices do not alter frozen evidence. Derived rows use stable methodology/event-venue/horizon IDs and content-hash revisions. Normal restarts deduplicate unchanged results. Consumers of the append-only outcome journal must deduplicate `(id, revision)` because a crash between journal append and index checkpoint can repeat a revision. The outcome journal currently has no automatic retention or Timescale replication.
+Background tracking retains overlapping observations. Each changed study appends rows with stable methodology/event-venue/horizon IDs and revision hashes. Identical refreshes reuse the retained revisions. The worker expires the oldest derived data at 35 days or under its 256 MiB budget. The original market observations have their own journal and database retention settings. See [Dokku deployment](DOKKU_DEPLOYMENT.md).
 
 ## Bounded history and deployment
 
@@ -37,4 +37,4 @@ No project, symbol, monitoring mode or credential is automatically created or ch
 - Production build and lint pass. Read-only live API checks cover all four existing user-selected projects; their currently insufficient evidence correctly produces zero eligible clusters and null performance statistics.
 - Browser checks cover the new Historical Analysis and Signal Readiness views, Chinese/English, dark/light themes and narrow/desktop layout.
 
-Remaining: real TimescaleDB integration/performance acceptance, longer Active-mode data accumulation, statistically justified uncertainty estimates, durable outcome-query/retention tooling, transition analysis, cost-aware strategy research and broader replay UI. None is claimed complete by this increment.
+Remaining: real TimescaleDB integration/performance acceptance, longer Active-mode data accumulation, statistically justified uncertainty estimates, historical outcome-query tooling, transition analysis, cost-aware strategy research and broader replay UI. None is claimed complete by this increment.

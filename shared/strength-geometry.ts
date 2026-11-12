@@ -43,15 +43,34 @@ export function spreadLabels(targets: readonly number[], top: number, bottom: nu
   return positions;
 }
 
-/** Only report a gap when observations on both sides establish its duration. */
-export function observedStrengthGap(points: readonly { t: number }[], time: number, tolerance: number) {
-  const next = points.findIndex(point => point.t >= time);
-  if (next <= 0 || points[next].t === time) return null;
-  const from = points[next - 1].t;
-  return points[next].t - from > tolerance ? { from, to: points[next].t } : null;
+type QuoteTime = { t: number; compactedBefore?: true };
+
+export function hasMissingQuoteSeconds(before: QuoteTime, after: QuoteTime) {
+  return !after.compactedBefore && Math.floor(after.t / 1000) - Math.floor(before.t / 1000) > 1;
 }
 
-type ProjectedPoint = { x: number; y: number; t: number };
+/** Only report a gap when observations on both sides establish its duration. */
+export function observedStrengthGap(points: readonly QuoteTime[], time: number) {
+  const next = points.findIndex(point => point.t >= time);
+  if (next <= 0 || points[next].t === time) return null;
+  const before = points[next - 1], after = points[next];
+  return hasMissingQuoteSeconds(before, after) ? { from: before.t, to: after.t } : null;
+}
+
+/** Show the exact session boundaries and leave enough space for intermediate clock labels. */
+export function liveTimeTicks(start: number, end: number, width: number) {
+  if (end <= start) return [start];
+  const intervals = Math.max(1, Math.floor(width / 85));
+  const minStep = (end - start) / intervals;
+  const seconds = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400];
+  const step = (seconds.find(value => value * 1000 >= minStep) ?? Math.ceil(minStep / 86_400_000) * 86_400) * 1000;
+  const ticks = [start];
+  for (let t = start + step; t <= end - minStep; t += step) ticks.push(t);
+  ticks.push(end);
+  return ticks;
+}
+
+type ProjectedPoint = QuoteTime & { x: number; y: number };
 const coord = (x: number, y: number) => `${Math.round(x * 100) / 100},${Math.round(y * 100) / 100}`;
 const slope = (a: ProjectedPoint, b: ProjectedPoint) => (b.y - a.y) / (b.x - a.x);
 
@@ -61,16 +80,23 @@ function tangent(left: number, right: number) {
   return Math.sign(left) * Math.min(Math.abs(left), Math.abs(right));
 }
 
-export function strengthPath(points: readonly ProjectedPoint[], gapMs: number): string {
+export function strengthPath(points: readonly ProjectedPoint[], gapMs: number, liveEdgeX?: number): string {
   const commands: string[] = [];
   let start = 0;
   while (start < points.length) {
     let end = start;
-    while (end + 1 < points.length && points[end + 1].t - points[end].t <= gapMs && points[end + 1].x > points[end].x) end++;
+    while (end + 1 < points.length) {
+      const a = points[end], b = points[end + 1];
+      const gap = liveEdgeX === undefined ? b.t - a.t > gapMs : hasMissingQuoteSeconds(a, b);
+      if (gap || b.x <= a.x) break;
+      end++;
+    }
     const first = points[start];
-    // Bridge missing time with a straight segment; fit smooth curves only inside observed runs.
+    if (start > 0 && liveEdgeX !== undefined) {
+      // Keep the last known price until the next observed quote changes it.
+      commands.push('L' + coord(first.x, points[start - 1].y));
+    }
     commands.push((start === 0 ? 'M' : 'L') + coord(first.x, first.y));
-    if (points.length === 1) commands.push('h0');
     let leftSlope = start < end ? slope(first, points[start + 1]) : 0;
     for (let i = start; i < end; i++) {
       const a = points[i], b = points[i + 1];
@@ -86,5 +112,8 @@ export function strengthPath(points: readonly ProjectedPoint[], gapMs: number): 
     }
     start = end + 1;
   }
+  const last = points.at(-1);
+  if (last && liveEdgeX !== undefined && liveEdgeX > last.x) commands.push('L' + coord(liveEdgeX, last.y));
+  else if (points.length === 1) commands.push('h0');
   return commands.join('');
 }

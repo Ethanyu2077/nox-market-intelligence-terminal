@@ -22,7 +22,16 @@ import type { HistoryEvent } from "../shared/history.ts";
 import type {RegimeReport} from '../shared/regime-v2.ts';
 
 const KINDS = ["trade", "liquidation", "snapshot", "regime", "volume", "alignment", "l2"] as const;
+const COLLECTOR_RECOVERY_BYTES = 512 * 1024;
 const isDailyJournal = (name: string) => /^\d{4}-\d{2}-\d{2}-[a-z0-9]+\.ndjson$/.test(name);
+async function* completeTail(chunks: AsyncIterable<Buffer>) {
+  let partial = true;
+  for await (const chunk of chunks) {
+    if (!partial) { yield chunk; continue; }
+    const end = chunk.indexOf(10);
+    if (end >= 0) { partial = false; yield chunk.subarray(end + 1); }
+  }
+}
 function overlaps(file: JournalSegment, from: number, to: number, asOf: number) {
   return !(file.minTime !== undefined && file.minTime > to || file.maxTime !== undefined && file.maxTime < from ||
     isDailyJournal(file.name) && Date.parse(file.name.slice(0, 10)) > asOf);
@@ -86,6 +95,8 @@ export interface HistoryQuery {
   marketKey?: string;
   limit?: number;
   cursor?: string;
+  /** Collector restart hints may use a bounded tail of recent ingest-day journals. */
+  collectorRecoverySince?: number;
   /** Cancel journal scans and active database reads on deadline or caller abort. */
   signal?: AbortSignal;
 }
@@ -146,9 +157,16 @@ export class HistoryStore {
   private timer?: NodeJS.Timeout;
   private error: string | null = null;
   private connected = false;
+  private readonly writes = {
+    journalBatches: 0, journalRowsByKind: {} as Partial<Record<HistoryEvent["kind"], number>>,
+    databaseInsertBatches: 0, databaseRowsInserted: 0, checkpointReplacements: 0,
+  };
   private generation = 0;
   private replicatedGeneration = -1;
+  private readonly lastAppend = new Map<HistoryEvent["kind"], number>();
   private links: Link[] = [];
+  private publishedLinks?: Link[];
+  private publishingLinks?: Promise<void>;
   private namespace: string;
   private databaseId: string | null = null;
   private verifiedDatabase = false;
@@ -205,6 +223,7 @@ export class HistoryStore {
   private async atomic(file: string, value: unknown) {
     await writeFile(`${file}.tmp`, JSON.stringify(value), { mode: 0o600 });
     await rename(`${file}.tmp`, file);
+    if (file === this.checkpointFile) this.writes.checkpointReplacements++;
   }
   private async load<T>(file: string, fallback: T): Promise<T> {
     try {
@@ -258,30 +277,34 @@ export class HistoryStore {
           ),
         ),
     );
-    let changed = false;
-    for (const l of this.links)
-      if (l.to == null && !current.has(`${l.projectId}|${l.marketKey}`)) {
-        l.to = at;
-        changed = true;
+    const changed = await this.enqueue(async () => {
+      const closed = new Set<Link>();
+      const added = new Set(current);
+      for (const link of this.links) {
+        if (link.to !== null) continue;
+        const key = `${link.projectId}|${link.marketKey}`;
+        if (current.has(key)) added.delete(key);
+        else closed.add(link);
       }
-    for (const key of current) {
-      const [projectId, marketKey] = key.split("|");
-      if (
-        !this.links.some(
-          (l) =>
-            l.projectId === projectId &&
-            l.marketKey === marketKey &&
-            l.to == null,
-        )
-      ) {
-        this.links.push({ projectId, marketKey, from: at, to: null });
-        changed = true;
+      if (!closed.size && !added.size) return false;
+      const next = this.links.map(link => closed.has(link) ? { ...link, to: at } : link);
+      for (const key of added) {
+        const [projectId, marketKey] = key.split("|");
+        next.push({projectId, marketKey, from: at, to: null});
       }
-    }
-    if (changed) {
-      this.generation++;
-      const saved = structuredClone(this.links);
-      await this.enqueue(() => this.atomic(this.linksFile, saved));
+      await this.atomic(this.linksFile, next);
+      this.links = next;
+      return true;
+    });
+    // Shared events use membership intervals from the database. Publish an edit at
+    // its source; a concurrent pass may already have captured the previous list.
+    if (changed && this.pool) {
+      const work = this.sync().then(() => {
+        if (this.connected && this.publishedLinks !== this.links) return this.sync();
+      });
+      this.publishingLinks = work;
+      try { await work; }
+      finally { if (this.publishingLinks === work) this.publishingLinks = undefined; }
     }
   }
   private enqueue<T>(operation: () => Promise<T>) {
@@ -389,7 +412,6 @@ export class HistoryStore {
     }
     this.queuedBytes += bytes;
     const current = this.batches.get(file);
-    this.generation++;
     if (current && current.lines.length < 128 && current.bytes < 256 * 1024) {
       current.lines.push(line);
       current.bytes += bytes;
@@ -424,6 +446,9 @@ export class HistoryStore {
         this.rawSizes.set(file, (this.rawSizes.get(file) ?? 0) + batch.bytes);
         this.freeBytes -= batch.bytes;
         this.writeWarning = null;
+        this.lastAppend.set(event.kind, ++this.generation);
+        this.writes.journalBatches++;
+        this.writes.journalRowsByKind[event.kind] = (this.writes.journalRowsByKind[event.kind] ?? 0) + batch.lines.length;
       } finally { this.queuedBytes -= batch.bytes; }
     });
     this.batches.set(file, batch);
@@ -451,17 +476,17 @@ export class HistoryStore {
       },
     });
   }
-  private async files(kind?: HistoryEvent["kind"]) {
+  private async files(kind?: HistoryEvent["kind"], firstIngestDay?: string) {
     const kinds = kind ? [kind] : KINDS;
     const [legacy, daily] = await Promise.all([
       journalSegments(this.directory, name => kinds.some(k => name === `history-${k}.ndjson`)),
       journalSegments(path.join(this.directory, "history"), name =>
-        isDailyJournal(name) && kinds.some(k => name.endsWith(`-${k}.ndjson`))),
+        isDailyJournal(name) && (!firstIngestDay || name.slice(0, 10) >= firstIngestDay) && kinds.some(k => name.endsWith(`-${k}.ndjson`))),
     ]);
     return [...legacy.map(item => ({...item, dbKey: item.key})), ...daily.map(item => ({...item, dbKey: "history/" + item.key}))];
   }
-  private async queryFiles(kind: HistoryEvent["kind"], pending?: Record<string, Checkpoint>) {
-    const files = await this.files(kind);
+  private async queryFiles(kind: HistoryEvent["kind"], pending?: Record<string, Checkpoint>, firstIngestDay?: string) {
+    const files = await this.files(kind, firstIngestDay);
     const saved = pending && resolveRotatedCheckpoints(files, pending);
     return files.map(file => {
       const start = saved ? checkpointFor(file,saved)?.offset ?? 0 : 0;
@@ -491,12 +516,16 @@ export class HistoryStore {
     const page = await this.page(projectId, { kind, asOf, limit });
     return page.items.reverse();
   }
+  private pendingReadOffsets(kind: HistoryEvent["kind"]) {
+    // Fresh writes are already durable in the outbox. A page can read that suffix
+    // while the independent replication clock batches it for TimescaleDB.
+    if (this.connected && (this.replicationPaused || this.replicatedGeneration < (this.lastAppend.get(kind) ?? 0)))
+      return this.checkpoints;
+  }
   async sampleSnapshots(projectId:string,size:number,asOf=Date.now()) {
     if(!Number.isFinite(size)||size<300_000)throw new Error('Invalid sample interval');
-    await this.queue;if(this.pool)await this.sync();
-    const pending = this.replicationPaused ? this.checkpoints : undefined;
-    const read = () => this.readSnapshotSamples(projectId,size,asOf,pending);
-    return pending ? this.readers.read(read) : read();
+    await this.queue;
+    return this.readers.read(() => this.readSnapshotSamples(projectId,size,asOf,this.pendingReadOffsets('snapshot')));
   }
   private async readSnapshotSamples(projectId: string, size: number, asOf: number, protectedOffsets?: Record<string,Checkpoint>) {
     const end=Math.floor((asOf-90_000)/size)*size,from=end-202*size-90_000;
@@ -519,7 +548,7 @@ export class HistoryStore {
       }
       return [...samples.values()].sort((a,b)=>a.eventTime-b.eventTime);
     };
-    return protectedOffsets ? scan() : this.readers.read(scan);
+    return scan();
   }
   /** Runs one query on a dedicated connection and cancels it in PostgreSQL on abort. */
   private async queryWithCancel(text: string, values: unknown[], signal?: AbortSignal) {
@@ -563,6 +592,7 @@ export class HistoryStore {
 
   async page(projectId: string, query: HistoryQuery) {
     await this.queue;
+    if (this.publishingLinks) await this.publishingLinks;
     if (query.signal?.aborted) throw new Error('cancelled');
     const cursor = decode(query.cursor),
       asOf = query.asOf ?? cursor?.asOf ?? Date.now(),
@@ -573,17 +603,9 @@ export class HistoryStore {
       throw new Error("Invalid historical cursor cutoff");
     if (!Number.isFinite(from) || !Number.isFinite(to) || from > to)
       throw new Error("Invalid historical time range");
-    const requiredGeneration = this.generation;
-    if (this.pool) {
-      await this.sync();
-      if (this.connected && !this.replicationPaused && this.replicatedGeneration < requiredGeneration)
-        await this.sync();
-    }
     // A concurrent replay may acknowledge and retire a pending partition after the
     // database SELECT. Pin local sources across both halves of a hybrid read.
-    const pending = this.replicationPaused ? this.checkpoints : undefined;
-    const read = () => this.readPage(projectId, query, cursor, asOf, from, to, limit, pending);
-    return pending ? this.readers.read(read) : read();
+    return this.readers.read(() => this.readPage(projectId, query, cursor, asOf, from, to, limit, this.pendingReadOffsets(query.kind)));
   }
   private async readPage(projectId: string, query: HistoryQuery, cursor: Position | null,
     asOf: number, from: number, to: number, limit: number, pending?: Record<string,Checkpoint>) {
@@ -632,6 +654,7 @@ export class HistoryStore {
       }
     }
     const pendingOnly = backend === "timescaledb" ? pending : undefined;
+    let collectorTailIncomplete = false;
     if (backend === "local-journal" || pendingOnly) {
       query.signal?.throwIfAborted();
       const scan = async () => {
@@ -647,14 +670,29 @@ export class HistoryStore {
         };
         // Scan hot/unindexed files first. Only measured event-time bounds can exclude a cold file.
         trim();
-        const files = (await this.queryFiles(query.kind,pendingOnly))
+        const firstIngestDay = query.collectorRecoverySince === undefined ? undefined
+          : new Date(query.collectorRecoverySince).toISOString().slice(0, 10);
+        const recovery = firstIngestDay !== undefined;
+        let remaining = COLLECTOR_RECOVERY_BYTES;
+        const files = (await this.queryFiles(query.kind,pendingOnly,firstIngestDay))
           .map((file, order) => ({ file, order, maxTime: file.maxTime ?? Infinity }))
           .filter(({ file }) => overlaps(file, from, Math.min(to, cursor?.time ?? to), asOf))
-          .sort((a, b) => a.maxTime === b.maxTime ? b.order - a.order : b.maxTime - a.maxTime);
+          .sort((a, b) => recovery || a.maxTime === b.maxTime ? b.order - a.order : b.maxTime - a.maxTime);
         for (const { file, order, maxTime } of files) {
           if (query.signal?.aborted) throw new Error('cancelled');
-          if (cutoff && maxTime < cutoff.eventTime) break;
-          for await (const { event: e } of this.queryRows(file,file.start,pendingOnly ? reason => { fallback = reason; } : undefined)) {
+          if (!recovery && cutoff && maxTime < cutoff.eventTime) break;
+          let records = this.queryRows(file,file.start,pendingOnly ? reason => { fallback = reason; } : undefined);
+          if (recovery) {
+            if (!remaining) { collectorTailIncomplete = true; break; }
+            // Gzip has to decompress from the beginning even for a suffix read.
+            if (file.compressed && file.size > remaining) { collectorTailIncomplete = true; continue; }
+            const offset = Math.max(file.start, file.size - remaining);
+            if (file.size > remaining) collectorTailIncomplete = true;
+            const chunks = journalBytes(file, offset, remaining);
+            records = parseJournalRecords(offset > file.start ? completeTail(chunks) : chunks, file.name, file.identity);
+            remaining -= file.compressed ? file.size : file.size - offset;
+          }
+          for await (const { event: e } of records) {
             query.signal?.throwIfAborted();
             if (pendingOnly && this.timescaleRetention.expired(e.eventTime)) continue;
             if (cutoff && e.eventTime < cutoff.eventTime) continue;
@@ -705,13 +743,14 @@ export class HistoryStore {
         }
         return [...matches.values()].map(match => match.event).sort(compare);
       };
-      rows = pending ? await scan() : await this.readers.read(scan);
+      rows = await scan();
     }
     const more = rows.length > limit,
       items = rows.slice(0, limit),
       last = items.at(-1);
     return {
       items,
+      ...(query.collectorRecoverySince !== undefined ? {collectorTailIncomplete} : {}),
       backend,
       fallback,
       asOf,
@@ -764,8 +803,8 @@ export class HistoryStore {
     }
   }
 
-  // Split only deterministic data/constraint failures. Each committed prefix has
-  // its own checkpoint; a lost COMMIT response or checkpoint write replays safely.
+  // Split only deterministic data/constraint failures. Stage each committed prefix;
+  // the bounded replay pass publishes all its byte offsets together before releasing its lease.
   private async commitRows(client: PoolClient, identity: string, file: StoredJournal, rows: JournalRow[], start: number): Promise<void> {
     if (!rows.length) return;
     await this.timescaleRetention.check(client, identity);
@@ -792,11 +831,13 @@ export class HistoryStore {
         return "(" + Array.from({length:9}, (_, i) => "$" + (first+i+1)).join(",") + ")";
       });
       await client.query("BEGIN");
+      let inserted = 0;
       try {
-        await client.query(
+        const result = await client.query(
           "INSERT INTO nox_history_events (id,kind,market_key,project_id,event_time,ingest_time,source,quality,payload) VALUES " +
           tuples.join(",") + " ON CONFLICT (event_time,id) DO NOTHING", values,
         );
+        inserted = result.rowCount ?? 0;
       } catch (error) {
         await client.query("ROLLBACK");
         const code = safeCode(error);
@@ -808,14 +849,14 @@ export class HistoryStore {
         await client.query("ROLLBACK");
         throw error;
       }
+      this.writes.databaseInsertBatches++;
+      this.writes.databaseRowsInserted += inserted;
       this.timescaleRetention.recordBatch(bytes, accepted.length);
     }
     const checkpoint = checkpointFor(file, this.checkpoints);
-    const next = { ...this.checkpoints, [file.dbKey]: {
+    this.checkpoints = { ...this.checkpoints, [file.dbKey]: {
       offset, identity: file.identity, birth: file.birth, rows: (checkpoint?.rows ?? 0) + accepted.length,
     }};
-    await this.atomic(this.checkpointFile, {databaseId: this.databaseId, files: next});
-    this.checkpoints = next;
   }
 
   private async splitRejectedBatch(client: PoolClient, identity: string, file: StoredJournal, rows: JournalRow[], start: number, reason: string) {
@@ -825,16 +866,41 @@ export class HistoryStore {
     await this.commitRows(client,identity,file,rows.slice(mid),rows[mid-1].offset);
   }
 
+  private async syncMarketLinks(client: PoolClient, links: Link[]) {
+    if (!links.length) return;
+    const values = [
+      links.map(l => l.projectId), links.map(l => l.marketKey),
+      links.map(l => new Date(l.from)), links.map(l => l.to == null ? null : new Date(l.to)),
+    ];
+    // A read-only comparison also detects a partially restored membership table
+    // with its original database identity. Only changed intervals reach an INSERT.
+    const input = `SELECT DISTINCT ON (project_id, market_key, valid_from) project_id, market_key, valid_from, valid_to
+      FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::timestamptz[])
+        WITH ORDINALITY AS input(project_id, market_key, valid_from, valid_to, seq)
+      ORDER BY project_id, market_key, valid_from, seq DESC`;
+    const difference = `SELECT l.project_id, l.market_key, l.valid_from, l.valid_to FROM (${input}) l
+      WHERE NOT EXISTS (SELECT 1 FROM nox_project_market_links old
+        WHERE (old.project_id, old.market_key, old.valid_from) = (l.project_id, l.market_key, l.valid_from)
+          AND old.valid_to IS NOT DISTINCT FROM l.valid_to)`;
+    const check = await client.query(difference + ' LIMIT 1', values);
+    if (!check.rows.length) return;
+    await client.query(`INSERT INTO nox_project_market_links AS stored (project_id, market_key, valid_from, valid_to)
+      ${difference}
+      ON CONFLICT (project_id, market_key, valid_from) DO UPDATE SET valid_to = EXCLUDED.valid_to
+      WHERE stored.valid_to IS DISTINCT FROM EXCLUDED.valid_to`, values);
+  }
+
   private async replicate() {
     let stage = "connecting to TimescaleDB";
     let more = false, batches = 0, reclaimCache = false;
     try {
-      const generation = this.generation;
       await this.queue;
       await this.readers.read(async () => {
         this.verifiedDatabase = false;
         const client = await this.pool!.connect();
+        const previousOffsets = this.checkpoints, previousIdentity = this.databaseId;
         let reusable = true;
+        let failure: {error: unknown} | undefined;
         try {
           stage = "checking TimescaleDB extension";
           if (
@@ -856,48 +922,24 @@ export class HistoryStore {
             this.checkpoints = {};
             this.databaseId = identity;
             this.nextPartition = undefined;
+            this.replicatedGeneration = -1;
           }
           this.verifiedDatabase = true;
+          stage = "replicating project market links";
+          const links = this.links;
+          await this.syncMarketLinks(client, links);
+          this.publishedLinks = links;
           stage = "checking history retention";
           await this.timescaleRetention.check(client, identity);
-          stage = "replicating project market links";
-          if (this.links.length)
-            await client.query(
-              // Match before inserting so idle syncs don't lock or rewrite unchanged rows.
-              // Keep checking the database so a restored/missing interval is repaired on the next sync.
-              `WITH links AS (
-                SELECT DISTINCT ON (project_id, market_key, valid_from) project_id, market_key, valid_from, valid_to
-                FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::timestamptz[])
-                  WITH ORDINALITY AS input(project_id, market_key, valid_from, valid_to, seq)
-                ORDER BY project_id, market_key, valid_from, seq DESC
-              )
-              INSERT INTO nox_project_market_links AS stored (project_id, market_key, valid_from, valid_to)
-              SELECT project_id, market_key, valid_from, valid_to FROM links AS l
-              WHERE NOT EXISTS (
-                SELECT 1 FROM nox_project_market_links AS old
-                WHERE (old.project_id, old.market_key, old.valid_from) = (l.project_id, l.market_key, l.valid_from)
-                  AND old.valid_to IS NOT DISTINCT FROM l.valid_to
-              )
-              ON CONFLICT (project_id, market_key, valid_from) DO UPDATE SET valid_to = EXCLUDED.valid_to
-              WHERE stored.valid_to IS DISTINCT FROM EXCLUDED.valid_to`,
-              [
-                this.links.map(l => l.projectId),
-                this.links.map(l => l.marketKey),
-                this.links.map(l => new Date(l.from)),
-                this.links.map(l => l.to == null ? null : new Date(l.to)),
-              ],
-            );
           stage = "listing history partitions";
+          const generation = this.generation;
           const files = await this.files();
           let resolved = resolveRotatedCheckpoints(files, this.checkpoints);
           // A restored volume can have checkpoints for partitions it no longer contains.
           const present = new Set(files.map(file => file.dbKey));
           if (Object.keys(resolved).some(key => !present.has(key)))
             resolved = Object.fromEntries(Object.entries(resolved).filter(([key]) => present.has(key)));
-          if (resolved !== this.checkpoints) {
-            await this.atomic(this.checkpointFile, { databaseId: this.databaseId, files: resolved });
-            this.checkpoints = resolved;
-          }
+          this.checkpoints = resolved;
           const remaining = files.filter(f => (checkpointFor(f,this.checkpoints)?.offset ?? 0) < f.size);
           const next = remaining.findIndex(f => f.dbKey === this.nextPartition);
           const pending = next > 0 ? remaining.slice(next).concat(remaining.slice(0,next)) : remaining;
@@ -921,7 +963,6 @@ export class HistoryStore {
                 const rewind = async () => {
                   const corrected = {...this.checkpoints};
                   delete corrected[file.dbKey];
-                  await this.atomic(this.checkpointFile, {databaseId: this.databaseId, files: corrected});
                   this.checkpoints = corrected;
                   start = 0;
                 };
@@ -968,10 +1009,22 @@ export class HistoryStore {
         } catch (error) {
           // A lost response can leave a server-side transaction open. Discard the session before retrying.
           reusable = error instanceof TimescaleWritesPaused;
-          throw error;
+          failure = {error};
         } finally {
           client.release(!reusable);
         }
+        if (this.checkpoints !== previousOffsets || this.databaseId !== previousIdentity) {
+          try {
+            // A crash before rename replays the committed prefix via ON CONFLICT.
+            await this.atomic(this.checkpointFile, {databaseId: this.databaseId, files: this.checkpoints});
+          } catch (error) {
+            this.checkpoints = this.databaseId === previousIdentity ? previousOffsets : {};
+            this.replicatedGeneration = -1;
+            stage = 'saving history replay offsets';
+            throw error;
+          }
+        }
+        if (failure) throw failure.error;
       });
     } catch (error) {
       if (error instanceof TimescaleWritesPaused) {
@@ -1040,6 +1093,7 @@ export class HistoryStore {
     return {
       mode: this.pool ? "timescaledb-with-local-outbox" : "local-journal",
       connected: this.connected,
+      writes: { ...this.writes, journalRowsByKind: { ...this.writes.journalRowsByKind } },
       error: this.error,
       timescaleRetention: this.pool ? this.timescaleRetention.status() : null,
       databaseRowsAcknowledged: Object.values(this.checkpoints).reduce(

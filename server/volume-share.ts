@@ -80,7 +80,7 @@ export function summarizeVolumeShareHistory(projectId: string, records: VolumeRe
     krwVenues,
     methodology: [
       'Share deltas use locally collected per-venue volume records only; they describe selected covered venues, not the global market.',
-      'Records are as-of 24h rolling counters, not event-time-aligned bars; sampling cadence depends on collection mode (Active 30s / Standard 5m).',
+      'Records contain 24-hour rolling counters observed at the displayed time. Both collection modes now sample every five minutes.',
       'At least two records are required before any delta is shown; one sample is displayed as insufficient history.',
       'A share shift is context for further study (venue migration, listing/MM effects), not evidence of spot-led or leverage-led price discovery.',
     ],

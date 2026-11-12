@@ -85,11 +85,13 @@ export async function journalSegments(dir: string, accepts: (name: string) => bo
 }
 
 /** Open the listed inode even if it became an archive while the reader was waiting. */
-export async function* journalBytes(listed: JournalSegment, start = 0): AsyncGenerator<Buffer> {
+export async function* journalBytes(listed: JournalSegment, start = 0, maxDecodedBytes = Infinity): AsyncGenerator<Buffer> {
   if (start > listed.size) throw new Error('Journal truncated after checkpoint');
   if (start === listed.size) return;
   let item = listed;
   for (;;) {
+    // A bounded restart lookup can race a raw partition being replaced by gzip.
+    if (item.compressed && item.size > maxDecodedBytes) return;
     let handle;
     try { handle = await open(item.file, 'r'); }
     catch (e) { if (!missing(e)) throw e; }
@@ -99,10 +101,14 @@ export async function* journalBytes(listed: JournalSegment, start = 0): AsyncGen
         if (item.key !== item.name || (item.identity === info.dev + ':' + info.ino && item.birth === Math.round(info.birthtimeMs * 1000))) {
           if (!item.compressed && info.size < listed.size) throw new Error('Journal truncated during read');
           const raw = handle.createReadStream(item.compressed ? { autoClose: false } : { autoClose: false, start, end: listed.size - 1 });
-          const stream = item.compressed ? raw.compose(createGunzip()) : raw;
+          const unzip = item.compressed ? createGunzip() : undefined;
+          const stream = unzip ?? raw;
+          // Own the pipeline until both streams close, including an early reader
+          // return on a corrupt row. A composed stream can emit a late AbortError.
+          const transfer = unzip ? pipeline(raw, unzip).catch((error: Error) => error) : undefined;
           let skip = item.compressed ? start : 0, remaining = listed.size - start, decoded = 0;
           try {
-            for await (const buffer of stream) {
+            for await (const buffer of stream.iterator({destroyOnReturn: false})) {
               const chunk = buffer as Buffer;
               decoded += chunk.length;
               if (item.compressed && decoded > item.size) throw new Error('Invalid journal archive length');
@@ -112,8 +118,10 @@ export async function* journalBytes(listed: JournalSegment, start = 0): AsyncGen
               remaining -= data.length;
               if (data.length) yield data;
             }
+            const error = await transfer;
+            if (error) throw error;
             if (remaining || item.compressed && decoded !== item.size) throw new Error('Incomplete journal archive');
-          } finally { stream.destroy(); raw.destroy(); }
+          } finally { stream.destroy(); raw.destroy(); await transfer; }
           return;
         }
       } finally { await handle.close(); }

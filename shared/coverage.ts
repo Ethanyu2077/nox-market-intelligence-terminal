@@ -4,6 +4,7 @@ export type CoverageKind = 'snapshot' | 'volume' | 'alignment' | 'trade';
 
 export interface CoverageKindReport {
   kind: CoverageKind;
+  expectedCadenceMs: number | null;
   sampledEvents: number;
   from: number | null;
   to: number | null;

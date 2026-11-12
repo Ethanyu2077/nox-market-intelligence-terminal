@@ -135,6 +135,7 @@ for (let i = 0; i < 10; i++) {
       budgets.every(b => Number.isFinite(b?.bytes) && b.bytes <= b.maxBytes) &&
       Number.isFinite(s.timescaleRetention?.measuredBytes) && s.timescaleRetention.measuredBytes <= s.timescaleRetention.maxBytes,
     acknowledged: s.databaseRowsAcknowledged, refused: s.retention?.refusedRows,
+    historyWrites: s.writes, orderFlowWrites: s.orderFlow?.writes,
     syncError: s.error, quotaPause: s.timescaleRetention?.paused, retentionError: s.retention?.error};
   console.log(JSON.stringify(latest));
   if (latest.syncError?.startsWith('Journal recovery pending')) issues.add(latest.syncError);

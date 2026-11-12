@@ -117,3 +117,32 @@ export function strengthPath(points: readonly ProjectedPoint[], gapMs: number, l
   else if (points.length === 1) commands.push('h0');
   return commands.join('');
 }
+
+// strengthPath emits one L or C for the newest observation plus an optional
+// flat extension. Walk back only those commands; retain all earlier tangents.
+function segmentStart(path: string, end: number) {
+  for (let i = end - 1; i >= 0; i--) if (path[i] === 'L' || path[i] === 'C') return i;
+  return -1;
+}
+
+export function movingStrengthTail(path: string, previous: ProjectedPoint | undefined, last: ProjectedPoint, tipX: number) {
+  if (!previous) return null;
+  const held = tipX > last.x;
+  const end = held ? segmentStart(path, path.length) : path.length;
+  const begin = segmentStart(path, end);
+  if (begin < 0) return null;
+  const startX = hasMissingQuoteSeconds(previous, last) || last.x <= previous.x ? last.x : previous.x;
+  const start = 'M' + coord(startX, previous.y) + path[begin];
+  const coords = path.slice(begin + 1, end).split(/[ ,]/).map(Number);
+  return {
+    prefix: path.slice(0, begin),
+    frame(fromY: number, progress: number, tipY: number) {
+      const parts: string[] = [];
+      for (let i = 0; i < coords.length; i += 2) {
+        const initial = previous.y + (fromY - previous.y) * ((i + 2) / coords.length);
+        parts.push(coord(coords[i], initial + (coords[i + 1] - initial) * progress));
+      }
+      return start + parts.join(' ') + (held ? 'L' + coord(tipX, tipY) : '');
+    },
+  };
+}

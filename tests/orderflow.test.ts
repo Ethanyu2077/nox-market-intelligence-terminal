@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FLOW_INTERVALS, type FlowTrade, type FlowVenue } from '../shared/orderflow.ts';
+import { FLOW_INTERVALS, type FlowTrade, type FlowVenue, type LiquidationEvent } from '../shared/orderflow.ts';
 import { aggregateFlow, clusterFlowTrades, flowBuckets, flowDivergences, robustZ, timeGrid, tradeSizeRatio } from '../server/orderflow-calculations.ts';
 import { normalizeFlowTrade, normalizeLiquidation, orderFlowCapability } from '../server/orderflow-adapters.ts';
 import { DEFAULT_FLOW_LAYOUT, isFlowLayout } from '../shared/flow-layout.ts';
@@ -205,4 +205,39 @@ test('shared collection deduplicates REST/WebSocket trades, separates types, and
     // Repeated REST overlap and a graceful close leave the existing checkpoints untouched.
     assert.deepEqual(await identities(), saved);
   } finally { await service.close(); await rm(directory, { recursive: true }); }
+});
+
+test('live tape and liquidations are immediate while checkpoints coalesce until a minute or shutdown', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const directory = await mkdtemp(path.join(tmpdir(), 'nox-flow-clock-'));
+  const venue: ProjectMarket = { ...market, marketType: 'perpetual' };
+  const project = { id: 'p', markets: [venue], monitoring: { streamingEnabled: true } } as MarketProject;
+  const at = Date.now(), archived: string[] = [];
+  let emitTrade!: (event: FlowTrade) => void, emitLiquidation!: (event: LiquidationEvent) => void;
+  let ready!: () => void;
+  const started = new Promise<void>(resolve => { ready = resolve; });
+  const service = new OrderFlowService(directory, {
+    verify: async m => ({ ...m, venue: m.exchange, nativeSymbol: m.symbol, settlement: 'USDT', contractType: '', tickSize: 0, stepSize: 0 }),
+    recent: async () => [],
+    stream: (_market, _instrument, onTrade, _state, onLiquidation) => {
+      emitTrade = onTrade; emitLiquidation = onLiquidation; ready(); return () => {};
+    },
+  }, (kind, event) => { if (kind === 'liquidation') archived.push(event.id); });
+  t.after(async () => { await service.close(); await rm(directory, {recursive:true,force:true}); });
+  service.acquire(project);
+  await started;
+  for (let i = 0; i < 4; i++) {
+    emitTrade(trade({id:String(i),time:at+i,marketType:'perpetual'}));
+    if (i < 3) t.mock.timers.tick(15_000);
+  }
+  emitLiquidation({ id:'L',exchange:'binance',symbol:venue.symbol,time:at,price:2,quantity:10,notional:20,orderSide:'sell',liquidatedSide:'long' });
+  assert.deepEqual(archived, ['L']);
+  assert.equal(service.snapshot(project,'1m','window',at+100).trades.length, 4);
+  assert.equal(service.storageStatus().writes.base, 0);
+  t.mock.timers.tick(15_000);
+  for (let i = 0; i < 100 && service.storageStatus().writes.base === 0; i++) await new Promise(resolve => setTimeout(resolve,5));
+  assert.equal(service.storageStatus().writes.base, 1);
+  emitTrade(trade({id:'last',time:at+4,marketType:'perpetual'}));
+  await service.close();
+  assert.equal(service.storageStatus().writes.delta, 1);
 });

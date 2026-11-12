@@ -29,10 +29,15 @@
   font-variant-numeric: tabular-nums;
 }
 .strength-value { font-weight: 600; }
-.strength-highlight { filter: drop-shadow(0 0 3px currentColor); }
+.strength-trace-glow { filter: drop-shadow(0 0 3px currentColor); }
+.strength-strong .strength-trace-glow { filter: drop-shadow(0 0 4px currentColor); }
 .strength-live-inline .strength-grid line, .strength-live-inline .strength-time line { stroke: var(--line-soft); }
 .strength-live-inline .strength-zero line { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 4 4; }
 .strength-live-inline .strength-svg .strength-grid text, .strength-live-inline .strength-svg .strength-time text, .strength-live-inline .strength-svg .strength-cursor text { fill: var(--muted); font-size: 10px; }
+.strength-session .strength-time line { opacity: .32; }
+.strength-session .strength-grid line { opacity: .72; }
+.strength-session .strength-zero line { stroke: var(--accent); stroke-width: 1.25; stroke-dasharray: none; opacity: .58; }
+.strength-session .strength-svg .strength-zero text { fill: var(--accent); }
 .strength-live-empty {
   position: absolute;
   top: 50%;

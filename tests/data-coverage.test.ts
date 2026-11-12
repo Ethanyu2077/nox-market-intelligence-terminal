@@ -12,14 +12,16 @@ const at = (secondsAgo: number) => ({ eventTime: NOW - secondsAgo * 1000, ingest
 
 test('coverage states distinguish live, gaps, stale and empty streams', () => {
   const healthy = Array.from({ length: 5 }, (_, index) => at((4 - index) * 30));
-  const gappy = [at(600), at(300), at(30)];
+  const gappy = [at(1900), at(1000), at(30)];
   const report = summarizeDataCoverage('p', 'active', { snapshot: healthy, volume: gappy, alignment: [], trade: healthy }, NOW);
   const snapshot = report.kinds.find((kind) => kind.kind === 'snapshot')!;
   assert.equal(snapshot.state, 'live');
   assert.equal(snapshot.sampledEvents, 5);
   assert.equal(snapshot.gaps, 0);
+  assert.equal(snapshot.expectedCadenceMs, 60_000);
   const volume = report.kinds.find((kind) => kind.kind === 'volume')!;
   assert.equal(volume.state, 'partial');
+  assert.equal(volume.expectedCadenceMs, 300_000);
   assert.ok(volume.gaps >= 2);
   assert.ok((volume.largestIngestGapMs ?? 0) > 75_000);
   const alignment = report.kinds.find((kind) => kind.kind === 'alignment')!;
@@ -28,6 +30,8 @@ test('coverage states distinguish live, gaps, stale and empty streams', () => {
   assert.ok(report.summary.notes.some((note) => note.includes('missing required')));
   const stale = summarizeDataCoverage('p', 'active', { snapshot: [at(400)], volume: [at(100)], alignment: [at(100)] }, NOW);
   assert.equal(stale.kinds[0].state, 'stale');
+  const fiveMinute = summarizeDataCoverage('p', 'active', { volume: [at(810), at(510), at(210)] }, NOW);
+  assert.equal(fiveMinute.kinds.find(kind => kind.kind === 'volume')!.state, 'live');
 });
 
 test('paused mode reports cadence-free coverage instead of pretending freshness', () => {

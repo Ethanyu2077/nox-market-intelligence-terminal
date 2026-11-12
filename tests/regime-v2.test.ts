@@ -207,6 +207,95 @@ test("recorder freezes first input set and deduplicates across restarts", async 
   }
 });
 
+test("multiple projects and windows share one progress write and recover before that write", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-regime-batched-"));
+  t.after(() => rm(dir, {recursive:true, force:true}));
+  const history = new HistoryStore(dir), hints = path.join(dir,"regime-v2-windows.json");
+  await history.init();
+  try {
+    const worker = new RegimeRecorder(dir,history);
+    const reports = ["p","q"].map(id => (Object.keys(REGIME_WINDOWS) as RegimeWindow[]).map(interval => {
+      const f = fixture(interval);
+      return evaluateRegimeV2({...project(), id}, f.history, f.flow, interval, f.now);
+    }));
+    for (const batch of reports) assert.equal(await worker.recordBatch(batch), 4);
+    await assert.rejects(readFile(hints), {code:"ENOENT"});
+
+    // Restart after the journals were written but before the collector flushed their hints.
+    const recovered = new RegimeRecorder(dir,history);
+    for (const batch of reports) await recovered.recordBatch(batch.map(r => ({...r,label:"later evaluation"})));
+    await recovered.flush();
+    assert.equal(Object.keys(JSON.parse(await readFile(hints,"utf8"))).length, 8);
+    for (const id of ["p","q"]) {
+      const rows = await history.read(id,"regime");
+      assert.equal(rows.length,4);
+      assert.ok(rows.every(row => (row.payload as {label:string}).label !== "later evaluation"));
+    }
+    const before = await stat(hints);
+    assert.equal(await recovered.recordBatch(reports.flat()), 0);
+    await recovered.flush();
+    assert.equal((await stat(hints)).ino, before.ino);
+  } finally { await history.close(); }
+});
+
+test("an offline restart preserves an uncached frozen decision and admits new windows", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-regime-recovery-"));
+  t.after(() => rm(dir,{recursive:true,force:true}));
+  const boundary = Math.floor(Date.now() / REGIME_WINDOWS["15m"]) * REGIME_WINDOWS["15m"];
+  t.mock.method(Date, "now", () => boundary + 1_000);
+  const f = fixture(), report = evaluateRegimeV2(project(), f.history, f.flow,"5m",f.now);
+  const g = fixture("15m");
+  const fresh = evaluateRegimeV2(project(), g.history, g.flow, "15m", boundary + 90_000);
+  const ids = new Set<string>();
+  let connected = false;
+  const history = {
+    page: async (_project:string, query:{id:string}) => ({
+      fallback: connected ? null : "Database connection lost",
+      items: (connected && query.id === report.id) || ids.has(query.id) ? [{id:query.id}] : [],
+    }),
+    append: async ({id}:HistoryEvent) => { assert.notEqual(id, report.id); ids.add(id); },
+  } as unknown as HistoryStore;
+  const recorder = new RegimeRecorder(dir,history);
+  await assert.rejects(recorder.recordBatch([{...report, label:"later evaluation"}, fresh]), /verify/);
+  await recorder.flush();
+  assert.deepEqual([...ids], [fresh.id]);
+  assert.equal(await recorder.isRecorded(fresh.projectId, fresh.interval, fresh.windowEnd), true);
+  assert.equal(await recorder.isRecorded(report.projectId, report.interval, report.windowEnd), false);
+  connected = true;
+  assert.equal(await recorder.record(report), true);
+  assert.deepEqual([...ids], [fresh.id]);
+});
+
+test("a partially failed batch recovers durable reports by ID before advancing hints", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nox-regime-partial-"));
+  t.after(() => rm(dir,{recursive:true,force:true}));
+  const reports = (["5m","15m"] as const).map(interval => {
+    const f = fixture(interval);
+    return evaluateRegimeV2(project(), f.history, f.flow, interval, f.now);
+  });
+  const ids = new Set<string>();
+  let fail = true;
+  const history = {
+    page: async (_project:string, query:{id:string}) => ({items:ids.has(query.id) ? [{id:query.id}] : []}),
+    append: async ({id}:HistoryEvent) => {
+      if (fail && id === reports[1].id) throw new Error("write failed");
+      assert.ok(!ids.has(id));
+      ids.add(id);
+    },
+  } as unknown as HistoryStore;
+  const recorder = new RegimeRecorder(dir,history);
+  await assert.rejects(recorder.recordBatch(reports), /write failed/);
+  await recorder.flush();
+  await assert.rejects(stat(path.join(dir,"regime-v2-windows.json")), {code:"ENOENT"});
+  assert.equal(ids.size,1);
+  fail = false;
+  assert.equal(await recorder.recordBatch(reports),2);
+  await recorder.flush();
+  const recovered = new RegimeRecorder(dir,history);
+  assert.equal(await recovered.recordBatch(reports),0);
+  assert.equal(ids.size,2);
+});
+
 test("collector removes deleted-project window hints on restart and preserves archived projects and reports", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "nox-regime-index-"));
   const file = path.join(dir, "regime-v2-windows.json");

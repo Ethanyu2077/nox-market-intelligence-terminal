@@ -34,7 +34,7 @@ export function summarizeAlignmentHistory(projectId: string, records: AlignmentS
     records: [...ordered].reverse().slice(0, Math.max(1, Math.min(limit, 200))),
     outcomeStudy: { state: 'not-evaluated', reason: 'Forward-return/baseline statistics for alignment claims require a dedicated event study with ingest-time cutoffs, costs and out-of-sample splits. This endpoint only records claim history.' },
     methodology: [
-      'Each record is the alignment response persisted by the collector at its sampling cadence (Active 30s / Standard 5m; first tick recorded immediately).',
+      'Each record preserves the decision from its observation time. New records are sampled once a minute in Active mode and every five minutes in Standard mode.',
       'Counts describe how often the system allowed or refused a directional claim — not predictive performance.',
       'No outcome/hit-rate statistics are shown here; computing them without ingest-time cutoffs and costs would leak future data.',
       'Records are stored in the local history journal under kind=alignment and can be replayed with asOf.',

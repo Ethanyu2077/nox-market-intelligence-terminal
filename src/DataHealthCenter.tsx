@@ -94,7 +94,7 @@ export function DataHealthCenter({ canUseCoinGlass }: { canUseCoinGlass: boolean
           )}
           <div className="dh-section">
             <h4>Project coverage</h4>
-            <div className="table-wrap"><table className="dh-table"><thead><tr><th>Project</th><th>Mode</th><th>Cadence</th><th>Kinds</th><th>Notes</th></tr></thead><tbody>
+            <div className="table-wrap"><table className="dh-table"><thead><tr><th>Project</th><th>Mode</th><th>Snapshot cadence</th><th>Kinds</th><th>Notes</th></tr></thead><tbody>
               {report.projects.map((project) => (
                 <tr key={project.projectId}>
                   <td>{project.projectName}</td>

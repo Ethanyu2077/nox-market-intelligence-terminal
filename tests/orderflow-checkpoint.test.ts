@@ -82,9 +82,31 @@ test('compacts bounded deltas and ignores an old generation after an interrupted
     feed.coverageTo = n;
     await writer.save(feed);
   }
-  assert.ok((await readdir(deltas)).length <= 40);
+  assert.ok((await readdir(deltas)).length <= 96);
   await writeFile(path.join(deltas, oldName), oldData);
   const restarted = new OrderFlowCheckpoint(file);
   assert.deepEqual(await restarted.load(), feed);
   assert.ok(!(await readdir(deltas)).includes(oldName));
+});
+
+test('late REST fills write only new trades and small updates keep the large base intact', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'nox-flow-sparse-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'market.json'), writer = new OrderFlowCheckpoint(file);
+  const original = Array.from({ length: 10_000 }, (_, i) => trade(i));
+  const feed = { trades: original, coverageFrom: 1, coverageTo: 9999, gaps: [], liquidations: [] };
+  const base = await writer.save(feed);
+  assert.equal(base?.kind, 'base');
+  const originalInode = (await stat(file)).ino;
+  feed.trades = [...original.slice(2, 75), trade(74.5), ...original.slice(75, 3750),
+    trade(3749.5), ...original.slice(3750), trade(10_000)];
+  const delta = await writer.save(feed);
+  assert.equal(delta?.kind, 'delta');
+  assert.ok(delta!.bytes < 1_000, 'backfill should write three new trades plus retained ranges');
+  for (let index = 0; index < 60; index++) {
+    feed.trades.push(trade(10_001 + index));
+    assert.equal((await writer.save(feed))?.kind, 'delta');
+  }
+  assert.equal((await stat(file)).ino, originalInode);
+  assert.deepEqual(await new OrderFlowCheckpoint(file).load(), feed);
 });

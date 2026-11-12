@@ -49,6 +49,14 @@ These settings take effect on startup, including for existing data. The byte lim
 | Liquidations, sampled market observations, volume, alignment decisions, regime evidence and completed L2 metric buckets | Journal, then TimescaleDB | Historical queries and research |
 | Event studies | Computed from recorded evidence on request | Same historical study API |
 
+Active projects poll venue snapshots every 30 seconds. Historical capture normally saves one snapshot per market and one alignment decision per project per UTC minute. Corrections to the last source timestamp and changes in snapshot quality can be recorded sooner. Repeated receipts of the same source observation are skipped. The rolling 24-hour volume matrix is sampled every five minutes. Standard projects sample all three streams every five minutes. A history page reads committed data and pending journal entries without requesting a database flush.
+
+After a restart, the collector uses the database and up to 512 KiB of recent local journal data per lookup to recover its last samples. If the database is unavailable and that tail is too busy to contain the current window's sample, the collector can save an extra observation in that window.
+
+Changed order-flow tapes normally checkpoint once per minute and flush on a clean shutdown. An abrupt stop can leave the latest uncheckpointed trades to exchange backfill, subject to the venue's replay range. This release reads existing checkpoints. When rolling back to an older binary, a tape with newer sparse corrections may need to be restored from an older checkpoint or rebuilt from exchange data.
+
+Compare two `/api/operations` samples with the same `process.startedAt` to measure writes. `storage.writes.journalRowsByKind` counts newly journaled observations per kind. `databaseRowsInserted` and `databaseInsertBatches` under `storage.writes` count inserted rows and successful insert transactions, including catch-up activity. `storage.orderFlow.writes` counts base and delta files and their bytes separately.
+
 `NOX_ARCHIVE_RAW_TRADES=true` also captures each new trade in long-term history. Existing trade history and pending journals remain readable and eligible for replication under either setting. The trade history endpoint reports the current capture setting. `NOX_OUTCOME_AUDIT_ENABLED=true` enables background event-study revision exports for offline audit.
 
 Inspect `storage.capacity.pendingBytes`, `storage.error` and `storage.queryBackend` on `/api/operations` during recovery. `storage.capacity.byKind` shows local disk usage and unacknowledged logical bytes by event type. The process section reports current RSS, heap and external allocations in bytes. A malformed journal record is retained for repair. `NOX_HISTORY_MAX_RECORD_BYTES` defaults to 16 MiB and can be raised for a known larger legacy record.

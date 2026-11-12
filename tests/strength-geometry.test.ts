@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { liveTimeTicks, observedStrengthGap, spreadLabels, strengthDomain, strengthPath } from '../shared/strength-geometry.ts';
+import { liveTimeTicks, movingStrengthTail, observedStrengthGap, spreadLabels, strengthDomain, strengthPath } from '../shared/strength-geometry.ts';
 
 test('strength axis includes zero and every excursion with headroom at flat and tiny spreads', () => {
   for (const [low, high] of [[0, 0], [0, 1.17], [-0.23, 0], [-0.27, 1.17], [0, 1.2e-8]]) {
@@ -84,4 +84,36 @@ test('cursor identifies the entire confirmed gap but never its observed endpoint
     assert.equal(observedStrengthGap(points, t), null);
   }
   assert.equal(observedStrengthGap([], 12000), null);
+});
+
+test('an animated recovery stays at the held level until the precise recovery time', () => {
+  const before = {t:1000, x:2, y:8}, after = {t:7000, x:14, y:2}, edge = 18;
+  const path = strengthPath([before, after], 5000, edge);
+  const tail = movingStrengthTail(path, before, after, edge)!;
+  assert.equal(tail.prefix, 'M2,8L14,8');
+  assert.equal(tail.frame(8, 0, 8), 'M14,8L14,8L18,8');
+  assert.equal(tail.frame(8, .5, 5), 'M14,8L14,5L18,5');
+  assert.equal(tail.prefix + tail.frame(8, 1, 2).slice('M14,8'.length), path);
+});
+
+test('animating the last ordinary cubic leaves its prefix intact and settles on the original spline', () => {
+  const points = [20,18,3].map((y, i) => ({x:i*3, t:i*1000, y}));
+  const path = strengthPath(points, 5000, 6);
+  const tail = movingStrengthTail(path, points[1], points[2], 6)!;
+  assert.equal(tail.prefix, 'M0,20L3,18');
+  assert.equal(tail.frame(18, 0, 18), 'M3,18C4,18 5,18 6,18');
+  const mid = tail.frame(18, .5, 10.5);
+  assert.match(mid, /^M3,18C4,[\d.]+ 5,[\d.]+ 6,10\.5$/);
+  assert.equal(tail.prefix + tail.frame(18, 1, 3).slice('M3,18'.length), path);
+});
+
+test('the first quote has no moving segment; coincident positions stay finite and flat quotes stay flat', () => {
+  const first = {t:1000, x:2, y:4};
+  assert.equal(movingStrengthTail(strengthPath([first], 5000, 9), undefined, first, 9), null);
+  const repeated = {...first, y:6};
+  const vertical = movingStrengthTail(strengthPath([first, repeated], 5000, 2), first, repeated, 2)!;
+  assert.equal(vertical.frame(4, .5, 5), 'M2,4L2,5');
+  const unchanged = {t:2000, x:3, y:4};
+  const flat = movingStrengthTail(strengthPath([first, unchanged], 5000, 9), first, unchanged, 9)!;
+  for (const progress of [0, .5, 1]) assert.equal(flat.frame(4, progress, 4), 'M2,4L3,4L9,4');
 });

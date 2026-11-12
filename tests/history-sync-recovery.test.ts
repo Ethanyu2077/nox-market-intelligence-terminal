@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test, {type TestContext} from 'node:test';
-import {appendFile, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import type {Pool} from 'pg';
 import {HistoryStore, type HistoryEvent} from '../server/history-store.ts';
+import type {MarketProject} from '../shared/types.ts';
 
 const now = Date.now(), yesterday = now - 86_400_000;
 function event(id: string, kind: HistoryEvent['kind'] = 'trade', time = now): HistoryEvent {
@@ -20,20 +21,32 @@ async function directory(t: TestContext) {
 function database() {
   const rows = new Map<string, HistoryEvent>();
   let transaction: HistoryEvent[] = [];
-  const state = {id:'db',online:true,reject:'',inserts:0,
+  const state = {id:'db',online:true,reject:'',inserts:0,queries:[] as string[],missingLink:true,
+    beforeLinkWrite: undefined as (() => Promise<void>) | undefined,
     afterSelect: undefined as (() => Promise<void>) | undefined,
     afterCommit: undefined as (() => void) | undefined};
   async function query(sql: string, params: unknown[] = []) {
+    state.queries.push(sql);
     if (sql.includes('FROM pg_extension')) return {rowCount:1};
     if (sql.startsWith('SELECT store_id')) return {rows:[{store_id:state.id}]};
     if (sql.startsWith('SELECT hypertable_size')) return {rows:[{bytes:0,clock:new Date(now)}]};
+    if (sql.startsWith('SELECT l.project_id')) return {rows:state.missingLink ? [{}] : []};
+    if (sql.startsWith('INSERT INTO nox_project_market_links')) {
+      await state.beforeLinkWrite?.();
+      state.missingLink = false;
+    }
     if (sql.startsWith('INSERT INTO nox_history_events')) {
+      let rowCount = 0;
       for (let i=0; i<params.length; i+=9) {
         const e = event(String(params[i]), params[i+1] as HistoryEvent['kind'], Number(params[i+4]));
         if (e.id === state.reject) throw Object.assign(new Error('private rejected payload'), {code:'22P02'});
-        transaction.push(e);
+        if (!rows.has(e.id) && !transaction.some(row => row.id === e.id)) {
+          transaction.push(e);
+          rowCount++;
+        }
         state.inserts++;
       }
+      return {rows:[],rowCount};
     }
     if (sql === 'COMMIT') {
       for (const row of transaction) rows.set(row.id,row);
@@ -269,4 +282,95 @@ test('an over-budget legacy file keeps its pending suffix through prefix reclama
     assert.equal((await restarted.measure()).pendingBytes, 0);
     assert.deepEqual([...db.rows.keys()].sort(), [after.id, pending.id, confirmed.id, 'fresh'].sort());
   } finally { await restarted.close(); }
+});
+
+test('history and sampling reads see the local tail without triggering replication', async t => {
+  const dir = await directory(t), db = database(), store = new HistoryStore(dir, undefined, db.pool);
+  await store.init();
+  try {
+    const boundary = Math.floor(now / 300_000) * 300_000;
+    await store.append(event('recent', 'snapshot', boundary));
+    const queryCount = db.state.queries.length;
+    for (let i = 0; i < 10; i++) {
+      const page = await store.page('p', {kind:'snapshot'});
+      assert.deepEqual(page.items.map(row => row.id), ['recent']);
+      assert.deepEqual((await store.sampleSnapshots('p', 300_000, boundary + 90_000)).map(row => row.id), ['recent']);
+    }
+    assert.equal((await store.page('p', {kind:'trade'})).localScan, false);
+    const queries = db.state.queries.slice(queryCount);
+    assert.equal(queries.length, 21);
+    assert.ok(queries.every(sql => sql.includes('FROM nox_history_events')));
+    assert.equal(store.status().writes.databaseInsertBatches, 0);
+    await store.sync();
+    const persisted = await store.page('p', {kind:'snapshot'});
+    assert.deepEqual(persisted.items.map(row => row.id), ['recent']);
+    assert.equal(persisted.localScan, false);
+  } finally { await store.close(); }
+});
+
+test('publish each membership edit before reads, then only write to repair a missing interval', async t => {
+  const dir = await directory(t), db = database(), store = new HistoryStore(dir, undefined, db.pool);
+  const project = {id:'p',archived:false,markets:[{exchange:'okx',marketType:'spot',symbol:'BTCUSDT'}]} as MarketProject;
+  const started = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  await store.init();
+  try {
+    db.state.beforeLinkWrite = async () => { started.resolve(); await resume.promise; };
+    const edit = store.reconcileProjects([project]);
+    const read = store.page('p', {kind:'trade'});
+    await started.promise;
+    assert.ok(!db.state.queries.some(sql => sql.includes('FROM nox_history_events e WHERE')));
+    resume.resolve();
+    await Promise.all([edit,read]);
+    const writes = () => db.state.queries.filter(sql => sql.startsWith('INSERT INTO nox_project_market_links')).length;
+    assert.equal(writes(), 1);
+    await store.reconcileProjects([project]);
+    for (let i = 0; i < 3; i++) await store.sync();
+    assert.equal(writes(), 1);
+    db.state.missingLink = true; // Restore retained the database UUID but lost a historical interval.
+    await store.sync();
+    assert.equal(writes(), 2);
+  } finally { resume.resolve(); await store.close(); }
+});
+
+test('one checkpoint publishes four committed insert batches, with conflicts excluded from row counts', async t => {
+  const dir = await directory(t), db = database(), store = new HistoryStore(dir, undefined, db.pool);
+  await store.init();
+  try {
+    const before = store.status().writes;
+    await Promise.all(Array.from({length:1000}, (_,i) => store.append(event(String(i % 999)))));
+    await store.sync();
+    const writes = store.status().writes;
+    assert.equal(writes.checkpointReplacements - before.checkpointReplacements, 1);
+    assert.equal(writes.databaseInsertBatches, 4);
+    assert.equal(writes.databaseRowsInserted, 999);
+    assert.equal(writes.journalRowsByKind.trade, 1000);
+    assert.equal(writes.journalBatches, 8);
+    await store.sync();
+    assert.deepEqual(store.status().writes, writes);
+    assert.equal((await store.measure()).pendingBytes, 0);
+  } finally { await store.close(); }
+});
+
+test('failed checkpoint publication retains the source and retries committed events idempotently', async t => {
+  const dir = await directory(t), db = database(), store = new HistoryStore(dir, undefined, db.pool);
+  await store.init();
+  try {
+    const name = (await readdir(dir)).find(file => file.startsWith('history-checkpoints-'))!;
+    const checkpoint = path.join(dir, name), original = await readFile(checkpoint, 'utf8');
+    await mkdir(checkpoint + '.tmp');
+    await store.append(event('committed'));
+    await store.sync();
+    assert.equal(store.status().connected, false);
+    assert.equal(store.status().writes.databaseRowsInserted, 1);
+    assert.equal(await readFile(checkpoint, 'utf8'), original);
+    assert.ok((await store.measure()).pendingBytes > 0);
+    assert.deepEqual((await store.read('p','trade')).map(row => row.id), ['committed']);
+    await rm(checkpoint + '.tmp', {recursive:true});
+    await store.sync();
+    assert.equal(store.status().connected, true);
+    assert.equal((await store.measure()).pendingBytes, 0);
+    assert.equal(store.status().writes.databaseInsertBatches, 2);
+    assert.equal(store.status().writes.databaseRowsInserted, 1);
+    assert.notEqual(await readFile(checkpoint, 'utf8'), original);
+  } finally { await store.close(); }
 });

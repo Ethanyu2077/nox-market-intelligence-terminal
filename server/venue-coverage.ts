@@ -64,7 +64,7 @@ export function summarizeVenueCoverage(project: MarketProject, records: VenueCov
     failures: [...failures.values()],
     summary: { expectedVenues: list.length, venuesWithBothLegs: list.filter((venue) => venue.state === 'both').length, missingLegs, totalFailures: [...failures.values()].reduce((sum, failure) => sum + failure.count, 0) },
     methodology: [
-      'Venue coverage is derived from persisted volume records (kind=volume), one point per collector tick; it is newest-N sampled, not a lifetime count.',
+      'Venue coverage uses the most recent persisted volume records. New volume records are sampled every five minutes.',
       'spotSamples/perpSamples count records where that leg existed; a missing leg is explicit (state=spot-only/perp-only/missing), never filled with zero volume.',
       'Failures are the per-leg request failures recorded in each volume record; absence of failures does not prove the venue is healthy.',
       'Quality is the last observed leg quality (live/partial/stale); this is acquisition coverage, not research quality or forward performance.',

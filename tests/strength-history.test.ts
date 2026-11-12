@@ -2,9 +2,35 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProjectMarket } from '../shared/types.ts';
 import { liveStrengthReturns, StrengthHistory, strengthMarketKey, strengthValueAt } from '../shared/strength-history.ts';
+import { strengthPath } from '../shared/strength-geometry.ts';
 
 const market: ProjectMarket = { id: 'BTC-PERP', exchange: 'binance', marketType: 'perpetual', symbol: 'BTCUSDT', base: 'BTC', quote: 'USDT', status: 'TRADING' };
 const project = { id: 'btc', primaryMarketId: market.id, markets: [market] };
+
+test('a silent feed extends each trace from its own positive or negative return until a real quote arrives', () => {
+  for (const move of [1, -1]) {
+    const history = new StrengthHistory(0);
+    history.watch([project]);
+    const ingest = (price: number, time: number) =>
+      history.ingest([{ projectId: project.id, price, priceAt: time, stale: false }], time);
+    ingest(100, 1000);
+    history.snapshot(1000);
+    ingest(100 + move, 2000);
+    const render = (time: number, connected: boolean) => {
+      const { series, staleIds } = history.snapshot(time);
+      const line = liveStrengthReturns(series, time, staleIds, connected).get(project.id)!;
+      return strengthPath(line.points.map(p => ({ ...p, x: p.t / 1000, y: 100 - 10 * p.value })), 5000, time / 1000);
+    };
+    const held = 100 - 10 * move;
+    for (const clock of [3000, 9000, 75000]) {
+      history.ingest([], clock);
+      assert.equal(render(clock, clock === 3000), `M1,100L2,${held}L${clock / 1000},${held}`);
+    }
+    ingest(100 + 2 * move, 76000);
+    const resumed = 100 - 20 * move;
+    assert.equal(render(78000, true), `M1,100L2,${held}L76,${held}L76,${resumed}L78,${resumed}`);
+  }
+});
 
 test('strength history stores the newest positive price per second and keeps its source time', () => {
   const history = new StrengthHistory(0);

@@ -9,6 +9,7 @@ import { SnapshotBudget } from './snapshot-budget.ts';
 import { storageLimit } from './storage-limits.ts';
 
 const MAX_TRADES = 50_000;
+const CHECKPOINT_INTERVAL_MS = 60_000;
 type Feed = {
   market: ProjectMarket; trades: FlowTrade[]; seen: Set<string>; gaps: FlowGap[]; state: FlowVenue['state']; detail: string;
   checkedAt: number | null; coverageFrom: number | null; coverageTo: number | null; lastWs: number | null;
@@ -48,6 +49,7 @@ export class OrderFlowService {
   private feeds = new Map<string, Feed>();
   private checkpoints = new Map<string, Promise<void>>();
   private budget: SnapshotBudget;
+  private checkpointWrites = { base: 0, delta: 0, bytes: 0 };
   constructor(private directory: string, private adapters = { verify: verifiedFlowInstrument, recent: recentFlowTrades, stream: openFlowStream }, private archive?: (kind: 'trade' | 'liquidation', event: FlowTrade | LiquidationEvent) => void,
     maxBytes = storageLimit('NOX_ORDERFLOW_MAX_BYTES', 512 * 1024 ** 2)) {
     const dir = path.join(directory, 'orderflow');
@@ -57,7 +59,7 @@ export class OrderFlowService {
     });
   }
   initStorage() { return this.budget.init(); }
-  storageStatus() { return this.budget.status(); }
+  storageStatus() { return { ...this.budget.status(), checkpointIntervalMs: CHECKPOINT_INTERVAL_MS, writes: { ...this.checkpointWrites } }; }
   async close() {
     const feeds = [...this.feeds.values()];
     for (const feed of feeds) { feed.stopped = true; feed.stop?.(); if (feed.timer) clearTimeout(feed.timer); if (feed.flush) clearInterval(feed.flush); if (feed.closing) clearTimeout(feed.closing); }
@@ -95,7 +97,11 @@ export class OrderFlowService {
       if (!feed.dirty) return;
       try {
         feed.dirty = false;
-        await feed.checkpoint.save(feed);
+        const write = await feed.checkpoint.save(feed);
+        if (write) {
+          this.checkpointWrites[write.kind]++;
+          this.checkpointWrites.bytes += write.bytes;
+        }
       } catch (error) {
         feed.dirty = true;
         feed.detail = `Persistence failed: ${String(error)}`;
@@ -145,7 +151,7 @@ export class OrderFlowService {
         }
         feed.liquidationState = 'partial feed · events observed';
       }, state => { feed.liquidationState = `${state} · venue-limited partial feed`; });
-      feed.flush = setInterval(() => { void this.persist(feed); }, 15_000);
+      feed.flush = setInterval(() => { void this.persist(feed); }, CHECKPOINT_INTERVAL_MS);
       const tick = async () => { if (feed.stopped) return; await this.poll(feed); if (!feed.stopped) feed.timer = setTimeout(() => void tick(), 5000); };
       feed.timer = setTimeout(() => void tick(), 5000);
     } catch (error) { feed.state = 'unavailable'; feed.detail = String(error); if (!feed.stopped) feed.timer = setTimeout(() => void this.start(feed), 30_000); }

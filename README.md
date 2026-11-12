@@ -43,7 +43,7 @@ Independent, project-based crypto market monitoring for user-selected external t
 - Persistent project identity, selected markets, ordering and monitoring preferences in the local atomic data store.
 - Explicit source, units, timestamps, coverage boundaries and missing-data states.
 - Per-venue spot vs perpetual 24h turnover matrix (rolling as-of counters; USDT totals only, non-USDT quotes excluded without FX conversion) with a coverage gate and no cross-leg summation.
-- Local volume-matrix records persisted as an explicit `volume` history kind, with per-venue spot/perp share deltas (descriptive only; Active 30s / Standard 5m sampling; no event-time alignment).
+- Local volume-matrix records persisted as an explicit `volume` history kind, with per-venue spot/perp share deltas (descriptive only; five-minute sampling in Active and Standard modes; no event-time alignment).
 - Upbit/Bithumb KRW spot turnover is displayed in a separate KRW block with KRW-only shares; KRW is never converted to USD or added to USDT totals (no reliable timestamped FX source).
 - Local event-time trade-tape volume bars (1m/5m/15m/1h/4h) per venue and market type, with explicit bucket completeness and gaps; USDT tape only, KRW stays in the KRW block.
 - Event-time volume buckets carry both quote notional and normalized base quantity (per side), so a venue's tape can be checked against its own traded price.

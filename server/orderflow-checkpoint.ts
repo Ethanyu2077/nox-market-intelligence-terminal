@@ -9,15 +9,18 @@ type Tape = {
   coverageFrom: number | null; coverageTo: number | null;
 };
 type Patch<T> = { offset: number; keep: number; tail: T[] };
+type TradeRun = { offset: number; keep: number } | FlowTrade[];
+type TradePatch = Patch<FlowTrade> | { runs: TradeRun[] };
 type Delta = {
-  trades?: Patch<FlowTrade>; gaps?: Patch<FlowGap>; liquidations?: Patch<LiquidationEvent>;
+  trades?: TradePatch; gaps?: Patch<FlowGap>; liquidations?: Patch<LiquidationEvent>;
   coverageFrom: number | null; coverageTo: number | null;
 };
-const MAX_DELTAS = 40;
+// Keep small updates incremental for up to 96 checkpoints. The existing two-digit file
+// names and byte budget still bound directory size and restart work.
+const MAX_DELTAS = 96;
 const MAX_DELTA_BYTES = 8 * 1024 * 1024;
 
-// Tape records are immutable. Most checkpoints only discard a prefix and append a few
-// trades. If a late REST trade reorders the middle, replace the entire changed suffix.
+// Tape records are immutable. Most checkpoints only discard a prefix and append new rows.
 function changes<T>(previous: T[], current: T[]): Patch<T> | undefined {
   const offset = current.length ? Math.max(0, previous.indexOf(current[0])) : 0;
   let keep = 0;
@@ -26,12 +29,58 @@ function changes<T>(previous: T[], current: T[]): Patch<T> | undefined {
   return { offset, keep, tail: current.slice(keep) };
 }
 
+function tradeChanges(previous: FlowTrade[], current: FlowTrade[]): TradePatch | undefined {
+  const patch = changes(previous, current);
+  if (!patch || patch.tail.length < 32 || previous.length - patch.offset - patch.keep < 32) return patch;
+  // REST can fill holes anywhere in the tape. Refer to unchanged records by position so
+  // a late trade near the beginning does not rewrite thousands of later trades.
+  const positions = new Map<FlowTrade, number>();
+  for (let i = 0; i < previous.length; i++) positions.set(previous[i], i);
+  const runs: TradeRun[] = [];
+  if (patch.keep) runs.push({ offset: patch.offset, keep: patch.keep });
+  let reused = 0;
+  for (const trade of patch.tail) {
+    const index = positions.get(trade), last = runs.at(-1);
+    if (index === undefined) {
+      if (Array.isArray(last)) last.push(trade);
+      else runs.push([trade]);
+    } else {
+      if (last && !Array.isArray(last) && index === last.offset + last.keep) last.keep++;
+      else runs.push({ offset: index, keep: 1 });
+      reused++;
+    }
+  }
+  return reused >= 32 ? { runs } : patch;
+}
+
+function validRange(length: number, offset: number, keep: number) {
+  return Number.isSafeInteger(offset) && Number.isSafeInteger(keep) &&
+    offset >= 0 && keep >= 0 && offset + keep <= length;
+}
+
 function apply<T>(previous: T[], patch?: Patch<T>) {
   if (!patch) return previous;
   const { offset, keep, tail } = patch;
-  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(keep) || offset < 0 || keep < 0 ||
-      offset + keep > previous.length || !Array.isArray(tail)) throw new Error('Invalid order flow checkpoint delta');
+  if (!validRange(previous.length, offset, keep) || !Array.isArray(tail)) throw new Error('Invalid order flow checkpoint delta');
   return previous.slice(offset, offset + keep).concat(tail);
+}
+
+function applyTrades(previous: FlowTrade[], patch?: TradePatch) {
+  if (!patch || !('runs' in patch)) return apply(previous, patch);
+  if (!Array.isArray(patch.runs)) throw new Error('Invalid order flow checkpoint runs');
+  const trades: FlowTrade[] = [];
+  let reused = 0;
+  for (const run of patch.runs) {
+    if (Array.isArray(run)) {
+      for (const trade of run) trades.push(trade);
+    } else {
+      if (!run || !validRange(previous.length, run.offset, run.keep)) throw new Error('Invalid order flow checkpoint range');
+      reused += run.keep;
+      if (reused > previous.length) throw new Error('Invalid order flow checkpoint length');
+      for (let i = run.offset; i < run.offset + run.keep; i++) trades.push(previous[i]);
+    }
+  }
+  return trades;
 }
 
 async function atomic(file: string, data: string) {
@@ -91,7 +140,7 @@ export class OrderFlowCheckpoint {
         if (sequence !== this.count + 1) throw new Error('Missing order flow checkpoint delta');
         const data = await readFile(path.join(this.directory, name));
         const delta: Delta = JSON.parse(data.toString());
-        restored = { trades: apply(restored.trades, delta.trades), gaps: apply(restored.gaps, delta.gaps),
+        restored = { trades: applyTrades(restored.trades, delta.trades), gaps: apply(restored.gaps, delta.gaps),
           liquidations: apply(restored.liquidations, delta.liquidations), coverageFrom: delta.coverageFrom, coverageTo: delta.coverageTo };
         this.count++; this.bytes += data.length;
       }
@@ -106,7 +155,7 @@ export class OrderFlowCheckpoint {
     const next: Tape = { trades: feed.trades.slice(), gaps: feed.gaps.slice(), liquidations: feed.liquidations.slice(),
       coverageFrom: feed.coverageFrom, coverageTo: feed.coverageTo };
     if (this.previous && this.generation) {
-      const delta: Delta = { trades: changes(this.previous.trades, next.trades), gaps: changes(this.previous.gaps, next.gaps),
+      const delta: Delta = { trades: tradeChanges(this.previous.trades, next.trades), gaps: changes(this.previous.gaps, next.gaps),
         liquidations: changes(this.previous.liquidations, next.liquidations), coverageFrom: next.coverageFrom, coverageTo: next.coverageTo };
       if (!delta.trades && !delta.gaps && !delta.liquidations &&
           delta.coverageFrom === this.previous.coverageFrom && delta.coverageTo === this.previous.coverageTo) return;
@@ -118,7 +167,7 @@ export class OrderFlowCheckpoint {
           const name = `${this.generation}.${String(this.count + 1).padStart(2, '0')}.json`;
           await this.write(path.join(this.directory, name), data);
           this.count++; this.bytes += bytes; this.previous = next;
-          return;
+          return { kind: 'delta' as const, bytes };
         }
       }
     }
@@ -127,5 +176,6 @@ export class OrderFlowCheckpoint {
     await this.write(this.file, data);
     this.previous = next; this.generation = generation; this.count = 0; this.bytes = 0; this.baseBytes = Buffer.byteLength(data);
     await this.clean(await this.segments(), generation);
+    return { kind: 'base' as const, bytes: this.baseBytes };
   }
 }

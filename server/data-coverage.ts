@@ -2,12 +2,12 @@ import type { HistoryStore } from './history-store.ts';
 import type { MarketProject } from '../shared/types.ts';
 import type { CoverageKind, CoverageKindReport, DataCoverageResponse } from '../shared/coverage.ts';
 import { rawTradeHistoryEnabled } from './flow-history-policy.ts';
+import { historyCadenceMs } from '../shared/history-cadence.ts';
 
 export interface CoverageSample { eventTime: number; ingestTime: number }
 
 const KINDS: CoverageKind[] = ['snapshot', 'volume', 'alignment', 'trade'];
 const REQUIRED: CoverageKind[] = ['snapshot', 'volume', 'alignment'];
-const CADENCE: Record<'active' | 'standard' | 'paused', number | null> = { active: 30_000, standard: 300_000, paused: null };
 
 /**
  * Operational coverage, not research quality: it answers "is the local pipeline actually
@@ -20,12 +20,12 @@ export function summarizeDataCoverage(
   now = Date.now(),
   archiveRawTrades = rawTradeHistoryEnabled(),
 ): DataCoverageResponse {
-  const expectedCadenceMs = CADENCE[mode];
   const kinds: CoverageKindReport[] = KINDS.map((kind) => {
+    const expectedCadenceMs = kind === 'trade' ? null : historyCadenceMs(kind, mode);
     const disabled = kind === 'trade' && !archiveRawTrades;
     const events = disabled ? [] : [...(samples[kind] ?? [])].filter((event) => Number.isFinite(event.eventTime) && Number.isFinite(event.ingestTime)).sort((a, b) => a.ingestTime - b.ingestTime);
     if (!events.length) {
-      return { kind, sampledEvents: 0, from: null, to: null, lastIngestAt: null, lastIngestAgeMs: null, largestIngestGapMs: null, gaps: 0,
+      return { kind, expectedCadenceMs, sampledEvents: 0, from: null, to: null, lastIngestAt: null, lastIngestAgeMs: null, largestIngestGapMs: null, gaps: 0,
         state: disabled ? 'disabled' : 'empty', note: disabled ? 'Raw trade history archiving is turned off.' : 'no sampled record of this kind yet' };
     }
     const lastIngestAt = events[events.length - 1].ingestTime;
@@ -38,12 +38,14 @@ export function summarizeDataCoverage(
         if (gap > expectedCadenceMs * 2.5) gaps += 1;
       }
     }
-    const stale = expectedCadenceMs != null && lastIngestAgeMs > expectedCadenceMs * 3;
-    const state = stale ? 'stale' : gaps > 0 || expectedCadenceMs == null ? 'partial' : 'live';
+    // Trades arrive on exchange events. Their age can be stale without implying missed scheduled samples.
+    const freshnessMs = kind === 'trade' && mode !== 'paused' ? (mode === 'active' ? 30_000 : 300_000) : expectedCadenceMs;
+    const stale = freshnessMs != null && lastIngestAgeMs > freshnessMs * 3;
+    const state = stale ? 'stale' : gaps > 0 || mode === 'paused' ? 'partial' : 'live';
     const note = kind === 'trade'
       ? 'event-driven trade tape; sampled newest records, not a full count'
       : expectedCadenceMs == null ? 'collection paused; age is informational only' : `expected collector cadence ~${Math.round(expectedCadenceMs / 1000)}s`;
-    return { kind, sampledEvents: events.length, from: events[0].eventTime, to: events[events.length - 1].eventTime, lastIngestAt, lastIngestAgeMs, largestIngestGapMs: largestIngestGapMs || null, gaps, state, note };
+    return { kind, expectedCadenceMs, sampledEvents: events.length, from: events[0].eventTime, to: events[events.length - 1].eventTime, lastIngestAt, lastIngestAgeMs, largestIngestGapMs: largestIngestGapMs || null, gaps, state, note };
   });
   const requiredMissing = REQUIRED.filter((kind) => (samples[kind] ?? []).length === 0);
   const notes: string[] = [];
@@ -54,14 +56,14 @@ export function summarizeDataCoverage(
     projectId,
     generatedAt: now,
     mode,
-    expectedCadenceMs,
+    expectedCadenceMs: historyCadenceMs('snapshot', mode),
     kinds,
     summary: { requiredMissing, notes },
     methodology: [
       'Sampled counts use the newest records read from the local journal (limit applies); they are not lifetime totals.',
-      'Gaps are measured between consecutive ingest times against 2.5x the collector cadence; a gap means sampling continuity is unverified, not that the market had no data.',
+      'Gaps exceed 2.5 times the historical sampling interval for that stream. They indicate periods of unverified coverage.',
       'States describe local accumulation health only; they do not validate source correctness, research quality or forward performance.',
-      archiveRawTrades ? 'Trade tape is event-driven and therefore has no fixed cadence; its state is based on gaps against the collector cadence.' :
+      archiveRawTrades ? 'Trade tape is event-driven. Its age reflects the last recorded trade.' :
         'Raw trade history archiving is turned off. Trade coverage is excluded from sampling and freshness checks.',
     ],
   };

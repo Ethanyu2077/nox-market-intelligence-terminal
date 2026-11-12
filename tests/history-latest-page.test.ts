@@ -5,7 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { HistoryStore, type HistoryEvent } from '../server/history-store.ts';
-import { archiveClosedJournals, journalSegments } from '../server/journal-archive.ts';
+import { archiveClosedJournals, journalBytes, journalSegments } from '../server/journal-archive.ts';
+import { parseJournalRecords } from '../server/journal-records.ts';
 
 function event(id: string, eventTime: number, payload: string): HistoryEvent {
   return { id, eventTime, ingestTime: eventTime, kind: 'trade', marketKey: 'test', projectId: 'p', source: 'fixture', quality: 'live', payload };
@@ -62,4 +63,20 @@ test('equal-time archives preserve first-written duplicates and unindexed archiv
     await store.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('concurrent reads of a corrupt archive close cleanly and preserve the original parse or gzip error', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'nox-archive-close-'));
+  try {
+    const archive = await archived(dir, '2020-01-01', [event('old', 10, '')], true);
+    const read = async () => {
+      for await (const row of parseJournalRecords(journalBytes(archive), archive.name, archive.identity))
+        assert.fail(`unexpected record at ${row.offset}`);
+    };
+    await writeFile(archive.file, gzipSync('x'.repeat(archive.size - 1) + '\n'));
+    for (let i = 0; i < 16; i++)
+      await Promise.all(Array.from({length: 16}, () => assert.rejects(read(), /Corrupt journal/)));
+    await writeFile(archive.file, 'invalid gzip');
+    await assert.rejects(read(), {code: 'Z_DATA_ERROR'});
+  } finally { await rm(dir, {recursive: true, force: true}); }
 });

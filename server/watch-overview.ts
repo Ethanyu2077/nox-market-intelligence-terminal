@@ -1,5 +1,5 @@
 import type { MarketProject, ProjectMarket } from '../shared/types.ts';
-import { BUCKET, type WatchRow, type WatchOverview } from '../shared/watch-overview.ts';
+import { BUCKET, performance, type WatchRow, type WatchOverview } from '../shared/watch-overview.ts';
 const entries=new Map<string,{at:number;promise:Promise<WatchRow>}>();
 async function candles(market:ProjectMarket,projectId:string,end:number,klines:{get:(symbol:string,interval:string,limit:number,end:number)=>Promise<Array<{time:number;close:number;volume:number}>>}):Promise<WatchRow>{
   const key=JSON.stringify([market.exchange,market.marketType,market.symbol,end]);
@@ -55,6 +55,7 @@ import type { HistoryStore } from './history-store.ts';
 import type { WatchFlow } from '../shared/watch-overview.ts';
 import { buildWatchMetrics } from '../shared/watch-overview.ts';
 import { binanceKlineStream } from './binance-kline-stream.ts';
+import { snapshotPrices } from './price-history.ts';
 import { binanceGovernor } from './binance-governor.ts';
 
 function flowOf(service: OrderFlowService | undefined, project: MarketProject, end: number, start: number): WatchFlow | null {
@@ -97,20 +98,25 @@ function flowOf(service: OrderFlowService | undefined, project: MarketProject, e
   } catch { return null; }
 }
 
-async function oiSeriesOf(store: HistoryStore | undefined, project: MarketProject, end: number): Promise<Array<{ time: number; oiUsd: number }> | undefined> {
+async function oiSeriesOf(store: HistoryStore | undefined, project: MarketProject, end: number, row: WatchRow): Promise<Array<{ time: number; oiUsd: number }> | undefined> {
   if (!store) return undefined;
   const primary = project.markets.find((market) => market.id === project.primaryMarketId) ?? project.markets[0];
   if (!primary) return undefined;
   try {
     const events = await store.read(project.id, 'snapshot', end, 2_000);
     const buckets = new Map<number, number>();
+    const prices: {t: number; p: number}[] = [];
     for (const event of events) {
-      const payload = event.payload as { exchange?: string; symbol?: string; oiUsd?: number | null; eventTime?: number };
+      const payload = event.payload as { exchange?: string; symbol?: string; marketType?: string; price?: number; oiUsd?: number | null; eventTime?: number };
       if (payload.exchange !== primary.exchange || payload.symbol !== primary.symbol) continue;
+      if (payload.marketType === primary.marketType && payload.price != null && Number.isFinite(payload.price) && payload.price > 0 &&
+          event.eventTime >= end - 86_400_000 && event.quality !== 'stale' && event.quality !== 'unavailable')
+        prices.push({t: event.eventTime, p: payload.price});
       if (payload.oiUsd == null || !Number.isFinite(payload.oiUsd)) continue;
       const time = Math.floor((event.eventTime ?? payload.eventTime ?? 0) / 300_000) * 300_000;
       if (time > 0) buckets.set(time, payload.oiUsd);
     }
+    snapshotPrices.set(row, prices);
     const series = [...buckets.entries()].map(([time, oiUsd]) => ({ time, oiUsd })).sort((a, b) => a.time - b.time);
     return series.length >= 2 ? series.slice(-288) : undefined;
   } catch { return undefined; }
@@ -130,7 +136,7 @@ export async function watchOverview(projects:MarketProject[], orderFlow?: OrderF
         row.hasSpot = p.markets.some((m) => m.marketType === 'spot');
         row.hasPerp = p.markets.some((m) => m.marketType === 'perpetual');
         row.flow = flowOf(orderFlow, p, end, start);
-        row.oiSeries = await oiSeriesOf(history, p, end);
+        row.oiSeries = await oiSeriesOf(history, p, end, row);
         row.metrics = buildWatchMetrics(row);
       }
       rows.push(row);
@@ -138,4 +144,53 @@ export async function watchOverview(projects:MarketProject[], orderFlow?: OrderF
   }));
   const benchmarks=active.length?await Promise.all(['BTCUSDT','ETHUSDT'].map(symbol=>candles({id:symbol,exchange:'binance',marketType:'perpetual',symbol,base:symbol.slice(0,-4),quote:'USDT',status:'active'} as ProjectMarket,symbol,end,klines))):[];
   return {asOf,end,rows,benchmarks};
+}
+
+/** Minute closes are shared in the stream's bounded RAM buffer.
+ * Attach them to this response only, after reading the regular overview cache. */
+export async function withMinuteCloses(
+  overview: WatchOverview, projectIds: readonly string[], benchmark: string | undefined, minutes: number,
+  stream: Pick<typeof binanceKlineStream, 'get'> = binanceKlineStream, now = Date.now(),
+): Promise<WatchOverview> {
+  const end = Math.floor(now / 60_000) * 60_000;
+  const seedMinutes = Math.min(60, minutes);
+  const selected: WatchRow[] = [];
+  if (minutes <= 60) {
+    if (projectIds.length) {
+      const ids = new Set(projectIds.slice(0, 4));
+      selected.push(...overview.rows.filter(row => ids.has(row.projectId)));
+    } else {
+      const ranked = overview.rows.map(row => ({ row, value: performance(row.candles, overview.end, minutes) ?? -Infinity }));
+      selected.push(...ranked.sort((a, b) => b.value - a.value).slice(0, 4).map(item => item.row));
+    }
+  }
+  const reference = overview.benchmarks.find(row => row.projectId === benchmark);
+  if (reference) selected.push(reference);
+  const supported = (row: WatchRow) => row.venue === 'binance' && row.marketType === 'perpetual' && row.symbol;
+  const start = end - seedMinutes * 60_000;
+  const needsSeed = (row: WatchRow) => {
+    if (!row.priceHistory?.length) return true;
+    const covered = new Set(row.priceHistory.filter(point => point.t > start && point.t <= end && point.p > 0)
+      .map(point => Math.ceil(point.t / 60_000)));
+    return covered.size < seedMinutes;
+  };
+  const symbols = new Set(selected.filter(row => supported(row) && needsSeed(row)).map(row => row.symbol));
+  if (!symbols.size) return overview;
+  const closes = new Map<string, NonNullable<WatchRow['minuteCloses']>>();
+  const pending = Promise.all([...symbols].map(async symbol => {
+    try {
+      const candles = await stream.get(symbol, '1m', seedMinutes + 1, end);
+      if (candles.length) closes.set(symbol, candles.map(({ time, close }) => ({ time, close })));
+    } catch { /* Existing five-minute closes remain available when the minute feed is offline. */ }
+  }));
+  // If the exchange is slow on first open, serve the original chart while its seed warms.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([pending, new Promise<void>(resolve => { timer = setTimeout(resolve, 1_200); })]);
+  } finally { clearTimeout(timer); }
+  const attach = (row: WatchRow): WatchRow => {
+    const minuteCloses = supported(row) ? closes.get(row.symbol) : undefined;
+    return minuteCloses ? { ...row, minuteCloses } : row;
+  };
+  return { ...overview, rows: overview.rows.map(attach), benchmarks: overview.benchmarks.map(attach) };
 }

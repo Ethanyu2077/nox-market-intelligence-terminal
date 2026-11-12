@@ -14,6 +14,8 @@ export type WatchMetricState = 'LIVE' | 'STALE' | 'UNAVAILABLE';
 export type WatchMetric = { state: WatchMetricState; source: string | null; at: number | null; error: string | null };
 export type WatchMetrics = { price: WatchMetric; kline: WatchMetric; oi: WatchMetric; funding: WatchMetric; spot: WatchMetric; perp: WatchMetric; cvd: WatchMetric };
 export type WatchRow = { projectId: string; venue: string; symbol: string; marketType: string; quote: string; candles: WatchCandle[]; error: string | null; funding?: { rate: number; hours: number; time: number } | null;
+  priceHistory?: { t: number; p: number }[];
+  minuteCloses?: { time: number; close: number }[];
   flow?: WatchFlow | null; oiSeries?: WatchOiPoint[]; metrics?: WatchMetrics;
   collectionMode?: 'active' | 'standard' | 'paused'; hasSpot?: boolean; hasPerp?: boolean; }
 export type WatchOverview = { asOf: number; end: number; rows: WatchRow[]; benchmarks: WatchRow[]; cache?: { stale: boolean; at: number } };

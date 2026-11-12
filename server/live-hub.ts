@@ -4,6 +4,7 @@ import type { MarketProject } from '../shared/types.ts';
 import { openExchangeStream } from './exchange-streams.ts';
 import { openSpotFlowStream } from './orderflow-adapters.ts';
 import { STRENGTH_WINDOW_MS } from '../shared/strength-history.ts';
+import type { PriceHistory } from './price-history.ts';
 import { QuoteReplay } from './quote-replay.ts';
 
 export type LiveChannel = 'quotes' | 'flow' | 'edge' | 'depth';
@@ -34,9 +35,9 @@ export function parseLiveEvent(payload: unknown, receivedAt: number): Omit<LiveT
 }
 
 interface Client { socket: WebSocket; projects: Set<string>; channels: Set<LiveChannel>; seq: Record<string, number>; alive: boolean }
-interface Feed { stop: () => void; tick: LiveTick; replay: QuoteReplay; release?: NodeJS.Timeout }
+interface Feed { stop: () => void; tick: LiveTick; replay: QuoteReplay; saveQuotes: boolean; release?: NodeJS.Timeout }
 
-export function createLiveHub(server: Server, projects: () => MarketProject[], options: { intervalMs?: number; flowTick?: (project: MarketProject, at: number) => LiveFlow; openPerpetualStream?: typeof openExchangeStream } = {}) {
+export function createLiveHub(server: Server, projects: () => MarketProject[], options: { priceHistory?: Pick<PriceHistory, 'read' | 'record'>; intervalMs?: number; flowTick?: (project: MarketProject, at: number) => LiveFlow; openPerpetualStream?: typeof openExchangeStream } = {}) {
   const wss = new WebSocketServer({ server, path: '/ws/live', maxPayload: 4_096 });
   const clients = new Set<Client>();
   const feeds = new Map<string, Feed>();
@@ -91,16 +92,22 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
     const market = project.markets.find((item) => item.id === project.primaryMarketId) ?? project.markets[0];
     const key = market && `${market.exchange}:${market.marketType}:${market.symbol}`;
     const existing = feeds.get(project.id);
-    if (existing && existing.tick.marketKey === key) return;
+    const saveQuotes = !project.archived && project.monitoring.streamingEnabled && project.monitoring.collectionMode !== 'paused';
+    if (existing && existing.tick.marketKey === key) { existing.saveQuotes = saveQuotes; return; }
     clearTimeout(existing?.release);
     existing?.stop();
     feeds.delete(project.id);
     if (!market) return;
     const tick: LiveTick = { projectId: project.id, marketKey: key, symbol: market.symbol, price: null, priceAt: null, change24hPct: null, fundingRate: null, at: 0, stale: true };
     const replay = new QuoteReplay();
+    const now = Date.now();
+    for (const point of options.priceHistory?.read(key, now - STRENGTH_WINDOW_MS, now, 1000) ?? [])
+      replay.record(point.p, point.t, now);
+    const feed: Feed = {stop: () => {}, tick, replay, saveQuotes};
     const updatePrice = (price: number, at: number) => {
       // A delayed trade can fill an earlier bucket without moving the current quote backwards.
       replay.record(price, at, Date.now());
+      if (feed.saveQuotes) options.priceHistory?.record(key, price, at);
       if (tick.priceAt != null && at < tick.priceAt) return;
       tick.price = price;
       tick.priceAt = at;
@@ -123,7 +130,8 @@ export function createLiveHub(server: Server, projects: () => MarketProject[], o
         }, onState);
       }
     } catch { /* unsupported venue */ }
-    feeds.set(project.id, { stop, tick, replay });
+    feed.stop = stop;
+    feeds.set(project.id, feed);
   };
 
   // Keep collecting through a short browser disconnect, then dispose unused upstream sockets.

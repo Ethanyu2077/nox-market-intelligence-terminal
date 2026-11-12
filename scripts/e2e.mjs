@@ -92,15 +92,24 @@ try {
   if (hasProject) {
     // Watchlist V2 regression: the panel must mount and never fall back to the render-error
     // boundary. Flow/Cards/Events only exist once the overview payload has rows.
-    await page.evaluate(() => {
-      const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent.trim() === 'Project Watchlist' && !item.disabled);
-      button?.click();
-    });
-    await new Promise((resolve) => setTimeout(resolve, 1800));
+    await page.click('nav button[title="Watchlist Overview"], nav button[title="关注总览"]');
+    await page.waitForSelector('.wo-heading', { visible: true, timeout: 30_000 });
     if (!(await page.$('.wo-main-panel'))) {
       console.log('[e2e] watchlist V2 checks skipped: instance has no project/overview panel');
     } else {
       check('watchlist: no render-failure boundary', !/渲染失败|render failed|Cannot read properties of null/i.test(await page.evaluate(() => document.body.innerText)));
+      const enterFullscreen = '.wo-actions button[aria-controls]';
+      const exitFullscreen = '.wo-main-panel.wo-fullscreen .wo-exit-fullscreen';
+      for (const action of ['button', 'Escape']) {
+        await page.click(enterFullscreen);
+        await page.waitForSelector(exitFullscreen, { visible: true, timeout: 3000 });
+        if (action === 'button') await page.click(exitFullscreen);
+        else await page.keyboard.press('Escape');
+        const restored = await page.waitForFunction(selector =>
+          !document.querySelector('.wo-main-panel.wo-fullscreen') && document.activeElement === document.querySelector(selector),
+          { timeout: 3000 }, enterFullscreen).then(() => true, () => false);
+        check(`watchlist: exit fullscreen via ${action} and restore focus`, restored);
+      }
       const hasRows = await page.evaluate(() => document.querySelectorAll('.wo-main-panel button').length > 1);
       if (hasRows) {
         check('watchlist: capital flow panel', Boolean(await page.$('.cf-panel')));

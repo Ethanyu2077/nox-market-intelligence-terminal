@@ -24,11 +24,15 @@ test('a silent feed extends each trace from its own positive or negative return 
     const held = 100 - 10 * move;
     for (const clock of [3000, 9000, 75000]) {
       history.ingest([], clock);
-      assert.equal(render(clock, clock === 3000), `M1,100L2,${held}L${clock / 1000},${held}`);
+      const path = render(clock, clock === 3000);
+      assert.ok(path.startsWith('M1,100C'));
+      assert.ok(path.endsWith(` 2,${held}L${clock / 1000},${held}`));
     }
     ingest(100 + 2 * move, 76000);
     const resumed = 100 - 20 * move;
-    assert.equal(render(78000, true), `M1,100L2,${held}L76,${held}L76,${resumed}L78,${resumed}`);
+    const path = render(78000, true);
+    assert.ok(path.includes(` 2,${held}L71,${held}C`));
+    assert.ok(path.endsWith(` 76,${resumed}L78,${resumed}`));
   }
 });
 

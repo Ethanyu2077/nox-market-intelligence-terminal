@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { liveTimeTicks, observedStrengthGap, spreadLabels, strengthDomain, strengthPath } from '../shared/strength-geometry';
 import { strengthValueAt, type StrengthReturnPoint } from '../shared/strength-history';
+import { periodPriceValueAt } from '../shared/period-strength';
 import { LiveStrengthTrace } from './LiveStrengthTrace';
 import './live-strength.css';
 
@@ -18,6 +19,7 @@ type PlotProps = {
   start: number;
   end: number;
   live: boolean;
+  updatingPeriod?: boolean;
   gapMs: number;
   unit: Unit;
   language: Language;
@@ -71,7 +73,8 @@ const LiveSeries = memo(function LiveSeries({ points, x, y, gapMs, ...trace }: L
   return last && <LiveStrengthTrace {...trace} path={path} last={last} previous={projected.at(-2)} />;
 });
 
-export function StrengthPlot({ lines, start, end, live, gapMs, unit, language, ariaLabel, emptyText, hoverTime = null, onHoverTime }: PlotProps) {
+export function StrengthPlot({ lines, start, end, live, updatingPeriod = false, gapMs, unit, language, ariaLabel, emptyText, hoverTime = null, onHoverTime }: PlotProps) {
+  const streaming = live || updatingPeriod;
   const viewport = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
@@ -123,11 +126,11 @@ export function StrengthPlot({ lines, start, end, live, gapMs, unit, language, a
   const right = Math.max(left + 1, labelX - gutter);
   const x = useMemo(() => (t: number) => duration > 0 ? left + (t - start) / duration * (right - left) : left,
     [duration, left, start, right]);
-  const liveEdgeX = live ? x(end) : undefined;
+  const liveEdgeX = streaming ? x(end) : undefined;
   const { min, max } = domain;
   const y = useMemo(() => (v: number) => bottom - (v - min) / (max - min) * (bottom - top), [bottom, top, min, max]);
   // During a feed pause the held lines keep their last visual emphasis. The labels show freshness.
-  const candidates = live ? ranked : ranked.filter(line => !line.stale);
+  const candidates = streaming ? ranked : ranked.filter(line => !line.stale);
   const perSide = live ? 1 : candidates.length >= 8 ? 3 : candidates.length >= 4 ? 2 : 1;
   const highlighted = new Set([
     ...candidates.filter(line => line.last.value > 0).slice(0, perSide),
@@ -137,7 +140,7 @@ export function StrengthPlot({ lines, start, end, live, gapMs, unit, language, a
   const traces = ranked.map((line, index) => ({
     line, label: labels[index], labelY: labelYs[index], strong: highlighted.has(line.id),
     tipX: liveEdgeX ?? x(line.last.t),
-    path: live ? '' : strengthPath(line.points.map(point => ({ ...point, x: x(point.t), y: y(point.value) })), gapMs),
+    path: streaming ? '' : strengthPath(line.points.map(point => ({ ...point, x: x(point.t), y: y(point.value) })), gapMs),
   }));
   const divisions = Math.max(1, Math.min(4, Math.floor((right - left) / 65)));
   const ticks = live ? liveTimeTicks(start, end, right - left)
@@ -155,7 +158,7 @@ export function StrengthPlot({ lines, start, end, live, gapMs, unit, language, a
           const px = (event.clientX - rect.left) * width / rect.width;
           if (px < left || px > right) { onHoverTime(null); return; }
           const time = start + (px - left) / (right - left) * duration;
-          onHoverTime(live ? Math.round(time) : start + Math.round((time - start) / gapMs) * gapMs);
+          onHoverTime(streaming ? Math.round(time) : start + Math.round((time - start) / gapMs) * gapMs);
         })}
         onPointerLeave={onHoverTime && (() => onHoverTime(null))}>
         {domain.ticks.map((value, i) => <g key={value} className={value === 0 ? 'strength-grid strength-zero' : 'strength-grid'}>
@@ -168,16 +171,16 @@ export function StrengthPlot({ lines, start, end, live, gapMs, unit, language, a
           <text x={live ? x(t) : Math.max(left + 18, Math.min(right - 18, x(t)))} y={height - 7}
             textAnchor={live && t === start ? 'start' : live && t === end ? 'end' : 'middle'}>{axisTimeLabel(t)}</text>
         </g>)}
-        {[...traces].sort((a, b) => Number(a.strong) - Number(b.strong)).map(({ line, path, tipX, strong, label, labelY }) => live
+        {[...traces].sort((a, b) => Number(a.strong) - Number(b.strong)).map(({ line, path, tipX, strong, label, labelY }) => streaming
           ? <LiveSeries key={line.id} points={line.points} x={x} y={y} gapMs={gapMs} tipX={tipX} color={line.color}
               strong={strong} stale={line.stale} label={label} title={`${line.name} ${formatValue(line.last.value, unit, digits)} · ${timeLabel(line.last.t)}${line.stale ? (language === 'zh' ? ' · 已延迟' : ' · Delayed') : ''}`}
-              labelX={labelX} labelY={labelY} labelWidth={labelWidth} gap={gap} fontSize={fontSize} />
+              labelX={labelX} labelY={labelY} labelWidth={labelWidth} gap={gap} fontSize={fontSize} period={updatingPeriod} />
           : <g key={line.id} className="strength-trace-glow" color={line.color}>
             <path className="strength-curve" d={path} fill="none" stroke="currentColor"
               strokeWidth={strong ? 2.7 : 1.8} strokeLinecap="round" strokeLinejoin="round"/>
             <circle cx={tipX} cy={y(line.last.value)} r={strong ? 4 : 2.8} fill="currentColor"/>
           </g>)}
-        {!live && traces.map(({ line, label, labelY, tipX }) => <g key={line.id} color={line.color} opacity={line.stale ? .55 : 1}>
+        {!streaming && traces.map(({ line, label, labelY, tipX }) => <g key={line.id} color={line.color} opacity={line.stale ? .55 : 1}>
           <title>{line.name} {formatValue(line.last.value, unit, digits)} · {timeLabel(line.last.t)}{line.stale ? (language === 'zh' ? ' · 已延迟' : ' · Delayed') : ''}</title>
           <line x1={tipX + 3} y1={y(line.last.value)} x2={labelX - 3} y2={labelY} stroke="currentColor" opacity={.46}/>
           <rect x={labelX} y={labelY - gap / 2 + 1} width={labelWidth} height={gap - 2} rx={2} fill="currentColor" opacity={.12}/>
@@ -188,7 +191,7 @@ export function StrengthPlot({ lines, start, end, live, gapMs, unit, language, a
           <line className="wo-cursor" x1={x(cursor)} x2={x(cursor)} y1={top} y2={bottom}/>
           <text x={left} y={top - 7}>{timeLabel(cursor)}{gapNote && ` · ${gapNote}`}</text>
           {ranked.map(line => {
-            const value = strengthValueAt(line.points, cursor, live ? gapMs : 0);
+            const value = updatingPeriod ? periodPriceValueAt(line.points, cursor) : strengthValueAt(line.points, cursor, live ? gapMs : 0);
             return value == null ? null : <circle key={line.id} cx={x(cursor)} cy={y(value)} r="3" fill={line.color}/>;
           })}
         </g>}

@@ -41,6 +41,17 @@
 .cf-note { padding: 0 14px 12px; font: 9.5px var(--mono); color: var(--faint); }
 
 .wo-main-panel.wo-fullscreen { position: fixed; inset: 12px; z-index: 60; overflow: auto; background: var(--bg); border: 1px solid var(--line); }
+.wo-fullscreen > .wo-panel-head {
+  position: sticky; top: 0; left: 0; z-index: 3; background: var(--surface);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+}
+.wo-fullscreen > .wo-panel-head > .wo-controls { justify-self: end; min-width: 0; }
+.wo-fullscreen .wo-exit-fullscreen { white-space: nowrap; }
+@media (max-width: 760px) {
+  .wo-fullscreen > .wo-panel-head { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .wo-fullscreen > .wo-panel-head > .wo-controls { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
+  .wo-fullscreen .wo-tabs { flex-wrap: wrap; }
+}
 .fc-panel { margin-top: 10px; }
 .fc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; padding: 10px 14px; }
 .fc-card { border: 1px solid var(--line); border-radius: 4px; background: var(--surface); padding: 10px; }

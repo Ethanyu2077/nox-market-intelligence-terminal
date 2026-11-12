@@ -80,33 +80,41 @@ function tangent(left: number, right: number) {
   return Math.sign(left) * Math.min(Math.abs(left), Math.abs(right));
 }
 
+function cubic(ax: number, ay: number, bx: number, by: number, entry: number, exit: number) {
+  const dx = (bx - ax) / 3;
+  return 'C' + coord(ax + dx, ay + dx * entry) + ' ' + coord(bx - dx, by - dx * exit) + ' ' + coord(bx, by);
+}
+
 export function strengthPath(points: readonly ProjectedPoint[], gapMs: number, liveEdgeX?: number): string {
   const commands: string[] = [];
+  const live = liveEdgeX !== undefined;
   let start = 0;
   while (start < points.length) {
     let end = start;
     while (end + 1 < points.length) {
       const a = points[end], b = points[end + 1];
-      const gap = liveEdgeX === undefined ? b.t - a.t > gapMs : hasMissingQuoteSeconds(a, b);
+      const gap = b.t - a.t > gapMs && !(live && b.compactedBefore);
       if (gap || b.x <= a.x) break;
       end++;
     }
     const first = points[start];
-    if (start > 0 && liveEdgeX !== undefined) {
-      // Keep the last known price until the next observed quote changes it.
-      commands.push('L' + coord(first.x, points[start - 1].y));
+    const before = points[start - 1];
+    if (live && before && first.x > before.x && first.y !== before.y && gapMs > 0) {
+      // Once the next quote is known, round only the end of a long hold into it.
+      const turnX = first.x - (first.x - before.x) * gapMs / (first.t - before.t);
+      commands.push('L' + coord(turnX, before.y), cubic(turnX, before.y, first.x, first.y, 0, 0));
+    } else {
+      commands.push((start === 0 ? 'M' : 'L') + coord(first.x, first.y));
     }
-    commands.push((start === 0 ? 'M' : 'L') + coord(first.x, first.y));
-    let leftSlope = start < end ? slope(first, points[start + 1]) : 0;
+    let leftSlope = !live && start < end ? slope(first, points[start + 1]) : 0;
     for (let i = start; i < end; i++) {
       const a = points[i], b = points[i + 1];
       const secant = slope(a, b);
-      const rightSlope = i + 1 === end ? secant : tangent(secant, slope(b, points[i + 2]));
+      const rightSlope = i + 1 < end ? tangent(secant, slope(b, points[i + 2])) : live ? 0 : secant;
       if (leftSlope === secant && rightSlope === secant) {
         commands.push('L' + coord(b.x, b.y));
       } else {
-        const dx = (b.x - a.x) / 3;
-        commands.push(`C${coord(a.x + dx, a.y + dx * leftSlope)} ${coord(b.x - dx, b.y - dx * rightSlope)} ${coord(b.x, b.y)}`);
+        commands.push(cubic(a.x, a.y, b.x, b.y, leftSlope, rightSlope));
       }
       leftSlope = rightSlope;
     }
@@ -131,11 +139,14 @@ export function movingStrengthTail(path: string, previous: ProjectedPoint | unde
   const end = held ? segmentStart(path, path.length) : path.length;
   const begin = segmentStart(path, end);
   if (begin < 0) return null;
-  const startX = hasMissingQuoteSeconds(previous, last) || last.x <= previous.x ? last.x : previous.x;
-  const start = 'M' + coord(startX, previous.y) + path[begin];
+  // The settled prefix may end at the rounded turn out of a long hold.
+  const prefix = path.slice(0, begin);
+  const lastCommand = Math.max(0, segmentStart(prefix, prefix.length));
+  const startPoint = prefix.slice(lastCommand + 1).split(' ').at(-1);
+  const start = 'M' + startPoint + path[begin];
   const coords = path.slice(begin + 1, end).split(/[ ,]/).map(Number);
   return {
-    prefix: path.slice(0, begin),
+    prefix,
     frame(fromY: number, progress: number, tipY: number) {
       const parts: string[] = [];
       for (let i = 0; i < coords.length; i += 2) {

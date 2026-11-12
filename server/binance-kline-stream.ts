@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import { binanceGovernor } from './binance-governor.ts';
 
 /**
- * Incremental 5m klines over WebSocket. REST is used only to bootstrap a symbol/interval
+ * Incremental closed klines over WebSocket. REST is used only to bootstrap a symbol/interval
  * (through the governor); afterwards closed candles arrive as `kline` events.
  */
 export type StreamCandle = { time: number; close: number; volume: number };
@@ -22,6 +22,7 @@ interface Entry {
   ready: boolean;
   retry: number;
   lastAt: number;
+  loaded?: { end: number; limit: number };
   expiry?: NodeJS.Timeout;
   reconnect?: NodeJS.Timeout;
 }
@@ -39,6 +40,8 @@ export class BinanceKlineStream {
   constructor(private readonly openSocket: (url: string) => KlineSocket = url => new WebSocket(url)) {}
 
   async get(symbol: string, interval: string, limit: number, end: number): Promise<StreamCandle[]> {
+    const intervalMs = interval === '1m' ? 60_000 : interval === '5m' ? 300_000 : undefined;
+    if (!intervalMs) throw new Error('Unsupported kline interval');
     const key = `${symbol.toUpperCase()}:${interval}`;
     let entry = this.entries.get(key);
     if (!entry) {
@@ -54,19 +57,27 @@ export class BinanceKlineStream {
       clearTimeout(current.reconnect);
       current.socket?.terminate();
     }, IDLE_MS).unref();
-    const needsBootstrap = entry.candles.length < limit || (entry.candles.at(-1)?.time ?? 0) < end - 2 * 300_000;
-    if (needsBootstrap) entry.candles = await this.bootstrap(symbol, interval, limit, end);
-    this.connect(key, entry, symbol, interval);
-    return entry.candles.slice(-limit);
+    const needsBootstrap = entry.candles.length < limit || (entry.candles.at(-1)?.time ?? 0) < end - 2 * intervalMs;
+    if (needsBootstrap && !(entry.loaded?.end === end && entry.loaded.limit >= limit)) {
+      const seed = await this.bootstrap(symbol, interval, limit, end);
+      // Keep closes received by the socket while REST was in flight.
+      if (!entry.loaded || entry.loaded.end <= end) {
+        const newer = entry.candles.filter(candle => candle.time > (seed.at(-1)?.time ?? 0));
+        entry.candles = [...seed, ...newer].slice(-MAX);
+        entry.loaded = { end, limit };
+      }
+    }
+    this.connect(key, entry, symbol, interval, intervalMs);
+    return entry.candles.filter(c => c.time <= end).slice(-limit);
   }
 
   private async bootstrap(symbol: string, interval: string, limit: number, end: number) {
     const url = `${REST}/fapi/v1/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${Math.min(500, Math.max(limit, 100))}&endTime=${end - 1}`;
     const raw = await binanceGovernor.json<Array<Array<string | number>>>(url);
-    return raw.filter((row) => Number(row[6]) < end).map((row) => ({ time: Number(row[0]) + 300_000, close: Number(row[4]), volume: Number(row[7]) })).filter((row) => Number.isFinite(row.time) && row.close > 0 && Number.isFinite(row.volume));
+    return raw.filter((row) => Number(row[6]) < end).map((row) => ({ time: Number(row[6]) + 1, close: Number(row[4]), volume: Number(row[7]) })).filter((row) => Number.isFinite(row.time) && Number.isFinite(row.close) && row.close > 0 && Number.isFinite(row.volume));
   }
 
-  private connect(key: string, entry: Entry, symbol: string, interval: string) {
+  private connect(key: string, entry: Entry, symbol: string, interval: string, intervalMs: number) {
     if (this.entries.get(key) !== entry || entry.socket || entry.reconnect) return;
     const socket = this.openSocket(`${WS}/ws/${symbol.toLowerCase()}@kline_${interval}`);
     entry.socket = socket;
@@ -75,7 +86,9 @@ export class BinanceKlineStream {
       try {
         const payload = JSON.parse(raw.toString()) as { k?: { t: number; c: string; q: string; x: boolean } };
         if (!payload.k?.x) return;
-        entry.candles = mergeCandle(entry.candles, { time: payload.k.t + 300_000, close: Number(payload.k.c), volume: Number(payload.k.q) });
+        const candle = { time: Number(payload.k.t) + intervalMs, close: Number(payload.k.c), volume: Number(payload.k.q) };
+        if (!Number.isFinite(candle.time) || !Number.isFinite(candle.close) || candle.close <= 0 || !Number.isFinite(candle.volume)) return;
+        entry.candles = mergeCandle(entry.candles, candle);
         entry.lastAt = Date.now();
       } catch { /* ignore malformed */ }
     });
@@ -86,7 +99,7 @@ export class BinanceKlineStream {
       entry.retry = Math.min(30_000, entry.retry * 2);
       entry.reconnect = setTimeout(() => {
         entry.reconnect = undefined;
-        this.connect(key, entry, symbol, interval);
+        this.connect(key, entry, symbol, interval, intervalMs);
       }, entry.retry).unref();
     });
     socket.on('error', () => { try { socket.terminate(); } catch { /* ignore */ } });

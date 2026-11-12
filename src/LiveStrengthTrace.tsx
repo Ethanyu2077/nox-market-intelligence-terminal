@@ -9,6 +9,7 @@ type TraceProps = {
   tipX: number;
   color: string;
   strong: boolean;
+  period?: boolean;
   stale?: boolean;
   label: string;
   title: string;
@@ -22,7 +23,7 @@ type TraceProps = {
 const duration = 300;
 const mix = (a: number, b: number, amount: number) => a + (b - a) * amount;
 
-export function LiveStrengthTrace({ path, last, previous, tipX, color, strong, stale, label, title,
+export function LiveStrengthTrace({ path, last, previous, tipX, color, strong, period, stale, label, title,
   labelX, labelY, labelWidth, gap, fontSize }: TraceProps) {
   const curve = useRef<SVGPathElement>(null);
   const tail = useRef<SVGPathElement>(null);
@@ -99,7 +100,8 @@ export function LiveStrengthTrace({ path, last, previous, tipX, color, strong, s
     return stop;
   }, [path, geometry, time, value, lastY, tipX, beforeTime, beforeY, labelY]);
 
-  const badgeWidth = Math.min(labelWidth, Math.ceil(label.length * fontSize * .64 + 11));
+  const badgeWidth = period ? labelWidth : Math.min(labelWidth, Math.ceil(label.length * fontSize * .64 + 11));
+  const solidBadge = strong && !period;
   return <g className={'strength-live-trace' + (strong ? ' strength-strong' : '')} color={color}>
     <title>{title}</title>
     <g className="strength-trace-glow" fill="none" stroke="currentColor"
@@ -111,9 +113,9 @@ export function LiveStrengthTrace({ path, last, previous, tipX, color, strong, s
     <g opacity={stale ? .55 : 1}>
       <line ref={leader} className="strength-leader" x1={tipX + 3} y1={lastY} x2={labelX - 3} y2={labelY} stroke="currentColor" opacity={.46}/>
       <g ref={badge} className="strength-live-label" transform={'translate(0 ' + labelY + ')'}>
-        <rect x={labelX} y={1 - gap / 2} width={badgeWidth} height={gap - 2} rx={2} fill="currentColor" opacity={strong ? .92 : .065}/>
+        <rect x={labelX} y={1 - gap / 2} width={badgeWidth} height={gap - 2} rx={2} fill="currentColor" opacity={period ? .12 : solidBadge ? .92 : .065}/>
         <text className="strength-value" x={labelX + 5} y={0} dominantBaseline="central"
-          style={{ fontSize, fill: strong ? 'var(--surface)' : 'currentColor' }}>{label}</text>
+          style={{ fontSize, fill: solidBadge ? 'var(--surface)' : 'currentColor' }}>{label}</text>
       </g>
     </g>
   </g>;

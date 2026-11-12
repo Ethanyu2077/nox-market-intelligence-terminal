@@ -42,7 +42,7 @@ import {alignmentOutcomes} from './alignment-outcome.ts';
 import {projectDataCoverage} from './data-coverage.ts';
 import {venueCoverage} from './venue-coverage.ts';
 import {signalReadiness,weightedConsensus} from './research-readiness.ts';
-import { watchOverview } from './watch-overview.ts';
+import { watchOverview, withMinuteCloses } from './watch-overview.ts';
 import { watchlistQuotes } from './watchlist.ts';
 import { ccxtHealth, getCcxtMarkets } from './ccxt/client.ts';
 import { venueBreakers } from './venue-health.ts';
@@ -58,6 +58,8 @@ import { apiNotFound } from './api-not-found.ts';
 import { versionInfo } from './version.ts';
 import { buildDataHealth } from './data-health.ts';
 import { buildProviderChecks } from './provider-crosscheck.ts';
+import { PriceHistory, withStoredPrices } from './price-history.ts';
+import { strengthMarketKey } from '../shared/strength-history.ts';
 import { createLiveHub } from './live-hub.ts';
 import { marketCache } from './market-cache.ts';
 import { LiveSnapshots } from './live-snapshots.ts';
@@ -84,7 +86,22 @@ const history = new HistoryStore(dataDirectory, process.env.DATABASE_URL);
 await history.init();
 let archiveError: string | null = null;
 const archiveRawTrades = rawTradeHistoryEnabled();
+const quoteHistory = new PriceHistory(dataDirectory);
+quoteHistory.start();
+let activePriceMarkets = new Set<string | null>();
+let watchedPriceMarkets = new Set<string | null>();
+const monitoredProjects = () => {
+  const projects = store.getProjects(true);
+  const watched = projects.filter(p => !p.archived && p.monitoring.streamingEnabled && p.monitoring.collectionMode !== 'paused');
+  watchedPriceMarkets = new Set(watched.map(strengthMarketKey));
+  activePriceMarkets = new Set(watched.filter(p => p.monitoring.collectionMode === 'active').map(strengthMarketKey));
+  return projects;
+};
 const orderFlow = new OrderFlowService(dataDirectory, undefined, (kind, event) => {
+  if (kind === 'trade' && 'marketType' in event) {
+    const key = event.exchange + ':' + event.marketType + ':' + event.symbol;
+    if (activePriceMarkets.has(key)) quoteHistory.record(key, event.price, event.time);
+  }
   const record = flowHistoryEvent(kind, event, archiveRawTrades, Date.now());
   if (!record) return;
   void history.append(record)
@@ -92,7 +109,7 @@ const orderFlow = new OrderFlowService(dataDirectory, undefined, (kind, event) =
 });
 await Promise.all([marketCache.initStorage(), orderFlow.initStorage()]);
 const eventStudies=new EventStudyService(history,new OutcomeStore(dataDirectory));
-const collector = new ProjectCollector(() => store.getProjects(true), orderFlow, history, undefined, new RegimeRecorder(dataDirectory,history),project=>eventStudies.refresh(project), undefined, project=>timeframeAlignment(project));
+const collector = new ProjectCollector(monitoredProjects, orderFlow, history, undefined, new RegimeRecorder(dataDirectory,history),project=>eventStudies.refresh(project), undefined, project=>timeframeAlignment(project));
 const allowedOrigins = resolveAllowedOrigins(port);
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -147,7 +164,7 @@ app.get('/api/operations', (_req, res) => res.json({
   l2Collection: l2Collector.health(),
   binanceRest: binanceGovernor.status(),
   researchJobs: { total: researchJobs.size() },
-  storage: { ...history.status(), rawTradeArchiveEnabled: archiveRawTrades, outcomes: eventStudies.storageStatus(), marketCache: marketCache.storageStatus(), orderFlow: orderFlow.storageStatus() },
+  storage: { ...history.status(), rawTradeArchiveEnabled: archiveRawTrades, priceHistory: quoteHistory.status(), outcomes: eventStudies.storageStatus(), marketCache: marketCache.storageStatus(), orderFlow: orderFlow.storageStatus() },
   archiveError, collectors: collector.status(), eventStudies:eventStudies.status(), authentication: 'RBAC enforced for mutations', publishingEnabled: false, tradingEnabled: false }));
 app.get('/api/projects/:id/event-study',safe(async(req,res)=>{
   const project=store.getProjects(true).find(p=>p.id===String(req.params.id));if(!project){res.status(404).json({error:{message:'Project not found'}});return;}
@@ -482,7 +499,12 @@ app.get('/api/watchlist/overview', safe(async (req, res) => {
     load: () => watchOverview(store.getProjects(true), orderFlow, history, undefined, minutes),
   });
   res.setHeader('x-nox-cache', cached.stale ? 'STALE' : 'LIVE');
-  res.json({ ...cached.value, cache: { stale: cached.stale, at: cached.at } });
+  const priceProjects = [req.query.priceProject].flat().filter((id): id is string => typeof id === 'string');
+  const benchmark = typeof req.query.priceBenchmark === 'string' ? req.query.priceBenchmark : undefined;
+  const overview = req.query.priceDetail === '1' ? await withMinuteCloses(
+    withStoredPrices(cached.value, quoteHistory, Date.now(), minutes, priceProjects, benchmark), priceProjects, benchmark, minutes,
+  ) : cached.value;
+  res.json({ ...overview, cache: { stale: cached.stale, at: cached.at } });
 }));
 app.get('/api/watchlist/quotes', safe(async (_req, res) => {
   const cached = await marketCache.get('watchlist:quotes', {
@@ -683,7 +705,13 @@ if (process.env.NODE_ENV === 'production') {
 }
 const host = process.env.HOST ?? '127.0.0.1';
 const server = app.listen(port, host, () => console.log(`NOX API listening on http://${host}:${port}`));
-createLiveHub(server, () => store.getProjects(true), { flowTick: (project, at) => orderFlow.tick(project, at) });
+const closeLiveHub = createLiveHub(server, () => store.getProjects(true), {
+  priceHistory: {
+    read: (market, from, to, step) => quoteHistory.read(market, from, to, step),
+    record: (market, price, at) => { if (watchedPriceMarkets.has(market)) quoteHistory.record(market, price, at); },
+  },
+  flowTick: (project, at) => orderFlow.tick(project, at),
+});
 
 // CCXT catalogues are large (HTX ~2.5k markets) and slow on a cold cache. Warm them in
 // the background so the first project discovery is not blocked by a 20s loadMarkets().
@@ -698,6 +726,6 @@ createLiveHub(server, () => store.getProjects(true), { flowTick: (project, at) =
   }
 }
 let shuttingDown = false;
-const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; marketCache.close(); closeDepthCache(); bookFrames.close(); flowFrames.close(); try { await l2Collector.flush(); } catch { /* audit flush best effort */ } researchJobs.close(); l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
+const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; closeLiveHub(); marketCache.close(); closeDepthCache(); bookFrames.close(); flowFrames.close(); try { await l2Collector.flush(); } catch { /* audit flush best effort */ } researchJobs.close(); l2Collector.stop(); alerts.stop(); await collector.close(); await eventStudies.close(); await orderFlow.close(); quoteHistory.close(); await history.close(); auth.close(); providerCredentials.close(); server.close(); server.closeAllConnections(); process.exit(0); };
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

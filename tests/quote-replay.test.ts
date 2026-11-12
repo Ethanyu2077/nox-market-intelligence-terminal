@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { PriceHistory } from '../server/price-history.ts';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
@@ -117,4 +121,45 @@ test('quotes reconnect and resync replay observed prices, isolate markets, and r
   assert.equal(stops, 1);
   t.mock.timers.tick(1);
   assert.equal(stops, 2);
+});
+
+
+test('a restarted hub replays persisted chart quotes and honors pause/resume on an existing stream', { timeout: 10_000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const dir = mkdtempSync(path.join(tmpdir(), 'quote-hub-restart-'));
+  const now = Date.now(), market = 'binance:perpetual:AUSDT';
+  const first = new PriceHistory(dir);
+  first.record(market, 11, now - 4000, now);
+  first.record(market, 12, now - 3000, now);
+  first.close(now);
+  const history = new PriceHistory(dir);
+  const project: MarketProject = {
+    id: 'p', name: 'A', tokenSymbol: 'A', contractAddress: null, identitySource: 'symbol', identityNetwork: null,
+    markets: [{ id: 'm', exchange: 'binance', marketType: 'perpetual', symbol: 'AUSDT', base: 'A', quote: 'USDT', status: 'TRADING' }],
+    primaryMarketId: 'm', monitoring: { defaultInterval: '5m', streamingEnabled: true, collectionMode: 'active' },
+    archived: false, order: 0, createdAt: 0, updatedAt: 0,
+  };
+  const server = createServer();
+  let sendTrade: (payload: unknown) => void = () => { throw Error('feed has not started'); };
+  const stop = createLiveHub(server, () => [project], {
+    priceHistory: history, openPerpetualStream: (_venue, _symbol, publish) => { sendTrade = publish; return () => {}; },
+  });
+  t.after(() => { stop(); history.close(); rmSync(dir, {recursive: true, force: true}); });
+  const client = await connect(server);
+  const snapshot = async (op: 'subscribe' | 'resync') => {
+    const reply = frame(client, 'snapshot', 'quotes');
+    client.send(JSON.stringify({op, projects: ['p'], channels: ['quotes'], channel: 'quotes'}));
+    return reply;
+  };
+  const quotes = await snapshot('subscribe');
+  assert.deepEqual(quotes.replay?.[0].points, [{t: now-4000, p:11}, {t:now-3000,p:12}]);
+  assert.equal(quotes.ticks?.[0].price, null); // Loading history cannot certify live freshness.
+  project.monitoring.collectionMode = 'paused';
+  await snapshot('resync');
+  sendTrade({data:{e:'aggTrade',p:13,T:now-2000}});
+  project.monitoring.collectionMode = 'active';
+  await snapshot('resync');
+  sendTrade({data:{e:'aggTrade',p:14,T:now-1000}});
+  assert.deepEqual(history.read(market,now-5000,now,1000).map(p=>p.p),[11,12,14]);
+  await disconnect(client);
 });
